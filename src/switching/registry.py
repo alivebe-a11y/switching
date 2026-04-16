@@ -36,10 +36,12 @@ def load_builtin_detectors() -> None:
     from switching.detectors.activist_13d import Activist13DDetector
     from switching.detectors.ai_pivot import AIPivotDetector
     from switching.detectors.buyback import BuybackDetector
+    from switching.detectors.insider_cluster import InsiderClusterDetector
 
     _REGISTRY[AIPivotDetector.name] = AIPivotDetector
     _REGISTRY[BuybackDetector.name] = BuybackDetector
     _REGISTRY[Activist13DDetector.name] = Activist13DDetector
+    _REGISTRY[InsiderClusterDetector.name] = InsiderClusterDetector
 
 
 def reset() -> None:
