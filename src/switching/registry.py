@@ -33,11 +33,13 @@ def all_detectors() -> dict[str, type[Detector]]:
 def load_builtin_detectors() -> None:
     # Import ensures @register side-effects have run, and explicitly re-
     # registers in case the registry was reset (test helper) after first import.
+    from switching.detectors.activist_13d import Activist13DDetector
     from switching.detectors.ai_pivot import AIPivotDetector
     from switching.detectors.buyback import BuybackDetector
 
     _REGISTRY[AIPivotDetector.name] = AIPivotDetector
     _REGISTRY[BuybackDetector.name] = BuybackDetector
+    _REGISTRY[Activist13DDetector.name] = Activist13DDetector
 
 
 def reset() -> None:

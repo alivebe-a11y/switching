@@ -1,0 +1,13 @@
+event_dt,ticker,company,headline,url,evidence,severity
+2023-01-22,CRM,Salesforce,Elliott Management files 13D on Salesforce,,Elliott Management activist stake,0.90
+2023-03-13,ILMN,Illumina,Carl Icahn files 13D on Illumina,,Carl Icahn activist stake GRAIL spin,0.92
+2022-10-24,SPLK,Splunk,Starboard Value files 13D on Splunk,,Starboard Value activist stake,0.88
+2023-11-27,DIS,Disney,Trian Fund files 13D on Disney,,Trian Fund Nelson Peltz activist stake,0.90
+2023-05-09,NRG,NRG Energy,Elliott Management files 13D on NRG Energy,,Elliott Management activist stake,0.88
+2024-01-17,NSC,Norfolk Southern,Ancora files 13D on Norfolk Southern,,Ancora activist stake,0.80
+2023-09-19,HES,Hess,Elliott Investment files 13D on Hess,,Elliott Investment activist stake,0.88
+2022-05-04,PYPL,PayPal,Elliott Management files 13D on PayPal,,Elliott Management activist stake,0.88
+2023-02-06,AR,Antero Resources,JANA Partners files 13D on Antero Resources,,JANA Partners activist stake,0.78
+2022-10-18,CRM,Salesforce,Starboard Value discloses activist stake in Salesforce,,Starboard Value activist stake,0.85
+2024-02-06,ETSY,Etsy,Elliott Management files 13D on Etsy,,Elliott Management activist stake,0.88
+2023-04-10,GT,Goodyear,Elliott Management files 13D on Goodyear,,Elliott Management activist stake,0.85
