@@ -107,6 +107,12 @@ def backtest_cmd(
     hold_days: int = typer.Option(5, "--hold-days", help="Hold window in trading days."),
     min_severity: float = typer.Option(0.0, help="Drop events below this severity."),
     cost_bps: float = typer.Option(10.0, help="Round-trip transaction cost in basis points."),
+    live_seed: bool = typer.Option(
+        False,
+        "--live-seed",
+        help="Augment the curated seed with events pulled live from SEC EDGAR. "
+        "Requires $SWITCHING_EDGAR_UA (a descriptive User-Agent).",
+    ),
     json_out: Optional[Path] = typer.Option(None, "--json", help="Write per-trade JSON."),
     csv_out: Optional[Path] = typer.Option(None, "--csv", help="Write per-trade CSV."),
     log_level: str = typer.Option("WARNING", help="Python log level."),
@@ -119,8 +125,18 @@ def backtest_cmd(
 
     start = _parse_date(frm)
     end = _parse_date(to)
+
+    live_client = None
+    if live_seed:
+        from switching.sources.sec_edgar import EdgarClient, EdgarAuthError
+        try:
+            live_client = EdgarClient()
+        except EdgarAuthError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=2)
+
     events = [
-        e for e in historical.load(detector)
+        e for e in historical.load(detector, live=live_client, since=start, until=end)
         if start <= e.event_dt <= end and e.severity >= min_severity
     ]
     if not events:
