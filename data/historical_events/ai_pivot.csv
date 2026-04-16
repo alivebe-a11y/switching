@@ -1,0 +1,11 @@
+event_dt,ticker,company,headline,url,evidence,severity
+2023-01-26,BZFD,BuzzFeed,BuzzFeed announces plan to use ChatGPT-maker OpenAI to create content,,"content generation powered by AI",0.90
+2023-01-31,AI,C3.ai,C3.ai launches C3 Generative AI Product Suite,,"generative AI platform launch",0.90
+2023-04-24,PLTR,Palantir,Palantir unveils Artificial Intelligence Platform (AIP),,"AI platform unveil",0.85
+2023-05-09,IBM,IBM,IBM unveils watsonx AI and data platform,,"watsonx AI platform",0.85
+2023-06-12,SOUN,SoundHound AI,SoundHound AI expands voice AI platform,,"voice AI pivot",0.70
+2023-07-27,BBAI,BigBear.ai,BigBear.ai announces generative AI roadmap,,"generative AI roadmap",0.70
+2023-03-27,MARK,Remark Holdings,Remark Holdings launches AI platform for retail,,"AI platform launch",0.70
+2024-02-26,SOUN,SoundHound AI,SoundHound AI partners with Nvidia for generative AI voice,,"Nvidia partnership generative AI",0.80
+2024-05-13,AI,C3.ai,C3.ai expands generative AI agent offerings,,"generative AI agent expansion",0.70
+2023-02-07,PRSO,Peraso,Peraso rebrands toward AI edge compute,,"AI rebrand",0.65
