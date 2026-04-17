@@ -1,0 +1,11 @@
+event_dt,ticker,company,headline,url,evidence,severity
+2023-03-13,WAL,Western Alliance,Insider cluster buying at Western Alliance during regional bank stress,,multiple insiders purchased on open market,0.80
+2023-03-15,PACW,PacWest Bancorp,Insider cluster buying at PacWest Bancorp during regional bank stress,,multiple insiders purchased on open market,0.78
+2023-05-15,HBAN,Huntington Bancshares,Insider cluster buying at Huntington Bancshares,,multiple insiders purchased on open market,0.72
+2022-11-10,META,Meta Platforms,Insider purchases at Meta Platforms,,multiple insiders purchased on open market,0.70
+2022-05-04,UPST,Upstart Holdings,Insider cluster buying at Upstart after guidance cut,,multiple insiders purchased on open market,0.75
+2023-10-26,SOFI,SoFi Technologies,Insider cluster buying at SoFi after earnings,,multiple insiders purchased on open market,0.70
+2023-11-30,RIVN,Rivian Automotive,Insider cluster buying at Rivian after delivery update,,multiple insiders purchased on open market,0.70
+2024-04-26,INTC,Intel,Insider cluster buying at Intel after foundry restructuring,,multiple insiders purchased on open market,0.72
+2022-09-09,FDX,FedEx,Insider cluster buying at FedEx after guidance cut,,multiple insiders purchased on open market,0.75
+2023-04-25,FRC,First Republic Bank,Insider purchases at First Republic amid deposit concerns,,multiple insiders purchased on open market,0.70

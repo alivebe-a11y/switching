@@ -27,7 +27,7 @@ switching = "switching.cli:app"
 where = ["src"]
 
 [tool.setuptools.package-data]
-switching = ["py.typed"]
+switching = ["py.typed", "data/historical_events/*.csv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
