@@ -1,8 +1,8 @@
 services:
   switching:
-    image: ${SWITCHING_IMAGE:-ghcr.io/alivebe-a11y/switching:latest}
+    image: ghcr.io/alivebe-a11y/switching:latest
     build:
-      context: .
+      context: https://github.com/alivebe-a11y/switching.git#claude/add-ai-recommendations-ABZZX
       dockerfile: Dockerfile
     environment:
       - SWITCHING_EDGAR_UA=${SWITCHING_EDGAR_UA:-}
