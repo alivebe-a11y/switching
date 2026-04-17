@@ -107,6 +107,15 @@ def backtest_cmd(
     hold_days: int = typer.Option(5, "--hold-days", help="Hold window in trading days."),
     min_severity: float = typer.Option(0.0, help="Drop events below this severity."),
     cost_bps: float = typer.Option(10.0, help="Round-trip transaction cost in basis points."),
+    stop_loss: Optional[float] = typer.Option(
+        None, "--stop-loss", help="Exit if loss exceeds this fraction (e.g. 0.05 = -5%)."
+    ),
+    take_profit: Optional[float] = typer.Option(
+        None, "--take-profit", help="Exit if gain exceeds this fraction (e.g. 0.10 = +10%)."
+    ),
+    first_green: bool = typer.Option(
+        False, "--first-green", help="Exit at close of first day that closes above entry."
+    ),
     live_seed: bool = typer.Option(
         False,
         "--live-seed",
@@ -145,10 +154,23 @@ def backtest_cmd(
 
     cache = PriceCache()
     trades = backtest_mod.simulate(
-        events, hold_days=hold_days, cost_bps=cost_bps, min_severity=min_severity, cache=cache
+        events, hold_days=hold_days, cost_bps=cost_bps, min_severity=min_severity, cache=cache,
+        stop_loss=stop_loss, take_profit=take_profit, first_green=first_green,
     )
+    strategy = "hold"
+    if first_green:
+        strategy = "first-green"
+    if stop_loss is not None or take_profit is not None:
+        parts = []
+        if stop_loss is not None:
+            parts.append(f"SL={stop_loss*100:.0f}%")
+        if take_profit is not None:
+            parts.append(f"TP={take_profit*100:.0f}%")
+        if first_green:
+            parts.append("first-green")
+        strategy = " + ".join(parts)
     perf = backtest_mod.summarize(trades)
-    _render_performance(perf, detector=detector, hold_days=hold_days, events=len(events), trades_run=len(trades))
+    _render_performance(perf, detector=detector, hold_days=hold_days, events=len(events), trades_run=len(trades), strategy=strategy)
 
     if json_out:
         backtest_mod.write_trades_json(trades, json_out)
@@ -158,8 +180,8 @@ def backtest_cmd(
         console.print(f"[dim]wrote {len(trades)} trades to {csv_out}[/dim]")
 
 
-def _render_performance(perf, *, detector: str, hold_days: int, events: int, trades_run: int) -> None:
-    header = Table(title=f"Backtest — {detector} (hold={hold_days}d, events={events}, trades={trades_run})")
+def _render_performance(perf, *, detector: str, hold_days: int, events: int, trades_run: int, strategy: str = "hold") -> None:
+    header = Table(title=f"Backtest — {detector} (hold={hold_days}d, strategy={strategy}, events={events}, trades={trades_run})")
     header.add_column("Metric")
     header.add_column("Value", justify="right")
     header.add_row("Trades", str(perf.trades))

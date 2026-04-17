@@ -103,3 +103,80 @@ def test_summarize_empty():
     perf = backtest.summarize([])
     assert perf.trades == 0
     assert perf.win_rate == 0.0
+
+
+def _exit_strategy_history(event_date) -> pd.DataFrame:
+    """Day-by-day prices: entry open=10, then daily closes: 9.4, 9.8, 10.3, 10.8, 11.5."""
+    start = pd.Timestamp(event_date) - pd.Timedelta(days=20)
+    idx = pd.bdate_range(start=start, periods=40)
+    rows = len(idx)
+    df = pd.DataFrame(
+        {"Open": [10.0]*rows, "High": [10.2]*rows, "Low": [9.8]*rows,
+         "Close": [10.0]*rows, "Volume": [1_000_000]*rows},
+        index=idx,
+    )
+    mask = df.index >= pd.Timestamp(event_date)
+    if mask.any():
+        first = df.index[mask][0]
+        pos = df.index.get_loc(first)
+        closes = [10.0, 9.4, 9.8, 10.3, 10.8, 11.5]
+        lows =   [10.0, 9.2, 9.6, 10.0, 10.5, 11.0]
+        highs =  [10.2, 10.0, 10.0, 10.5, 11.0, 11.8]
+        for i, (c, lo, hi) in enumerate(zip(closes, lows, highs)):
+            if pos + i < rows:
+                df.iloc[pos + i, df.columns.get_loc("Close")] = c
+                df.iloc[pos + i, df.columns.get_loc("Low")] = lo
+                df.iloc[pos + i, df.columns.get_loc("High")] = hi
+    return df
+
+
+@pytest.fixture
+def monkey_exit_history(monkeypatch):
+    event_dt = datetime(2023, 6, 1, tzinfo=timezone.utc)
+    def fake(ticker, start, end, cache=None):
+        return _exit_strategy_history(event_dt.date())
+    monkeypatch.setattr(backtest, "get_history", fake)
+    return event_dt
+
+
+def test_stop_loss_exits_early(monkey_exit_history):
+    sig = _sig("TEST", monkey_exit_history)
+    trades = backtest.simulate([sig], hold_days=5, cost_bps=0, stop_loss=0.05)
+    assert len(trades) == 1
+    assert trades[0].exit_reason == "stop_loss"
+    assert trades[0].hold_days < 5
+
+
+def test_take_profit_exits_early(monkey_exit_history):
+    sig = _sig("TEST", monkey_exit_history)
+    trades = backtest.simulate([sig], hold_days=5, cost_bps=0, take_profit=0.05)
+    assert len(trades) == 1
+    assert trades[0].exit_reason == "take_profit"
+    assert trades[0].net_return > 0
+
+
+def test_first_green_exits_on_first_positive_close(monkey_exit_history):
+    sig = _sig("TEST", monkey_exit_history)
+    trades = backtest.simulate([sig], hold_days=5, cost_bps=0, first_green=True)
+    assert len(trades) == 1
+    assert trades[0].exit_reason == "first_green"
+    assert trades[0].exit_price == pytest.approx(10.3)
+    assert trades[0].hold_days == 3
+
+
+def test_first_green_with_stop_loss(monkey_exit_history):
+    sig = _sig("TEST", monkey_exit_history)
+    trades = backtest.simulate(
+        [sig], hold_days=5, cost_bps=0, first_green=True, stop_loss=0.05,
+    )
+    assert len(trades) == 1
+    # Stop loss at -5% triggers before first green (day 1 low = 9.2, -8%)
+    assert trades[0].exit_reason == "stop_loss"
+
+
+def test_hold_when_no_exit_strategy(monkey_exit_history):
+    sig = _sig("TEST", monkey_exit_history)
+    trades = backtest.simulate([sig], hold_days=5, cost_bps=0)
+    assert len(trades) == 1
+    assert trades[0].exit_reason == "hold"
+    assert trades[0].hold_days == 5
