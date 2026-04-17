@@ -1,0 +1,13 @@
+event_dt,ticker,company,headline,url,evidence,severity
+2024-09-06,PLTR,Palantir Technologies,Palantir Technologies Set to Join S&P 500,,added to S&P 500 replacing American Airlines,0.90
+2024-09-06,DELL,Dell Technologies,Dell Technologies Set to Join S&P 500,,added to S&P 500 replacing Etsy,0.90
+2024-03-01,SMCI,Super Micro Computer,Super Micro Computer Set to Join S&P 500,,added to S&P 500 replacing Whirlpool,0.90
+2024-06-24,CRWD,CrowdStrike Holdings,CrowdStrike to Join S&P 500,,added to S&P 500 replacing Robert Half,0.90
+2024-10-11,KKR,KKR & Co.,KKR to Join S&P 500,,added to S&P 500 replacing AES,0.90
+2023-12-18,UBER,Uber Technologies,Uber Technologies Set to Join S&P 500,,added to S&P 500 replacing Sealed Air,0.90
+2022-08-24,GEHC,GE HealthCare Technologies,GE HealthCare to Join S&P 500 following spinoff,,included in S&P 500 post-spinoff from GE,0.88
+2021-03-22,NDAQ,Nasdaq Inc,Nasdaq Joins S&P 500,,addition to S&P 500,0.88
+2020-12-21,TSLA,Tesla,Tesla Joins the S&P 500,,added to S&P 500 — largest-ever addition by market cap,0.95
+2024-06-28,DDOG,Datadog,Datadog to Join S&P 500,,added to S&P 500 replacing Illumina,0.90
+2023-06-23,PLTR,Palantir Technologies,Palantir Added to Russell 1000,,Russell reconstitution — included in Russell 1000,0.60
+2022-12-19,WBD,Warner Bros. Discovery,Warner Bros. Discovery Moves to S&P 400 MidCap,,added to S&P MidCap 400,0.70

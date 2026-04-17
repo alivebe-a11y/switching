@@ -14,7 +14,17 @@ if TYPE_CHECKING:  # avoid import cycle at runtime
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_ROOT = Path(__file__).resolve().parents[3] / "data" / "historical_events"
+def _find_data_root() -> Path:
+    pkg_data = Path(__file__).resolve().parents[1] / "data" / "historical_events"
+    if pkg_data.is_dir():
+        return pkg_data
+    repo_data = Path(__file__).resolve().parents[3] / "data" / "historical_events"
+    if repo_data.is_dir():
+        return repo_data
+    return pkg_data
+
+
+_DEFAULT_ROOT = _find_data_root()
 
 
 def _parse_dt(value: str) -> datetime:

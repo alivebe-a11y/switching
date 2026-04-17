@@ -31,6 +31,7 @@ class Trade:
     gross_return: float          # (exit - entry) / entry
     net_return: float            # gross_return - cost_bps/10000
     headline: str
+    exit_reason: str = "hold"    # hold | stop_loss | take_profit | first_green
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -65,11 +66,20 @@ def simulate(
     cost_bps: float = 10.0,
     min_severity: float = 0.0,
     cache: PriceCache | None = None,
+    stop_loss: float | None = None,
+    take_profit: float | None = None,
+    first_green: bool = False,
 ) -> list[Trade]:
-    """Replay signals through a next-day-open / N-day-close trading rule.
+    """Replay signals through a configurable trading rule.
 
-    No look-ahead: entry is the open on the first trading day at or after the
-    event; exit is the close ``hold_days`` trading sessions later.
+    Exit strategies (evaluated in order each day):
+    1. ``stop_loss``   – sell if intraday return ≤ -stop_loss (e.g. 0.05 = -5%)
+    2. ``take_profit`` – sell if intraday return ≥ +take_profit (e.g. 0.10 = +10%)
+    3. ``first_green`` – sell at close of first day that closes above entry
+    4. Fixed hold      – sell at close of trading day ``hold_days``
+
+    Strategies compose: stop_loss + first_green means "sell on first green
+    close, but bail at -X% if it never goes green."
     """
     cache = cache or PriceCache()
     trades: list[Trade] = []
@@ -89,12 +99,15 @@ def simulate(
         post = hist.loc[hist.index >= event_date]
         if len(post) <= hold_days:
             continue
-        entry_row = post.iloc[0]
-        exit_row = post.iloc[hold_days]
-        entry_price = float(entry_row["Open"])
-        exit_price = float(exit_row["Close"])
+        entry_price = float(post.iloc[0]["Open"])
         if entry_price <= 0:
             continue
+
+        exit_idx, exit_reason = _find_exit(
+            post, entry_price, hold_days,
+            stop_loss=stop_loss, take_profit=take_profit, first_green=first_green,
+        )
+        exit_price = float(post.iloc[exit_idx]["Close"])
         gross = exit_price / entry_price - 1.0
         net = gross - (cost_bps / 10_000.0)
         trades.append(
@@ -104,16 +117,45 @@ def simulate(
                 event_dt=s.event_dt,
                 entry_dt=post.index[0].date(),
                 entry_price=entry_price,
-                exit_dt=post.index[hold_days].date(),
+                exit_dt=post.index[exit_idx].date(),
                 exit_price=exit_price,
-                hold_days=hold_days,
+                hold_days=exit_idx,
                 severity=s.severity,
                 gross_return=gross,
                 net_return=net,
                 headline=s.headline,
+                exit_reason=exit_reason,
             )
         )
     return trades
+
+
+def _find_exit(
+    post: pd.DataFrame,
+    entry_price: float,
+    hold_days: int,
+    *,
+    stop_loss: float | None,
+    take_profit: float | None,
+    first_green: bool,
+) -> tuple[int, str]:
+    """Return (index into post, exit_reason)."""
+    max_idx = min(hold_days, len(post) - 1)
+    for i in range(1, max_idx + 1):
+        close = float(post.iloc[i]["Close"])
+        low = float(post.iloc[i]["Low"])
+        high = float(post.iloc[i]["High"])
+        ret_close = close / entry_price - 1.0
+        ret_low = low / entry_price - 1.0
+        ret_high = high / entry_price - 1.0
+
+        if stop_loss is not None and ret_low <= -stop_loss:
+            return i, "stop_loss"
+        if take_profit is not None and ret_high >= take_profit:
+            return i, "take_profit"
+        if first_green and ret_close > 0:
+            return i, "first_green"
+    return max_idx, "hold"
 
 
 def _severity_bucket(sev: float) -> str:
@@ -196,6 +238,7 @@ def write_trades_csv(trades: Iterable[Trade], path: Path) -> None:
         "exit_dt",
         "exit_price",
         "hold_days",
+        "exit_reason",
         "severity",
         "gross_return",
         "net_return",

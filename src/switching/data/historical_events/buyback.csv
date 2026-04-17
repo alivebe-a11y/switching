@@ -1,0 +1,13 @@
+event_dt,ticker,company,headline,url,evidence,severity
+2021-09-14,MSFT,Microsoft,Microsoft board authorizes up to $60 billion share repurchase program,,board authorized repurchase program $60 billion,0.90
+2023-02-01,META,Meta Platforms,Meta board authorizes $40 billion share repurchase authorization,,board authorized repurchase $40 billion,0.88
+2023-03-01,CRM,Salesforce,Salesforce board authorizes $20 billion share repurchase,,board authorized repurchase $20 billion,0.85
+2023-04-25,GOOGL,Alphabet,Alphabet board authorizes up to $70 billion share repurchase,,board authorized repurchase $70 billion,0.90
+2023-05-04,AAPL,Apple,Apple board authorizes up to $90 billion share repurchase,,board authorized repurchase $90 billion,0.92
+2023-08-23,NVDA,NVIDIA,NVIDIA board authorizes additional $25 billion share repurchase,,board authorized additional $25 billion repurchase,0.86
+2024-02-01,META,Meta Platforms,Meta board authorizes additional $50 billion share repurchase,,board authorized additional $50 billion,0.90
+2024-04-25,GOOGL,Alphabet,Alphabet board authorizes up to $70 billion additional share repurchase,,board authorized additional $70 billion,0.90
+2024-05-02,AAPL,Apple,Apple board authorizes up to $110 billion share repurchase,,board authorized repurchase $110 billion,0.93
+2024-08-28,NVDA,NVIDIA,NVIDIA board authorizes additional $50 billion share repurchase,,board authorized additional $50 billion,0.88
+2022-08-22,CSCO,Cisco,Cisco board increases share repurchase authorization by $15 billion,,board increased repurchase $15 billion,0.80
+2022-11-02,CVS,CVS Health,CVS board authorizes $10 billion share repurchase program,,board authorized repurchase $10 billion,0.78
