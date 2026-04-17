@@ -1,0 +1,15 @@
+services:
+  switching:
+    image: ${SWITCHING_IMAGE:-ghcr.io/alivebe-a11y/switching:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - SWITCHING_EDGAR_UA=${SWITCHING_EDGAR_UA:-}
+    volumes:
+      - switching-cache:/app/.cache
+    entrypoint: ["switching"]
+    command: ["list-detectors"]
+
+volumes:
+  switching-cache:

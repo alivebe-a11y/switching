@@ -1,0 +1,27 @@
+{
+  "hits": {
+    "total": {"value": 2},
+    "hits": [
+      {
+        "_id": "0000320193-23-000064:apple-8k.htm",
+        "_source": {
+          "ciks": ["0000320193"],
+          "display_names": ["Apple Inc. (CIK 0000320193)"],
+          "form": "8-K",
+          "file_date": "2023-05-04",
+          "filer": null
+        }
+      },
+      {
+        "_id": "0000789019-23-000100:msft-8k.htm",
+        "_source": {
+          "ciks": ["0000789019"],
+          "display_names": ["Microsoft Corp (CIK 0000789019)"],
+          "form": "8-K",
+          "file_date": "2023-09-19",
+          "filer": null
+        }
+      }
+    ]
+  }
+}
