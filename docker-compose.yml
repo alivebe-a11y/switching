@@ -1,6 +1,6 @@
 services:
   switching:
-    image: ghcr.io/alivebe-a11y/switching:latest
+    image: ${SWITCHING_IMAGE:-ghcr.io/alivebe-a11y/switching:latest}
     build:
       context: .
       dockerfile: Dockerfile
