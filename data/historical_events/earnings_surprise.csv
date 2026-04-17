@@ -1,0 +1,13 @@
+event_dt,ticker,company,headline,url,evidence,severity
+2023-02-01,META,Meta Platforms,Meta Platforms beats estimates with strong Q4 revenue rebound,,beats estimates with strong Q4 revenue,0.75
+2023-02-02,SNAP,Snap Inc,Snap misses estimates as ad revenue falls short,,misses estimates ad revenue falls short,0.55
+2023-05-24,NVDA,NVIDIA,NVIDIA crushes estimates on surging AI chip demand,,crushes estimates surging AI chip demand,0.80
+2023-10-25,META,Meta Platforms,Meta Platforms tops expectations with ad revenue beat,,tops expectations revenue also beats,0.75
+2023-10-25,GOOGL,Alphabet,Alphabet beats estimates driven by cloud and search growth,,beats estimates cloud and search growth,0.65
+2023-10-26,MSFT,Microsoft,Microsoft beats estimates with Azure revenue exceeding expectations,,beats estimates Azure revenue exceeds,0.75
+2023-10-26,AMZN,Amazon,Amazon tops expectations on AWS and advertising strength,,tops expectations AWS and advertising,0.65
+2023-11-02,AAPL,Apple,Apple beats estimates with better-than-expected iPhone revenue,,beats estimates iPhone revenue,0.65
+2022-09-22,FDX,FedEx,FedEx misses estimates and warns on global slowdown,,misses estimates warns global slowdown,0.65
+2024-02-21,NVDA,NVIDIA,NVIDIA smashes estimates with record data center revenue,,smashes estimates record data center revenue,0.80
+2023-01-26,INTC,Intel,Intel misses estimates and disappoints with weak guidance,,misses estimates disappoints weak guidance,0.65
+2023-01-05,WBA,Walgreens Boots Alliance,Walgreens falls short of estimates and cuts outlook,,falls short of estimates cuts outlook,0.65

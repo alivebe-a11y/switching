@@ -1,0 +1,14 @@
+event_dt,ticker,company,headline,url,evidence,severity
+2023-01-04,GEHC,GE HealthCare,GE Completes Spin-Off of GE HealthCare,,completes spin-off GE HealthCare independent company,0.90
+2023-05-04,KVUE,Kenvue,Johnson & Johnson Completes Separation of Kenvue Consumer Health,,completes separation Kenvue standalone company,0.80
+2016-07-02,FTV,Fortive,Danaher Completes Spin-Off of Fortive Corporation,,completes spin-off Fortive independent company,0.80
+2020-04-03,CARR,Carrier Global,United Technologies Completes Spin-Off of Carrier Global,,completes spin-off Carrier Global independent company,0.80
+2020-04-03,OTIS,Otis Worldwide,United Technologies Completes Spin-Off of Otis Worldwide,,completes spin-off Otis Worldwide independent company,0.80
+2021-06-03,OGN,Organon,Merck Completes Spin-Off of Organon,,completes spin-off Organon standalone company,0.80
+2020-11-16,VTRS,Viatris,Pfizer Completes Spin-Off Merger Creating Viatris,,completes spin-off merger creating Viatris,0.80
+2022-03-01,ZIMV,ZimVie,Zimmer Biomet Completes Spin-Off of ZimVie,,completes spin-off ZimVie independent company,0.80
+2022-10-01,XPER,Xperi,Xperi Completes Separation Into Two Independent Companies,,completes separation independent company,0.80
+2022-05-06,BLCO,Bausch + Lomb,Bausch Health Completes Spin-Off of Bausch + Lomb,,completes spin-off Bausch + Lomb independent company,0.80
+2023-10-04,SDZ,Sandoz Group,Novartis Completes Spin-Off of Sandoz,,completes spin-off Sandoz independent company,0.80
+2021-08-02,GXO,GXO Logistics,XPO Logistics Completes Spin-Off of GXO Logistics,,completes spin-off GXO Logistics independent company,0.80
+2024-04-01,SOLV,Solventum,3M Completes Spin-Off of Solventum,,completes spin-off Solventum independent company,0.80
