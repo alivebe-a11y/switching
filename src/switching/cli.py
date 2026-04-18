@@ -105,6 +105,10 @@ def backtest_cmd(
     frm: str = typer.Option(..., "--from", help="Start date (ISO)."),
     to: str = typer.Option(..., "--to", help="End date (ISO)."),
     hold_days: int = typer.Option(5, "--hold-days", help="Hold window in trading days."),
+    entry_delay: int = typer.Option(
+        1, "--entry-delay",
+        help="Trading days after event to enter. 1 = next-day open (realistic), 0 = same-day (optimistic).",
+    ),
     min_severity: float = typer.Option(0.0, help="Drop events below this severity."),
     cost_bps: float = typer.Option(10.0, help="Round-trip transaction cost in basis points."),
     stop_loss: Optional[float] = typer.Option(
@@ -156,19 +160,22 @@ def backtest_cmd(
     trades = backtest_mod.simulate(
         events, hold_days=hold_days, cost_bps=cost_bps, min_severity=min_severity, cache=cache,
         stop_loss=stop_loss, take_profit=take_profit, first_green=first_green,
+        entry_delay=entry_delay,
     )
-    strategy = "hold"
+    parts = []
+    if entry_delay == 0:
+        parts.append("same-day")
+    else:
+        parts.append(f"T+{entry_delay}")
+    if stop_loss is not None:
+        parts.append(f"SL={stop_loss*100:.0f}%")
+    if take_profit is not None:
+        parts.append(f"TP={take_profit*100:.0f}%")
     if first_green:
-        strategy = "first-green"
-    if stop_loss is not None or take_profit is not None:
-        parts = []
-        if stop_loss is not None:
-            parts.append(f"SL={stop_loss*100:.0f}%")
-        if take_profit is not None:
-            parts.append(f"TP={take_profit*100:.0f}%")
-        if first_green:
-            parts.append("first-green")
-        strategy = " + ".join(parts)
+        parts.append("first-green")
+    else:
+        parts.append("hold")
+    strategy = " + ".join(parts)
     perf = backtest_mod.summarize(trades)
     _render_performance(perf, detector=detector, hold_days=hold_days, events=len(events), trades_run=len(trades), strategy=strategy)
 

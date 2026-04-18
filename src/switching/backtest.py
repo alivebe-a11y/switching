@@ -69,8 +69,14 @@ def simulate(
     stop_loss: float | None = None,
     take_profit: float | None = None,
     first_green: bool = False,
+    entry_delay: int = 1,
 ) -> list[Trade]:
     """Replay signals through a configurable trading rule.
+
+    ``entry_delay`` is the number of trading days after the event date to
+    enter. Default 1 = next-day open, which is realistic: by the time an
+    RSS feed delivers the signal and you act, the event-day open is gone.
+    Use 0 for same-day (optimistic / look-ahead).
 
     Exit strategies (evaluated in order each day):
     1. ``stop_loss``   – sell if intraday return ≤ -stop_loss (e.g. 0.05 = -5%)
@@ -87,7 +93,7 @@ def simulate(
         if s.severity < min_severity:
             continue
         start = s.event_dt.date() - timedelta(days=10)
-        end = s.event_dt.date() + timedelta(days=hold_days * 2 + 20)
+        end = s.event_dt.date() + timedelta(days=(hold_days + entry_delay) * 2 + 20)
         try:
             hist = get_history(s.ticker, start, end, cache=cache)
         except Exception as exc:  # pragma: no cover
@@ -97,17 +103,18 @@ def simulate(
             continue
         event_date = pd.Timestamp(s.event_dt.date())
         post = hist.loc[hist.index >= event_date]
-        if len(post) <= hold_days:
+        if len(post) <= entry_delay + hold_days:
             continue
-        entry_price = float(post.iloc[0]["Open"])
+        entry_price = float(post.iloc[entry_delay]["Open"])
         if entry_price <= 0:
             continue
 
+        exit_window = post.iloc[entry_delay:]
         exit_idx, exit_reason = _find_exit(
-            post, entry_price, hold_days,
+            exit_window, entry_price, hold_days,
             stop_loss=stop_loss, take_profit=take_profit, first_green=first_green,
         )
-        exit_price = float(post.iloc[exit_idx]["Close"])
+        exit_price = float(exit_window.iloc[exit_idx]["Close"])
         gross = exit_price / entry_price - 1.0
         net = gross - (cost_bps / 10_000.0)
         trades.append(
@@ -115,9 +122,9 @@ def simulate(
                 ticker=s.ticker,
                 detector=s.detector,
                 event_dt=s.event_dt,
-                entry_dt=post.index[0].date(),
+                entry_dt=exit_window.index[0].date(),
                 entry_price=entry_price,
-                exit_dt=post.index[exit_idx].date(),
+                exit_dt=exit_window.index[exit_idx].date(),
                 exit_price=exit_price,
                 hold_days=exit_idx,
                 severity=s.severity,
