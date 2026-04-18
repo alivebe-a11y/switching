@@ -36,14 +36,18 @@ def load_builtin_detectors() -> None:
     from switching.detectors.activist_13d import Activist13DDetector
     from switching.detectors.ai_pivot import AIPivotDetector
     from switching.detectors.buyback import BuybackDetector
+    from switching.detectors.earnings_surprise import EarningsSurpriseDetector
     from switching.detectors.index_inclusion import IndexInclusionDetector
     from switching.detectors.insider_cluster import InsiderClusterDetector
+    from switching.detectors.spinoff import SpinoffDetector
 
     _REGISTRY[AIPivotDetector.name] = AIPivotDetector
     _REGISTRY[BuybackDetector.name] = BuybackDetector
     _REGISTRY[Activist13DDetector.name] = Activist13DDetector
+    _REGISTRY[EarningsSurpriseDetector.name] = EarningsSurpriseDetector
     _REGISTRY[InsiderClusterDetector.name] = InsiderClusterDetector
     _REGISTRY[IndexInclusionDetector.name] = IndexInclusionDetector
+    _REGISTRY[SpinoffDetector.name] = SpinoffDetector
 
 
 def reset() -> None:
