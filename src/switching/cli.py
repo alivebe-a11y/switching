@@ -219,5 +219,104 @@ def _render_performance(perf, *, detector: str, hold_days: int, events: int, tra
         console.print(sev_tbl)
 
 
+_DEFAULT_DETECTORS = [
+    "earnings_surprise", "ai_pivot", "index_inclusion",
+    "buyback", "insider_cluster", "activist_13d",
+]
+
+
+@app.command("paper-trade")
+def paper_trade(
+    seed_cash: float = typer.Option(1000.0, "--seed", help="Starting cash."),
+    detectors: list[str] = typer.Option(
+        None, "--detector", "-d",
+        help="Detector(s) to trade. Omit for recommended set (excludes spinoff).",
+    ),
+    stop_loss: float = typer.Option(0.05, "--stop-loss", help="Stop-loss fraction (e.g. 0.05 = 5%)."),
+    hold_days: int = typer.Option(5, "--hold-days", help="Max hold window in trading days."),
+    interval: int = typer.Option(30, "--interval", help="Scan interval in minutes."),
+    min_severity: float = typer.Option(0.0, help="Minimum signal severity to trade."),
+    state_file: Path = typer.Option(
+        "/app/.cache/paper_portfolio.json", "--state",
+        help="Path to portfolio state file.",
+    ),
+    once: bool = typer.Option(False, "--once", help="Run one scan cycle and exit."),
+    log_level: str = typer.Option("WARNING", help="Python log level."),
+) -> None:
+    """Run a paper-trading simulation against live RSS signals."""
+    logging.basicConfig(level=log_level.upper())
+    from switching.paper_trader import run_loop
+    run_loop(
+        state_path=state_file,
+        seed_cash=seed_cash,
+        detectors=detectors or _DEFAULT_DETECTORS,
+        stop_loss=stop_loss,
+        hold_days=hold_days,
+        scan_interval_minutes=interval,
+        min_severity=min_severity,
+        once=once,
+    )
+
+
+@app.command("paper-status")
+def paper_status(
+    state_file: Path = typer.Option(
+        "/app/.cache/paper_portfolio.json", "--state",
+        help="Path to portfolio state file.",
+    ),
+) -> None:
+    """Show current paper-trading portfolio status."""
+    from switching.paper_trader import Portfolio
+    p = Portfolio.load(state_file)
+    table = Table(title="Paper Trading Portfolio")
+    table.add_column("Metric")
+    table.add_column("Value", justify="right")
+    table.add_row("Cash", f"${p.cash:.2f}")
+    table.add_row("Open positions", str(len(p.positions)))
+    table.add_row("Portfolio value", f"${p.total_value:.2f}")
+    total_trades = len(p.trades)
+    wins = sum(1 for t in p.trades if t.pnl > 0)
+    table.add_row("Closed trades", str(total_trades))
+    if total_trades:
+        table.add_row("Win rate", f"{wins/total_trades*100:.0f}%")
+        table.add_row("Total P&L", f"${sum(t.pnl for t in p.trades):+.2f}")
+        table.add_row("Starting cash", f"${p.total_value - sum(t.pnl for t in p.trades):.2f}")
+    console.print(table)
+
+    if p.positions:
+        pos_table = Table(title="Open Positions")
+        pos_table.add_column("Ticker")
+        pos_table.add_column("Detector")
+        pos_table.add_column("Entry", justify="right")
+        pos_table.add_column("Shares", justify="right")
+        pos_table.add_column("Value", justify="right")
+        pos_table.add_column("Day")
+        for pos in p.positions:
+            pos_table.add_row(
+                pos.ticker, pos.detector,
+                f"${pos.entry_price:.2f}", f"{pos.shares:.4f}",
+                f"${pos.cost_basis:.2f}", f"{pos.days_held}/{pos.hold_days}",
+            )
+        console.print(pos_table)
+
+    if p.trades:
+        trade_table = Table(title="Trade History (last 10)")
+        trade_table.add_column("Ticker")
+        trade_table.add_column("Return", justify="right")
+        trade_table.add_column("P&L", justify="right")
+        trade_table.add_column("Exit")
+        trade_table.add_column("Headline")
+        for t in p.trades[-10:]:
+            color = "green" if t.pnl >= 0 else "red"
+            trade_table.add_row(
+                t.ticker,
+                f"[{color}]{t.pct_return*100:+.1f}%[/{color}]",
+                f"[{color}]${t.pnl:+.2f}[/{color}]",
+                t.exit_reason,
+                t.headline[:50],
+            )
+        console.print(trade_table)
+
+
 if __name__ == "__main__":  # pragma: no cover
     app()
