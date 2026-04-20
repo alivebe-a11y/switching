@@ -15,6 +15,7 @@ dependencies = [
     "feedparser>=6.0",
     "yfinance>=0.2.40",
     "pandas>=2.0",
+    "flask>=3.0",
 ]
 
 [project.optional-dependencies]

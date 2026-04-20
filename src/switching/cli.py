@@ -356,5 +356,23 @@ def paper_status(
         console.print(trade_table)
 
 
+@app.command("web")
+def web_cmd(
+    host: str = typer.Option("0.0.0.0", help="Bind address."),
+    port: int = typer.Option(8080, help="Port to listen on."),
+    state_file: Path = typer.Option(
+        "/app/.cache/paper_portfolio.json", "--state",
+        help="Path to portfolio state file.",
+    ),
+    log_level: str = typer.Option("WARNING", help="Python log level."),
+) -> None:
+    """Launch web dashboard to view paper-trading portfolio and signals."""
+    logging.basicConfig(level=log_level.upper())
+    from switching.web import create_app
+    flask_app = create_app(state_path=state_file)
+    console.print(f"[bold]Dashboard running at http://{host}:{port}[/bold]")
+    flask_app.run(host=host, port=port, debug=False)
+
+
 if __name__ == "__main__":  # pragma: no cover
     app()
