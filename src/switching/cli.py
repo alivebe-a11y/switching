@@ -258,6 +258,44 @@ def paper_trade(
     )
 
 
+@app.command("trade")
+def trade_cmd(
+    detectors: list[str] = typer.Option(
+        None, "--detector", "-d",
+        help="Detector(s) to trade. Omit for recommended set.",
+    ),
+    stop_loss: float = typer.Option(0.05, "--stop-loss", help="Stop-loss fraction (e.g. 0.05 = 5%)."),
+    hold_days: int = typer.Option(5, "--hold-days", help="Max hold window in trading days."),
+    interval: int = typer.Option(30, "--interval", help="Scan interval in minutes."),
+    min_severity: float = typer.Option(0.0, help="Minimum signal severity to trade."),
+    max_position_pct: float = typer.Option(0.20, "--max-position", help="Max % of portfolio per trade."),
+    max_positions: int = typer.Option(5, "--max-positions", help="Max concurrent positions."),
+    state_file: Path = typer.Option(
+        "/app/.cache/alpaca_state.json", "--state",
+        help="Path to trade state file.",
+    ),
+    once: bool = typer.Option(False, "--once", help="Run one scan cycle and exit."),
+    log_level: str = typer.Option("WARNING", help="Python log level."),
+) -> None:
+    """Trade live via Alpaca. Requires ALPACA_API_KEY and ALPACA_SECRET_KEY.
+
+    Set ALPACA_PAPER=true (default) for paper trading, ALPACA_PAPER=false for real money.
+    """
+    logging.basicConfig(level=log_level.upper())
+    from switching.paper_trader import run_loop_alpaca
+    run_loop_alpaca(
+        state_path=state_file,
+        detectors=detectors or _DEFAULT_DETECTORS,
+        stop_loss=stop_loss,
+        hold_days=hold_days,
+        scan_interval_minutes=interval,
+        min_severity=min_severity,
+        max_position_pct=max_position_pct,
+        max_positions=max_positions,
+        once=once,
+    )
+
+
 @app.command("paper-status")
 def paper_status(
     state_file: Path = typer.Option(
