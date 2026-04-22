@@ -173,6 +173,15 @@ def open_position(
     return pos
 
 
+def _calendar_days_since(entry_dt_str: str) -> int:
+    """Calendar days between the position entry and now, rounded down."""
+    entry = datetime.fromisoformat(entry_dt_str.replace("Z", "+00:00"))
+    if entry.tzinfo is None:
+        entry = entry.replace(tzinfo=timezone.utc)
+    now = datetime.now(tz=timezone.utc)
+    return (now.date() - entry.date()).days
+
+
 def check_exits(portfolio: Portfolio) -> list[ClosedTrade]:
     closed: list[ClosedTrade] = []
     remaining: list[Position] = []
@@ -188,12 +197,14 @@ def check_exits(portfolio: Portfolio) -> list[ClosedTrade]:
         ret_low = data["low"] / pos.entry_price - 1.0
         reason = None
 
+        days_elapsed = _calendar_days_since(pos.entry_dt)
+
         if ret_low <= -pos.stop_loss:
             reason = "stop_loss"
             price = pos.entry_price * (1.0 - pos.stop_loss)
         elif pos.first_green and ret > 0:
             reason = "first_green"
-        elif pos.days_held >= pos.hold_days:
+        elif days_elapsed >= pos.hold_days:
             reason = "hold_expiry"
 
         if reason:
@@ -216,7 +227,7 @@ def check_exits(portfolio: Portfolio) -> list[ClosedTrade]:
             portfolio.trades.append(trade)
             closed.append(trade)
         else:
-            pos.days_held += 1
+            pos.days_held = days_elapsed
             remaining.append(pos)
 
     portfolio.positions = remaining
@@ -380,7 +391,7 @@ def run_loop_alpaca(
             color = "green" if ret >= 0 else "red"
 
             tracker = next((t for t in portfolio.positions if t.ticker == p.ticker), None)
-            days = tracker.days_held if tracker else 0
+            days = _calendar_days_since(tracker.entry_dt) if tracker else 0
 
             should_sell = False
             reason = ""
@@ -417,7 +428,7 @@ def run_loop_alpaca(
                     console.print(f"  [red]SELL FAILED {p.ticker}: {exc}[/red]")
             else:
                 if tracker:
-                    tracker.days_held += 1
+                    tracker.days_held = days
                 console.print(f"    {p.ticker}: {p.qty} shares @ ${p.avg_entry_price:.2f} [{color}]{ret*100:+.1f}%[/{color}] day {days}/{hold_days}")
 
         since = now - timedelta(hours=24)
