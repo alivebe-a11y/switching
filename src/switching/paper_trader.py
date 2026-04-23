@@ -61,6 +61,8 @@ class Portfolio:
     positions: list[Position] = field(default_factory=list)
     trades: list[ClosedTrade] = field(default_factory=list)
     seen_signals: list[str] = field(default_factory=list)
+    last_signals: list[dict] = field(default_factory=list)
+    last_scan_dt: str = ""
     max_position_pct: float = 0.20
     max_positions: int = 5
 
@@ -75,6 +77,8 @@ class Portfolio:
             "positions": [asdict(p) for p in self.positions],
             "trades": [asdict(t) for t in self.trades],
             "seen_signals": self.seen_signals[-500:],
+            "last_signals": self.last_signals[-50:],
+            "last_scan_dt": self.last_scan_dt,
             "max_position_pct": self.max_position_pct,
             "max_positions": self.max_positions,
         }
@@ -90,6 +94,8 @@ class Portfolio:
             positions=[Position(**p) for p in data.get("positions", [])],
             trades=[ClosedTrade(**t) for t in data.get("trades", [])],
             seen_signals=data.get("seen_signals", []),
+            last_signals=data.get("last_signals", []),
+            last_scan_dt=data.get("last_scan_dt", ""),
             max_position_pct=data.get("max_position_pct", 0.20),
             max_positions=data.get("max_positions", 5),
         )
@@ -291,6 +297,9 @@ def run_loop(
 
         since = now - timedelta(hours=24)
         signals = scan_for_signals(detectors, since, min_severity=min_severity)
+
+        portfolio.last_signals = [s.to_dict() for s in signals]
+        portfolio.last_scan_dt = now.isoformat()
 
         new_signals = [
             s for s in signals
