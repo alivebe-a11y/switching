@@ -268,6 +268,20 @@ def check_exits(portfolio: Portfolio) -> list[ClosedTrade]:
     return closed
 
 
+_EDGAR_DETECTORS = {"activist_13d", "insider_cluster"}
+
+
+def _make_edgar_client() -> "EdgarClient | None":
+    """Create an EdgarClient if the env var is set, else return None."""
+    import os
+    ua = os.environ.get("SWITCHING_EDGAR_UA")
+    if not ua:
+        log.info("SWITCHING_EDGAR_UA not set — EDGAR-based detectors will be skipped")
+        return None
+    from switching.sources.sec_edgar import EdgarClient
+    return EdgarClient(user_agent=ua)
+
+
 def scan_for_signals(
     detectors: Sequence[str],
     since: datetime,
@@ -277,19 +291,29 @@ def scan_for_signals(
     from switching import registry
     registry.load_builtin_detectors()
 
+    edgar_client = None
+    if any(d in _EDGAR_DETECTORS for d in detectors):
+        edgar_client = _make_edgar_client()
+
     signals: list[Signal] = []
     seen: set[tuple[str, str, str]] = set()
     for name in detectors:
         cls = registry.get(name)
-        det = cls()
+        if name in _EDGAR_DETECTORS:
+            det = cls(client=edgar_client)
+        else:
+            det = cls()
         try:
+            count = 0
             for sig in det.scan(since):
+                count += 1
                 key = sig.dedup_key()
                 if key in seen:
                     continue
                 seen.add(key)
                 if sig.severity >= min_severity:
                     signals.append(sig)
+            log.info("detector %s produced %d signal(s)", name, count)
         except Exception as exc:
             log.warning("scan failed for %s: %s", name, exc)
     return signals

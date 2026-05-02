@@ -12,11 +12,14 @@ from switching.paper_trader import (
     ClosedTrade,
     Portfolio,
     Position,
+    _EDGAR_DETECTORS,
     _calendar_days_since,
     _exit_profile,
+    _make_edgar_client,
     _tiered_stop_loss,
     check_exits,
     open_position,
+    scan_for_signals,
 )
 
 
@@ -262,3 +265,38 @@ class TestOpenPositionProfiles:
             closed = check_exits(portfolio)
         assert len(closed) == 1
         assert closed[0].exit_reason == "first_green"
+
+
+class TestScanForSignals:
+    def test_edgar_client_created_when_env_var_set(self):
+        with patch.dict("os.environ", {"SWITCHING_EDGAR_UA": "test agent"}):
+            client = _make_edgar_client()
+        assert client is not None
+
+    def test_edgar_client_none_without_env_var(self):
+        with patch.dict("os.environ", {}, clear=True):
+            client = _make_edgar_client()
+        assert client is None
+
+    def test_edgar_detectors_set_is_correct(self):
+        assert "activist_13d" in _EDGAR_DETECTORS
+        assert "insider_cluster" in _EDGAR_DETECTORS
+        assert "ai_pivot" not in _EDGAR_DETECTORS
+
+    def test_scan_passes_client_to_edgar_detector(self):
+        """Verify activist_13d gets an EdgarClient instead of bare cls()."""
+        with patch("switching.paper_trader._make_edgar_client") as mock_make, \
+             patch("switching.registry.get") as mock_get:
+            mock_make.return_value = None
+            mock_cls = mock_get.return_value
+            mock_cls.return_value.scan.return_value = iter([])
+            scan_for_signals(["activist_13d"], datetime.now(tz=timezone.utc))
+            mock_cls.assert_called_once_with(client=None)
+
+    def test_scan_no_client_for_rss_detector(self):
+        """ai_pivot should be instantiated with no args."""
+        with patch("switching.registry.get") as mock_get:
+            mock_cls = mock_get.return_value
+            mock_cls.return_value.scan.return_value = iter([])
+            scan_for_signals(["ai_pivot"], datetime.now(tz=timezone.utc))
+            mock_cls.assert_called_once_with()
