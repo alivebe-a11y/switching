@@ -92,20 +92,11 @@ def create_app(state_path: Path | None = None) -> Flask:
 
     @app.route("/api/signals")
     def api_signals():
-        from switching.paper_trader import scan_for_signals
-        since = datetime.now(tz=timezone.utc) - timedelta(hours=24)
-        try:
-            signals = scan_for_signals(
-                ["earnings_surprise", "ai_pivot", "index_inclusion",
-                 "buyback", "insider_cluster", "activist_13d"],
-                since,
-            )
-            return jsonify({
-                "signals": [s.to_dict() for s in signals],
-                "scanned_at": datetime.now(tz=timezone.utc).isoformat(),
-            })
-        except Exception as exc:
-            return jsonify({"signals": [], "error": str(exc)})
+        p = Portfolio.load(_STATE_PATH)
+        return jsonify({
+            "signals": p.last_signals,
+            "scanned_at": p.last_scan_dt,
+        })
 
     @app.route("/api/equity-curve")
     def api_equity_curve():
@@ -306,11 +297,11 @@ tr:hover { background: rgba(255,255,255,0.02); }
 
   <div class="panel">
     <div class="panel-header">
-      <h2>Recent Signals (24h)</h2>
-      <button class="refresh-btn" onclick="loadSignals()">Scan Now</button>
+      <h2>Recent Signals</h2>
+      <span class="badge" id="signal-count">0</span>
     </div>
     <div id="signals-body">
-      <div class="empty-state">Click "Scan Now" to detect signals</div>
+      <div class="empty-state">Waiting for paper trader scan...</div>
     </div>
   </div>
 </div>
@@ -416,19 +407,18 @@ async function loadTrades() {
 }
 
 async function loadSignals() {
-  $('#signals-body').innerHTML = '<div class="empty-state">Scanning...</div>';
   try {
     const r = await fetch('/api/signals');
     const d = await r.json();
-    if (d.error) {
-      $('#signals-body').innerHTML = '<div class="empty-state">Error: ' + d.error + '</div>';
+    $('#signal-count').textContent = d.signals.length;
+    if (!d.signals || d.signals.length === 0) {
+      let scanInfo = d.scanned_at ? 'Last scan: ' + d.scanned_at.slice(0, 16).replace('T', ' ') + ' UTC' : 'Waiting for first scan...';
+      $('#signals-body').innerHTML = '<div class="empty-state">No signals detected. ' + scanInfo + '</div>';
       return;
     }
-    if (d.signals.length === 0) {
-      $('#signals-body').innerHTML = '<div class="empty-state">No signals found in last 24h</div>';
-      return;
-    }
-    let html = '<table><thead><tr><th>Ticker</th><th>Company</th><th>Detector</th><th>Severity</th><th>Headline</th><th>Time</th></tr></thead><tbody>';
+    let scanTime = d.scanned_at ? d.scanned_at.slice(0, 16).replace('T', ' ') : '';
+    let html = '<div style="padding:0.4rem 1rem;font-size:0.75rem;color:var(--dim)">Last scan: ' + scanTime + ' UTC</div>';
+    html += '<table><thead><tr><th>Ticker</th><th>Company</th><th>Detector</th><th>Severity</th><th>Headline</th><th>Time</th></tr></thead><tbody>';
     d.signals.forEach(s => {
       let w = Math.round(s.severity * 100);
       html += '<tr>';
@@ -443,13 +433,14 @@ async function loadSignals() {
     html += '</tbody></table>';
     $('#signals-body').innerHTML = html;
   } catch(e) {
-    $('#signals-body').innerHTML = '<div class="empty-state">Scan failed: ' + e.message + '</div>';
+    console.error('signals load failed', e);
   }
 }
 
 function refresh() {
   loadPortfolio();
   loadTrades();
+  loadSignals();
   $('#last-update').textContent = 'Updated ' + new Date().toLocaleTimeString();
 }
 

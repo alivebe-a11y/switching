@@ -169,6 +169,28 @@ class TestDashboard:
         assert data["points"][0]["value"] == 1000.0
         assert data["points"][1]["value"] == 1010.0
 
+    def test_signals_empty(self, client, portfolio_path):
+        _save_portfolio(portfolio_path)
+        r = client.get("/api/signals")
+        data = r.get_json()
+        assert data["signals"] == []
+
+    def test_signals_from_state(self, client, portfolio_path):
+        _save_portfolio(
+            portfolio_path,
+            last_signals=[
+                {"ticker": "AAPL", "detector": "ai_pivot", "severity": 0.85,
+                 "headline": "Apple AI", "company": "Apple", "event_dt": "2024-01-01",
+                 "url": "", "evidence": "", "extra": {}, "price_reaction": None},
+            ],
+            last_scan_dt="2024-01-01T12:00:00+00:00",
+        )
+        r = client.get("/api/signals")
+        data = r.get_json()
+        assert len(data["signals"]) == 1
+        assert data["signals"][0]["ticker"] == "AAPL"
+        assert data["scanned_at"] == "2024-01-01T12:00:00+00:00"
+
     def test_no_state_file(self, client):
         r = client.get("/api/portfolio")
         assert r.status_code == 200

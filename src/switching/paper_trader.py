@@ -34,6 +34,7 @@ class Position:
     hold_days: int
     days_held: int = 0
     first_green: bool = True
+    first_green_pct: float = 0.0
 
     @property
     def cost_basis(self) -> float:
@@ -61,6 +62,8 @@ class Portfolio:
     positions: list[Position] = field(default_factory=list)
     trades: list[ClosedTrade] = field(default_factory=list)
     seen_signals: list[str] = field(default_factory=list)
+    last_signals: list[dict] = field(default_factory=list)
+    last_scan_dt: str = ""
     max_position_pct: float = 0.20
     max_positions: int = 5
 
@@ -75,6 +78,8 @@ class Portfolio:
             "positions": [asdict(p) for p in self.positions],
             "trades": [asdict(t) for t in self.trades],
             "seen_signals": self.seen_signals[-500:],
+            "last_signals": self.last_signals[-50:],
+            "last_scan_dt": self.last_scan_dt,
             "max_position_pct": self.max_position_pct,
             "max_positions": self.max_positions,
         }
@@ -90,6 +95,8 @@ class Portfolio:
             positions=[Position(**p) for p in data.get("positions", [])],
             trades=[ClosedTrade(**t) for t in data.get("trades", [])],
             seen_signals=data.get("seen_signals", []),
+            last_signals=data.get("last_signals", []),
+            last_scan_dt=data.get("last_scan_dt", ""),
             max_position_pct=data.get("max_position_pct", 0.20),
             max_positions=data.get("max_positions", 5),
         )
@@ -131,12 +138,34 @@ def _signal_key(sig: Signal) -> str:
     return f"{sig.detector}:{sig.ticker}:{sig.event_dt.date().isoformat()}"
 
 
+def _tiered_stop_loss(base_stop: float, price: float) -> float:
+    """Widen stop-loss for volatile low-price stocks, tighten for large caps."""
+    if price >= 30.0:
+        return base_stop
+    if price >= 5.0:
+        return base_stop + 0.01
+    return base_stop + 0.02
+
+
+def _exit_profile(detector: str, price: float) -> dict:
+    """Return detector-specific exit parameters based on observed performance."""
+    if detector == "buyback":
+        return {"first_green": False, "first_green_pct": 0.0, "hold_days": 5}
+    if detector == "earnings_surprise":
+        return {"first_green": True, "first_green_pct": 0.0, "hold_days": 2}
+    if detector == "ai_pivot":
+        if price >= 30.0:
+            return {"first_green": True, "first_green_pct": 0.02, "hold_days": 5}
+        return {"first_green": True, "first_green_pct": 0.0, "hold_days": 3}
+    return {"first_green": True, "first_green_pct": 0.0, "hold_days": 5}
+
+
 def open_position(
     portfolio: Portfolio,
     signal: Signal,
     price: float,
     *,
-    stop_loss: float = 0.05,
+    stop_loss: float = 0.026,
     hold_days: int = 5,
 ) -> Position | None:
     if len(portfolio.positions) >= portfolio.max_positions:
@@ -157,6 +186,9 @@ def open_position(
     cost = shares * price
     portfolio.cash -= cost
 
+    actual_sl = _tiered_stop_loss(stop_loss, price)
+    profile = _exit_profile(signal.detector, price)
+
     pos = Position(
         ticker=signal.ticker,
         detector=signal.detector,
@@ -165,12 +197,23 @@ def open_position(
         entry_dt=datetime.now(tz=timezone.utc).isoformat(),
         headline=signal.headline,
         severity=signal.severity,
-        stop_loss=stop_loss,
-        hold_days=hold_days,
+        stop_loss=actual_sl,
+        hold_days=profile["hold_days"],
+        first_green=profile["first_green"],
+        first_green_pct=profile["first_green_pct"],
     )
     portfolio.positions.append(pos)
     portfolio.seen_signals.append(_signal_key(signal))
     return pos
+
+
+def _calendar_days_since(entry_dt_str: str) -> int:
+    """Calendar days between the position entry and now, rounded down."""
+    entry = datetime.fromisoformat(entry_dt_str.replace("Z", "+00:00"))
+    if entry.tzinfo is None:
+        entry = entry.replace(tzinfo=timezone.utc)
+    now = datetime.now(tz=timezone.utc)
+    return (now.date() - entry.date()).days
 
 
 def check_exits(portfolio: Portfolio) -> list[ClosedTrade]:
@@ -188,12 +231,14 @@ def check_exits(portfolio: Portfolio) -> list[ClosedTrade]:
         ret_low = data["low"] / pos.entry_price - 1.0
         reason = None
 
+        days_elapsed = _calendar_days_since(pos.entry_dt)
+
         if ret_low <= -pos.stop_loss:
             reason = "stop_loss"
             price = pos.entry_price * (1.0 - pos.stop_loss)
-        elif pos.first_green and ret > 0:
+        elif pos.first_green and ret >= pos.first_green_pct:
             reason = "first_green"
-        elif pos.days_held >= pos.hold_days:
+        elif days_elapsed >= pos.hold_days:
             reason = "hold_expiry"
 
         if reason:
@@ -216,7 +261,7 @@ def check_exits(portfolio: Portfolio) -> list[ClosedTrade]:
             portfolio.trades.append(trade)
             closed.append(trade)
         else:
-            pos.days_held += 1
+            pos.days_held = days_elapsed
             remaining.append(pos)
 
     portfolio.positions = remaining
@@ -280,6 +325,9 @@ def run_loop(
 
         since = now - timedelta(hours=24)
         signals = scan_for_signals(detectors, since, min_severity=min_severity)
+
+        portfolio.last_signals = [s.to_dict() for s in signals]
+        portfolio.last_scan_dt = now.isoformat()
 
         new_signals = [
             s for s in signals
@@ -380,7 +428,7 @@ def run_loop_alpaca(
             color = "green" if ret >= 0 else "red"
 
             tracker = next((t for t in portfolio.positions if t.ticker == p.ticker), None)
-            days = tracker.days_held if tracker else 0
+            days = _calendar_days_since(tracker.entry_dt) if tracker else 0
 
             should_sell = False
             reason = ""
@@ -417,7 +465,7 @@ def run_loop_alpaca(
                     console.print(f"  [red]SELL FAILED {p.ticker}: {exc}[/red]")
             else:
                 if tracker:
-                    tracker.days_held += 1
+                    tracker.days_held = days
                 console.print(f"    {p.ticker}: {p.qty} shares @ ${p.avg_entry_price:.2f} [{color}]{ret*100:+.1f}%[/{color}] day {days}/{hold_days}")
 
         since = now - timedelta(hours=24)

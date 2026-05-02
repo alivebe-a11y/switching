@@ -21,7 +21,7 @@ services:
     volumes:
       - switching-cache:/app/.cache
     entrypoint: ["switching"]
-    command: ["paper-trade", "--seed", "1000", "--interval", "30", "--stop-loss", "0.05", "--hold-days", "5"]
+    command: ["paper-trade", "--seed", "1000", "--interval", "10", "--stop-loss", "0.026", "--hold-days", "5"]
     restart: unless-stopped
 
   trade:

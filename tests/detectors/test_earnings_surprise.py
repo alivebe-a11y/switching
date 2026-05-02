@@ -112,3 +112,50 @@ def test_severity_capped_at_095():
     )
     assert m is not None
     assert m["severity"] <= 0.95
+
+
+def test_classify_reports_record_revenue():
+    m = classify(
+        "Acme Corp (NYSE: ACM) Reports Record Revenue for Q1 2026",
+        "",
+    )
+    assert m is not None
+    assert m["direction"] == "beat"
+    assert m["severity"] >= 0.70
+
+
+def test_classify_reports_results_raises_guidance():
+    m = classify(
+        "XYZ Inc Reports First Quarter 2026 Results and Raises Full-Year Guidance",
+        "",
+    )
+    assert m is not None
+    assert m["direction"] == "beat"
+    assert m["severity"] >= 0.65
+
+
+def test_classify_record_earnings():
+    m = classify(
+        "ABC Corp Reports Record Earnings and Increases Guidance",
+        "",
+    )
+    assert m is not None
+    assert m["direction"] == "beat"
+
+
+def test_classify_quarterly_results_no_signal():
+    """Bare 'reports results' without record/raises should not match."""
+    m = classify(
+        "Acme Corp Reports Third Quarter 2026 Results",
+        "",
+    )
+    assert m is None
+
+
+def test_classify_all_time_high_revenue():
+    m = classify(
+        "BigCo Achieves All-Time High Revenue of $5.2 Billion",
+        "",
+    )
+    assert m is not None
+    assert m["direction"] == "beat"
