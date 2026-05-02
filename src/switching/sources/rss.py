@@ -19,6 +19,19 @@ DEFAULT_FEEDS: tuple[str, ...] = (
     "https://www.globenewswire.com/RssFeed/industry/9576-Technology/feedTitle/GlobeNewswire%20-%20Technology",
 )
 
+EARNINGS_FEEDS: tuple[str, ...] = (
+    # PR Newswire — financial services / earnings
+    "https://www.prnewswire.com/rss/financial-services-latest-news/financial-services-latest-news-list.rss",
+    # BusinessWire — financial
+    "https://feed.businesswire.com/rss/home/?rss=G1QFDERJXkJeGVpSWA==",
+    # GlobeNewswire — financial services
+    "https://www.globenewswire.com/RssFeed/industry/9531-Financial%20Services/feedTitle/GlobeNewswire%20-%20Financial%20Services",
+    # PR Newswire — all general news (catches cross-sector earnings)
+    "https://www.prnewswire.com/rss/news-releases-list.rss",
+    # GlobeNewswire — all news
+    "https://www.globenewswire.com/RssFeed/feedTitle/GlobeNewswire%20-%20All%20News",
+)
+
 # "NASDAQ: BIRD", "NYSE:ABC", "(OTC: FOOB)" — capture the ticker code.
 _TICKER_RX = re.compile(
     r"\b(?:NASDAQ|NYSE|NYSE\s*American|AMEX|OTC|OTCQB|OTCQX|TSX|CBOE)\s*[:\-]\s*([A-Z][A-Z0-9\.\-]{0,6})\b"

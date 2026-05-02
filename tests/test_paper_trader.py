@@ -13,6 +13,7 @@ from switching.paper_trader import (
     Portfolio,
     Position,
     _calendar_days_since,
+    _tiered_stop_loss,
     check_exits,
 )
 
@@ -131,3 +132,23 @@ class TestCheckExits:
         ):
             check_exits(portfolio)
         assert portfolio.positions[0].days_held == 3
+
+
+class TestTieredStopLoss:
+    def test_large_cap_uses_base(self):
+        assert _tiered_stop_loss(0.026, 150.0) == 0.026
+
+    def test_mid_price_adds_1pct(self):
+        assert abs(_tiered_stop_loss(0.026, 15.0) - 0.036) < 0.0001
+
+    def test_penny_stock_adds_2pct(self):
+        assert abs(_tiered_stop_loss(0.026, 2.50) - 0.046) < 0.0001
+
+    def test_boundary_30_is_tight(self):
+        assert _tiered_stop_loss(0.026, 30.0) == 0.026
+
+    def test_boundary_5_is_mid(self):
+        assert abs(_tiered_stop_loss(0.026, 5.0) - 0.036) < 0.0001
+
+    def test_boundary_below_5_is_wide(self):
+        assert abs(_tiered_stop_loss(0.026, 4.99) - 0.046) < 0.0001

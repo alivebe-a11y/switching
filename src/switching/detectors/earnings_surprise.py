@@ -44,6 +44,18 @@ _GUIDES_LOWER_RX = re.compile(
 _EPS_VS_RX = re.compile(
     r"(?i)(?:EPS|earnings)\s+(?:of\s+)?\$(\d+(?:\.\d+)?)\s+vs\.?\s+(?:consensus\s+|expected\s+)?\$(\d+(?:\.\d+)?)"
 )
+_RESULTS_RX = re.compile(
+    r"(?i)(?:reports?\s+(?:first|second|third|fourth|1st|2nd|3rd|4th|q[1-4])\s+"
+    r"(?:quarter|fiscal)\s+\d{4}\s+(?:results|earnings|financial))"
+)
+_RECORD_RX = re.compile(
+    r"(?i)(?:record\s+(?:revenue|earnings|results|quarter|net\s+income|EPS)"
+    r"|all[- ]time\s+high\s+(?:revenue|earnings))"
+)
+_RAISES_GUIDANCE_RX = re.compile(
+    r"(?i)(?:raises?\s+(?:full[- ]year|annual|FY|guidance|outlook)"
+    r"|increases?\s+(?:guidance|outlook)|upward\s+revision)"
+)
 
 
 @register
@@ -58,7 +70,8 @@ class EarningsSurpriseDetector(Detector):
         self._feeds = feeds
 
     def scan(self, since: datetime) -> Iterable[Signal]:
-        items = rss.fetch(self._feeds or rss.DEFAULT_FEEDS, since=since)
+        feeds = self._feeds or (rss.DEFAULT_FEEDS + rss.EARNINGS_FEEDS)
+        items = rss.fetch(feeds, since=since)
         for item in items:
             match = classify(item.title, item.summary)
             if match is None:
@@ -89,8 +102,11 @@ def classify(title: str, summary: str = "") -> dict | None:
     beat = _BEAT_RX.search(text)
     miss = _MISS_RX.search(text)
     eps_vs = _EPS_VS_RX.search(text)
+    results = _RESULTS_RX.search(text)
+    record = _RECORD_RX.search(text)
+    raises = _RAISES_GUIDANCE_RX.search(text)
 
-    if not (beat or miss or eps_vs):
+    if not (beat or miss or eps_vs or record or (results and raises)):
         return None
 
     if eps_vs and not beat and not miss:
@@ -106,8 +122,14 @@ def classify(title: str, summary: str = "") -> dict | None:
         direction = "beat"
     elif miss and not beat:
         direction = "miss"
-    else:
+    elif record:
+        direction = "beat"
+    elif results and raises:
+        direction = "beat"
+    elif beat and miss:
         direction = "beat" if beat.start() < miss.start() else "miss"
+    else:
+        return None
 
     magnitude = None
     if eps_vs:
@@ -122,6 +144,10 @@ def classify(title: str, summary: str = "") -> dict | None:
             severity += 0.15
         if _REVENUE_BEAT_RX.search(text):
             severity += 0.10
+        if record:
+            severity += 0.10
+        if raises:
+            severity += 0.05
     else:
         severity = 0.55
         if _GUIDES_LOWER_RX.search(text):
@@ -129,7 +155,7 @@ def classify(title: str, summary: str = "") -> dict | None:
 
     severity = min(severity, 0.95)
 
-    key_match = beat or miss or eps_vs
+    key_match = beat or miss or eps_vs or record or results
     return {
         "direction": direction,
         "severity": round(severity, 3),

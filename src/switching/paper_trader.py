@@ -137,12 +137,21 @@ def _signal_key(sig: Signal) -> str:
     return f"{sig.detector}:{sig.ticker}:{sig.event_dt.date().isoformat()}"
 
 
+def _tiered_stop_loss(base_stop: float, price: float) -> float:
+    """Widen stop-loss for volatile low-price stocks, tighten for large caps."""
+    if price >= 30.0:
+        return base_stop
+    if price >= 5.0:
+        return base_stop + 0.01
+    return base_stop + 0.02
+
+
 def open_position(
     portfolio: Portfolio,
     signal: Signal,
     price: float,
     *,
-    stop_loss: float = 0.05,
+    stop_loss: float = 0.026,
     hold_days: int = 5,
 ) -> Position | None:
     if len(portfolio.positions) >= portfolio.max_positions:
@@ -163,6 +172,8 @@ def open_position(
     cost = shares * price
     portfolio.cash -= cost
 
+    actual_sl = _tiered_stop_loss(stop_loss, price)
+
     pos = Position(
         ticker=signal.ticker,
         detector=signal.detector,
@@ -171,7 +182,7 @@ def open_position(
         entry_dt=datetime.now(tz=timezone.utc).isoformat(),
         headline=signal.headline,
         severity=signal.severity,
-        stop_loss=stop_loss,
+        stop_loss=actual_sl,
         hold_days=hold_days,
     )
     portfolio.positions.append(pos)
