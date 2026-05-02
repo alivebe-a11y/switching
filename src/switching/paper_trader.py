@@ -34,6 +34,7 @@ class Position:
     hold_days: int
     days_held: int = 0
     first_green: bool = True
+    first_green_pct: float = 0.0
 
     @property
     def cost_basis(self) -> float:
@@ -146,6 +147,19 @@ def _tiered_stop_loss(base_stop: float, price: float) -> float:
     return base_stop + 0.02
 
 
+def _exit_profile(detector: str, price: float) -> dict:
+    """Return detector-specific exit parameters based on observed performance."""
+    if detector == "buyback":
+        return {"first_green": False, "first_green_pct": 0.0, "hold_days": 5}
+    if detector == "earnings_surprise":
+        return {"first_green": True, "first_green_pct": 0.0, "hold_days": 2}
+    if detector == "ai_pivot":
+        if price >= 30.0:
+            return {"first_green": True, "first_green_pct": 0.02, "hold_days": 5}
+        return {"first_green": True, "first_green_pct": 0.0, "hold_days": 3}
+    return {"first_green": True, "first_green_pct": 0.0, "hold_days": 5}
+
+
 def open_position(
     portfolio: Portfolio,
     signal: Signal,
@@ -173,6 +187,7 @@ def open_position(
     portfolio.cash -= cost
 
     actual_sl = _tiered_stop_loss(stop_loss, price)
+    profile = _exit_profile(signal.detector, price)
 
     pos = Position(
         ticker=signal.ticker,
@@ -183,7 +198,9 @@ def open_position(
         headline=signal.headline,
         severity=signal.severity,
         stop_loss=actual_sl,
-        hold_days=hold_days,
+        hold_days=profile["hold_days"],
+        first_green=profile["first_green"],
+        first_green_pct=profile["first_green_pct"],
     )
     portfolio.positions.append(pos)
     portfolio.seen_signals.append(_signal_key(signal))
@@ -219,7 +236,7 @@ def check_exits(portfolio: Portfolio) -> list[ClosedTrade]:
         if ret_low <= -pos.stop_loss:
             reason = "stop_loss"
             price = pos.entry_price * (1.0 - pos.stop_loss)
-        elif pos.first_green and ret > 0:
+        elif pos.first_green and ret >= pos.first_green_pct:
             reason = "first_green"
         elif days_elapsed >= pos.hold_days:
             reason = "hold_expiry"

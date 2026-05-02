@@ -13,8 +13,10 @@ from switching.paper_trader import (
     Portfolio,
     Position,
     _calendar_days_since,
+    _exit_profile,
     _tiered_stop_loss,
     check_exits,
+    open_position,
 )
 
 
@@ -152,3 +154,111 @@ class TestTieredStopLoss:
 
     def test_boundary_below_5_is_wide(self):
         assert abs(_tiered_stop_loss(0.026, 4.99) - 0.046) < 0.0001
+
+
+class TestExitProfile:
+    def test_buyback_no_first_green(self):
+        p = _exit_profile("buyback", 50.0)
+        assert p["first_green"] is False
+        assert p["hold_days"] == 5
+
+    def test_earnings_surprise_short_hold(self):
+        p = _exit_profile("earnings_surprise", 100.0)
+        assert p["first_green"] is True
+        assert p["hold_days"] == 2
+
+    def test_ai_pivot_large_cap_needs_2pct(self):
+        p = _exit_profile("ai_pivot", 50.0)
+        assert p["first_green"] is True
+        assert p["first_green_pct"] == 0.02
+        assert p["hold_days"] == 5
+
+    def test_ai_pivot_penny_stock_quick_exit(self):
+        p = _exit_profile("ai_pivot", 10.0)
+        assert p["first_green"] is True
+        assert p["first_green_pct"] == 0.0
+        assert p["hold_days"] == 3
+
+    def test_ai_pivot_boundary_30(self):
+        p = _exit_profile("ai_pivot", 30.0)
+        assert p["first_green_pct"] == 0.02
+
+    def test_ai_pivot_below_30(self):
+        p = _exit_profile("ai_pivot", 29.99)
+        assert p["first_green_pct"] == 0.0
+        assert p["hold_days"] == 3
+
+    def test_unknown_detector_defaults(self):
+        p = _exit_profile("some_future_detector", 100.0)
+        assert p["first_green"] is True
+        assert p["first_green_pct"] == 0.0
+        assert p["hold_days"] == 5
+
+
+class TestOpenPositionProfiles:
+    def _make_signal(self, detector: str, ticker: str = "TEST"):
+        from switching.signal import Signal
+        return Signal(
+            detector=detector,
+            ticker=ticker,
+            company="Test Corp",
+            event_dt=datetime.now(tz=timezone.utc),
+            headline="Test headline",
+            url="",
+            evidence="test",
+            severity=0.8,
+        )
+
+    def test_buyback_position_no_first_green(self):
+        portfolio = Portfolio(cash=1000.0)
+        sig = self._make_signal("buyback")
+        pos = open_position(portfolio, sig, 50.0)
+        assert pos is not None
+        assert pos.first_green is False
+        assert pos.hold_days == 5
+
+    def test_ai_pivot_large_cap_gets_2pct_threshold(self):
+        portfolio = Portfolio(cash=1000.0)
+        sig = self._make_signal("ai_pivot")
+        pos = open_position(portfolio, sig, 50.0)
+        assert pos is not None
+        assert pos.first_green is True
+        assert pos.first_green_pct == 0.02
+
+    def test_earnings_surprise_gets_2day_hold(self):
+        portfolio = Portfolio(cash=1000.0)
+        sig = self._make_signal("earnings_surprise")
+        pos = open_position(portfolio, sig, 100.0)
+        assert pos is not None
+        assert pos.hold_days == 2
+        assert pos.first_green is True
+
+    def test_first_green_pct_prevents_early_exit(self):
+        """A +1% return should NOT trigger first_green when threshold is 2%."""
+        now = datetime.now(tz=timezone.utc)
+        portfolio = Portfolio(
+            cash=800.0,
+            positions=[_make_position(now, first_green=True, first_green_pct=0.02)],
+        )
+        with patch(
+            "switching.paper_trader.get_intraday_data",
+            return_value={"open": 100.0, "high": 101.5, "low": 99.5, "close": 101.0},
+        ):
+            closed = check_exits(portfolio)
+        assert closed == []
+        assert len(portfolio.positions) == 1
+
+    def test_first_green_pct_triggers_at_threshold(self):
+        """A +2% return SHOULD trigger first_green when threshold is 2%."""
+        now = datetime.now(tz=timezone.utc)
+        portfolio = Portfolio(
+            cash=800.0,
+            positions=[_make_position(now, first_green=True, first_green_pct=0.02)],
+        )
+        with patch(
+            "switching.paper_trader.get_intraday_data",
+            return_value={"open": 100.0, "high": 103.0, "low": 99.5, "close": 102.0},
+        ):
+            closed = check_exits(portfolio)
+        assert len(closed) == 1
+        assert closed[0].exit_reason == "first_green"
