@@ -1,0 +1,108 @@
+"""Tests for AI signal filter (Haiku scoring)."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+from switching.ai_filter import score_signal, score_signals
+
+
+@dataclass
+class FakeSignal:
+    headline: str
+    detector: str
+    ticker: str
+    severity: float
+    evidence: str
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+class TestScoreSignal:
+    def test_returns_none_without_api_key(self):
+        with patch.dict("os.environ", {}, clear=True):
+            result = score_signal("headline", "ai_pivot", "AAPL", 0.8, "evidence")
+        assert result is None
+
+    def test_returns_score_with_mock_client(self):
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text='{"score": 0.85, "reasoning": "Strong catalyst"}')]
+
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = mock_response
+
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}), \
+             patch("switching.ai_filter._get_client", return_value=mock_client):
+            result = score_signal("NVDA beats estimates", "earnings_surprise", "NVDA", 0.8, "evidence")
+
+        assert result is not None
+        assert result["score"] == 0.85
+        assert "Strong catalyst" in result["reasoning"]
+
+    def test_score_clamped_to_0_1(self):
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text='{"score": 1.5, "reasoning": "test"}')]
+
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = mock_response
+
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}), \
+             patch("switching.ai_filter._get_client", return_value=mock_client):
+            result = score_signal("headline", "ai_pivot", "TEST", 0.5, "evidence")
+
+        assert result["score"] == 1.0
+
+    def test_handles_api_error(self):
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = Exception("API error")
+
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}), \
+             patch("switching.ai_filter._get_client", return_value=mock_client):
+            result = score_signal("headline", "ai_pivot", "TEST", 0.5, "evidence")
+
+        assert result is None
+
+    def test_includes_memory_context(self):
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text='{"score": 0.7, "reasoning": "ok"}')]
+
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = mock_response
+
+        memory = {
+            "total_trades": 10,
+            "by_detector": {
+                "ai_pivot": {"trades": 5, "win_rate": 0.6, "avg_return": 0.01}
+            },
+            "patterns": ["ai_pivot: moderate performer"],
+        }
+
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}), \
+             patch("switching.ai_filter._get_client", return_value=mock_client):
+            result = score_signal("headline", "ai_pivot", "TEST", 0.5, "evidence", memory=memory)
+
+        call_args = mock_client.messages.create.call_args
+        prompt = call_args[1]["messages"][0]["content"]
+        assert "60%" in prompt
+        assert "moderate performer" in prompt
+
+
+class TestScoreSignals:
+    def test_no_op_without_api_key(self):
+        signals = [FakeSignal("test", "ai_pivot", "AAPL", 0.8, "evidence")]
+        with patch.dict("os.environ", {}, clear=True):
+            result = score_signals(signals)
+        assert result is signals
+        assert "ai_score" not in signals[0].extra
+
+    def test_adds_score_to_extra(self):
+        signals = [FakeSignal("test", "ai_pivot", "AAPL", 0.8, "evidence")]
+
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}), \
+             patch("switching.ai_filter.score_signal", return_value={"score": 0.9, "reasoning": "good"}):
+            result = score_signals(signals)
+
+        assert result[0].extra["ai_score"] == 0.9
+        assert result[0].extra["ai_reasoning"] == "good"

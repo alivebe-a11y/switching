@@ -74,12 +74,25 @@ def scan(
     since_dt = _parse_since(since)
     cache = PriceCache()
 
+    edgar_client = None
+    edgar_names = {"activist_13d", "insider_cluster"}
+    if any(n in edgar_names for n in names):
+        import os
+        if os.environ.get("SWITCHING_EDGAR_UA"):
+            from switching.sources.sec_edgar import EdgarClient
+            edgar_client = EdgarClient()
+
     collected = []
     seen: set[tuple[str, str, str]] = set()
     for name in names:
         cls = registry.get(name)
-        det = cls()
+        if name in edgar_names:
+            det = cls(client=edgar_client)
+        else:
+            det = cls()
+        count = 0
         for sig in det.scan(since_dt):
+            count += 1
             key = sig.dedup_key()
             if key in seen:
                 continue
@@ -88,6 +101,7 @@ def scan(
                 continue
             reaction = get_reaction(sig.ticker, sig.event_dt, hold_days=hold_days, cache=cache)
             collected.append(sig.with_reaction(reaction))
+        console.print(f"[dim]{name}: {count} signal(s)[/dim]")
 
     collected = rank(collected)
     render_table(collected, console=console)
@@ -354,6 +368,54 @@ def paper_status(
                 t.headline[:50],
             )
         console.print(trade_table)
+
+
+@app.command("check-feeds")
+def check_feeds() -> None:
+    """Diagnostic: test RSS feed connectivity and report item counts."""
+    import feedparser
+    from switching.sources import rss
+
+    all_feeds = {
+        "DEFAULT_FEEDS": rss.DEFAULT_FEEDS,
+        "EARNINGS_FEEDS": rss.EARNINGS_FEEDS,
+        "CORPORATE_FEEDS": rss.CORPORATE_FEEDS,
+    }
+    total_ok = 0
+    total_fail = 0
+    for group_name, urls in all_feeds.items():
+        console.print(f"\n[bold]{group_name}[/bold]")
+        for url in urls:
+            short = url.split("/")[-1][:60] if "/" in url else url[:60]
+            try:
+                parsed = feedparser.parse(url)
+                n = len(parsed.entries)
+                if n > 0:
+                    console.print(f"  [green]OK[/green] {short}: {n} items")
+                    total_ok += 1
+                else:
+                    console.print(f"  [yellow]EMPTY[/yellow] {short}: 0 items")
+                    total_fail += 1
+            except Exception as exc:
+                console.print(f"  [red]FAIL[/red] {short}: {exc}")
+                total_fail += 1
+
+    import os
+    ua = os.environ.get("SWITCHING_EDGAR_UA")
+    console.print(f"\n[bold]EDGAR[/bold]")
+    if ua:
+        console.print(f"  SWITCHING_EDGAR_UA = {ua!r}")
+        try:
+            from switching.sources.sec_edgar import EdgarClient
+            client = EdgarClient()
+            ticker = client.ticker_for_cik("320193")
+            console.print(f"  [green]OK[/green] CIK 320193 → {ticker}")
+        except Exception as exc:
+            console.print(f"  [red]FAIL[/red] {exc}")
+    else:
+        console.print("  [yellow]SWITCHING_EDGAR_UA not set — EDGAR detectors disabled[/yellow]")
+
+    console.print(f"\n[bold]Summary:[/bold] {total_ok} feeds OK, {total_fail} failed/empty")
 
 
 @app.command("web")

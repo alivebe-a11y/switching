@@ -6,7 +6,7 @@ COPY pyproject.toml README.md ./
 COPY src/ src/
 COPY data/ data/
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[ai]"
 
 ENTRYPOINT ["switching"]
 CMD ["list-detectors"]

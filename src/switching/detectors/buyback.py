@@ -52,7 +52,9 @@ class BuybackDetector(Detector):
         self._feeds = feeds
 
     def scan(self, since: datetime) -> Iterable[Signal]:
-        items = rss.fetch(self._feeds or rss.DEFAULT_FEEDS, since=since)
+        feeds = self._feeds or (rss.DEFAULT_FEEDS + rss.CORPORATE_FEEDS)
+        items = rss.fetch(feeds, since=since)
+        log.info("buyback: scanned %d RSS items", len(items))
         for item in items:
             match = classify(item.title, item.summary)
             if match is None:
