@@ -350,6 +350,18 @@ def run_loop(
         since = now - timedelta(hours=24)
         signals = scan_for_signals(detectors, since, min_severity=min_severity)
 
+        from switching.trade_memory import load_memory, update_memory
+        from switching.ai_filter import score_signals
+
+        memory_path = state_path.parent / "trade_memory.json"
+        if portfolio.trades:
+            memory = update_memory(portfolio.trades, memory_path)
+        else:
+            memory = load_memory(memory_path)
+
+        if signals:
+            signals = score_signals(signals, memory=memory)
+
         portfolio.last_signals = [s.to_dict() for s in signals]
         portfolio.last_scan_dt = now.isoformat()
 
