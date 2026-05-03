@@ -335,7 +335,20 @@ def run_loop(
         portfolio.cash = seed_cash
 
     from rich.console import Console
+    from switching import notifications
     console = Console()
+
+    if notifications.is_configured():
+        notifications.notify_startup(
+            cash=portfolio.cash,
+            portfolio_value=portfolio.total_value,
+            open_positions=len(portfolio.positions),
+            total_trades=len(portfolio.trades),
+            detectors=list(detectors),
+            scan_interval=scan_interval_minutes,
+        )
+
+    last_summary_date = ""
 
     while True:
         now = datetime.now(tz=timezone.utc)
@@ -346,6 +359,14 @@ def run_loop(
         for t in closed:
             color = "green" if t.pnl >= 0 else "red"
             console.print(f"  [{color}]CLOSED {t.ticker} {t.exit_reason}: {t.pct_return*100:+.2f}% (${t.pnl:+.2f})[/{color}]")
+            notifications.notify_sell(
+                ticker=t.ticker,
+                exit_price=t.exit_price,
+                pnl=t.pnl,
+                pct_return=t.pct_return,
+                exit_reason=t.exit_reason,
+                detector=t.detector,
+            )
 
         since = now - timedelta(hours=24)
         signals = scan_for_signals(detectors, since, min_severity=min_severity)
@@ -376,6 +397,7 @@ def run_loop(
             price = get_current_price(sig.ticker)
             if price is None:
                 console.print(f"  [yellow]SKIP {sig.ticker}: no price available[/yellow]")
+                notifications.notify_skip(sig.ticker, "no price available", sig.detector, sig.headline)
                 portfolio.seen_signals.append(_signal_key(sig))
                 continue
             pos = open_position(portfolio, sig, price, stop_loss=stop_loss, hold_days=hold_days)
@@ -385,6 +407,19 @@ def run_loop(
                     f"x {pos.shares:.4f} shares (${pos.cost_basis:.2f}) "
                     f"— {sig.detector}: {sig.headline[:60]}[/cyan]"
                 )
+                notifications.notify_buy(
+                    ticker=pos.ticker,
+                    price=pos.entry_price,
+                    shares=pos.shares,
+                    cost=pos.cost_basis,
+                    detector=sig.detector,
+                    headline=sig.headline,
+                    severity=sig.severity,
+                    ai_score=sig.extra.get("ai_score"),
+                )
+            elif pos is None and price is not None:
+                reason = "max positions" if len(portfolio.positions) >= portfolio.max_positions else "already holding or insufficient cash"
+                notifications.notify_skip(sig.ticker, reason, sig.detector, sig.headline)
 
         if portfolio.positions:
             console.print("  [dim]Open positions:[/dim]")
@@ -403,6 +438,30 @@ def run_loop(
             wr = wins / total * 100
             total_pnl = sum(t.pnl for t in portfolio.trades)
             console.print(f"  [dim]History: {total} trades, {wins} wins ({wr:.0f}%), total P&L: ${total_pnl:+.2f}[/dim]")
+
+        today_str = now.strftime("%Y-%m-%d")
+        market_closed = now.hour >= 21
+        if market_closed and today_str != last_summary_date:
+            last_summary_date = today_str
+            todays_trades = [
+                {"ticker": t.ticker, "pnl": t.pnl, "pct_return": t.pct_return, "exit_reason": t.exit_reason}
+                for t in portfolio.trades
+                if t.exit_dt.startswith(today_str)
+            ]
+            wins = sum(1 for t in portfolio.trades if t.pnl > 0)
+            total_pnl = sum(t.pnl for t in portfolio.trades)
+            notifications.notify_daily_summary(
+                cash=portfolio.cash,
+                portfolio_value=portfolio.total_value,
+                positions=[
+                    {"ticker": p.ticker, "entry_price": p.entry_price, "days_held": p.days_held, "hold_days": p.hold_days}
+                    for p in portfolio.positions
+                ],
+                todays_trades=todays_trades,
+                total_trades=len(portfolio.trades),
+                total_wins=wins,
+                total_pnl=total_pnl,
+            )
 
         portfolio.save(state_path)
 
