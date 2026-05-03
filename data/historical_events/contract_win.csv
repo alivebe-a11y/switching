@@ -1,0 +1,13 @@
+event_dt,ticker,company,headline,url,evidence,severity
+2022-03-15,LMT,Lockheed Martin,Lockheed Martin Awarded $3.7 Billion DoD Contract for F-35 Production,,Lockheed Martin awarded $3.7 billion DoD contract,0.90
+2022-07-20,RTX,RTX,Raytheon Receives $2.4 Billion U.S. Army Contract for Patriot Missiles,,Raytheon receives $2.4 billion Army contract,0.90
+2022-10-05,NOC,Northrop Grumman,Northrop Grumman Wins $5.6 Billion Multi-Year Contract for B-21 Raider,,Northrop Grumman wins $5.6 billion multi-year contract,0.95
+2023-01-25,PLTR,Palantir,Palantir Secures $463 Million U.S. Army Contract for Data Analytics,,Palantir secures $463 million Army contract,0.85
+2023-04-10,GD,General Dynamics,General Dynamics Awarded $1.1 Billion Navy Contract for Submarines,,General Dynamics awarded $1.1 billion Navy contract,0.90
+2023-06-28,LDOS,Leidos,Leidos Wins $650 Million Department of Veterans Affairs Contract,,Leidos wins $650 million VA contract,0.80
+2023-09-14,BA,Boeing,Boeing Receives $1.6 Billion NASA Contract for Space Launch System,,Boeing receives $1.6 billion NASA contract,0.85
+2023-12-05,MSFT,Microsoft,Microsoft Awarded $10 Billion Pentagon Cloud Computing Contract,,Microsoft awarded $10 billion Pentagon contract,0.95
+2024-02-20,LHX,L3Harris,L3Harris Secures $900 Million Multi-Year DoD Contract for Radios,,L3Harris secures $900 million multi-year DoD contract,0.85
+2024-05-08,RKLB,Rocket Lab,Rocket Lab Wins $515 Million Space Force Contract for Launch Services,,Rocket Lab wins $515 million Space Force contract,0.85
+2024-08-12,HII,Huntington Ingalls,Huntington Ingalls Awarded $2.2 Billion Contract for Aircraft Carrier Work,,Huntington Ingalls awarded $2.2 billion contract,0.90
+2024-11-01,BWXT,BWX Technologies,BWX Technologies Receives $800M Department of Energy Contract for Naval Reactors,,BWX Technologies receives $800M DoE contract,0.85

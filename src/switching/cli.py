@@ -237,6 +237,7 @@ _DEFAULT_DETECTORS = [
     "earnings_surprise", "ai_pivot", "index_inclusion",
     "buyback", "insider_cluster", "activist_13d",
     "analyst_upgrade", "fda_decision",
+    "mna_target", "guidance_raise", "dividend_surprise", "contract_win",
 ]
 
 
