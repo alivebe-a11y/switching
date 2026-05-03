@@ -157,6 +157,10 @@ def _exit_profile(detector: str, price: float) -> dict:
         if price >= 30.0:
             return {"first_green": True, "first_green_pct": 0.02, "hold_days": 5}
         return {"first_green": True, "first_green_pct": 0.0, "hold_days": 3}
+    if detector == "fda_decision":
+        return {"first_green": True, "first_green_pct": 0.03, "hold_days": 3}
+    if detector == "analyst_upgrade":
+        return {"first_green": True, "first_green_pct": 0.01, "hold_days": 3}
     return {"first_green": True, "first_green_pct": 0.0, "hold_days": 5}
 
 
