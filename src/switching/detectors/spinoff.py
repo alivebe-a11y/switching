@@ -55,14 +55,17 @@ class SpinoffDetector(Detector):
     def scan(self, since: datetime) -> Iterable[Signal]:
         feeds = self._feeds or (rss.DEFAULT_FEEDS + rss.CORPORATE_FEEDS)
         items = rss.fetch(feeds, since=since)
-        log.info("spinoff: scanned %d RSS items", len(items))
+        classified = 0
+        with_ticker = 0
         for item in items:
             match = classify(item.title, item.summary)
             if match is None:
                 continue
+            classified += 1
             ticker = item.extract_ticker()
             if not ticker:
                 continue
+            with_ticker += 1
             yield Signal(
                 detector=self.name,
                 ticker=ticker,
@@ -74,6 +77,10 @@ class SpinoffDetector(Detector):
                 severity=match["severity"],
                 extra={"spinoff_type": match["type"]},
             )
+        log.info(
+            "%s: %d items, %d classified, %d with ticker",
+            self.name, len(items), classified, with_ticker,
+        )
 
 
 def classify(title: str, summary: str = "") -> dict | None:

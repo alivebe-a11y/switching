@@ -65,7 +65,10 @@ class FeedItem:
 
     def extract_ticker(self) -> str | None:
         match = _TICKER_RX.search(self.text)
-        return match.group(1) if match else None
+        if match:
+            return match.group(1)
+        from switching.sources.ticker_lookup import lookup_ticker
+        return lookup_ticker(self.text)
 
 
 def _coerce_dt(entry: feedparser.FeedParserDict) -> datetime:

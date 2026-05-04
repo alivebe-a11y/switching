@@ -1,10 +1,10 @@
 """Paper-trading engine.
 
 Runs a continuous loop: scan for signals, open positions at market price,
-monitor exits (first-green / stop-loss / hold expiry), and track P&L
-against a simulated cash balance. All state persists to a JSON file so
-the process can restart without losing history.
-"""
+monitor exits (first-green / stop-loss / hold expiry), track P&L against
+a simulated cash balance, and monitor post-exit price paths for detector
+refinement. All state persists to JSON files so the process can restart
+without losing history."""
 
 from __future__ import annotations
 
@@ -348,7 +348,11 @@ def run_loop(
 
     from rich.console import Console
     from switching import notifications
+    from switching.exit_tracker import ExitTracker
     console = Console()
+
+    tracker_path = state_path.parent / "exit_tracker.json"
+    exit_tracker = ExitTracker.load(tracker_path)
 
     if notifications.is_configured():
         notifications.notify_startup(
@@ -379,6 +383,12 @@ def run_loop(
                 exit_reason=t.exit_reason,
                 detector=t.detector,
             )
+            exit_tracker.add_trade(t)
+
+        tracked = exit_tracker.update(get_current_price)
+        if tracked:
+            console.print(f"  [dim]Post-exit tracker: updated {tracked} price(s), {exit_tracker.active_count} active[/dim]")
+        exit_tracker.save(tracker_path)
 
         since = now - timedelta(hours=24)
         signals = scan_for_signals(detectors, since, min_severity=min_severity)
