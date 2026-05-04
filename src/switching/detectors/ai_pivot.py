@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime
 from typing import Iterable
@@ -8,6 +9,8 @@ from switching.detectors.base import Detector
 from switching.registry import register
 from switching.signal import Signal
 from switching.sources import rss
+
+log = logging.getLogger(__name__)
 
 # Words that flag an AI-related release. \bAI\b catches "AI" but avoids "PAIR".
 _AI_TERMS = re.compile(
@@ -43,13 +46,17 @@ class AIPivotDetector(Detector):
 
     def scan(self, since: datetime) -> Iterable[Signal]:
         items = rss.fetch(self._feeds or rss.DEFAULT_FEEDS, since=since)
+        classified = 0
+        with_ticker = 0
         for item in items:
             match = classify(item.title, item.summary)
             if match is None:
                 continue
+            classified += 1
             ticker = item.extract_ticker()
             if not ticker:
                 continue
+            with_ticker += 1
             yield Signal(
                 detector=self.name,
                 ticker=ticker,
@@ -60,6 +67,10 @@ class AIPivotDetector(Detector):
                 evidence=match["evidence"],
                 severity=match["severity"],
             )
+        log.info(
+            "%s: %d items, %d classified, %d with ticker",
+            self.name, len(items), classified, with_ticker,
+        )
 
 
 def classify(title: str, summary: str = "") -> dict | None:

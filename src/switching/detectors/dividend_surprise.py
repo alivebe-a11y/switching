@@ -95,14 +95,17 @@ class DividendSurpriseDetector(Detector):
             rss.DEFAULT_FEEDS + rss.EARNINGS_FEEDS + rss.CORPORATE_FEEDS
         )
         items = rss.fetch(feeds, since=since)
-        log.info("dividend_surprise: scanned %d RSS items", len(items))
+        classified = 0
+        with_ticker = 0
         for item in items:
             match = classify(item.title, item.summary)
             if match is None:
                 continue
+            classified += 1
             ticker = item.extract_ticker()
             if not ticker:
                 continue
+            with_ticker += 1
             yield Signal(
                 detector=self.name,
                 ticker=ticker,
@@ -118,6 +121,10 @@ class DividendSurpriseDetector(Detector):
                     "pct_increase": match.get("pct_increase"),
                 },
             )
+        log.info(
+            "%s: %d items, %d classified, %d with ticker",
+            self.name, len(items), classified, with_ticker,
+        )
 
 
 def classify(title: str, summary: str = "") -> dict | None:
