@@ -1,11 +1,14 @@
 # Switching — Roadmap
 
 ## Current Status
-- 7 detectors live (ai_pivot, earnings_surprise, buyback, activist_13d, insider_cluster, index_inclusion, spinoff)
-- Paper trading on TrueNAS via Docker (Dockge)
+- 13 detectors live (ai_pivot, earnings_surprise, buyback, activist_13d, insider_cluster, index_inclusion, spinoff, analyst_upgrade, fda_decision, mna_target, guidance_raise, dividend_surprise, contract_win)
+- Paper trading on TrueNAS via Docker (Dockge), 10-minute scan interval
 - Trade memory + Haiku AI scoring (log-only)
-- Telegram notifications
+- Telegram notifications (buy/sell/skip/daily summary/startup)
 - 2.6% tiered stop-loss, detector-specific exit profiles
+- Flask web dashboard (portfolio, trades, signals, equity curve)
+- SEC EDGAR integration (13D filings, Form 4)
+- 268 tests passing
 
 ## Phase 1 — Prove the Strategy (Now → Month 3)
 - [ ] Collect 50+ live trades with AI scores attached
@@ -60,5 +63,18 @@
 - [ ] crypto_treasury — Bitcoin treasury announcements (MicroStrategy pattern)
 - [ ] geopolitical — oil/defence/shipping on geopolitical events (Strait of Hormuz etc.)
 - [ ] day_trading — intraday momentum signals (separate project likely)
-- [ ] dividend_surprise — unexpected dividend increases/cuts
-- [ ] FDA_approval — biotech catalyst events
+
+## Completed
+- [x] 13 detectors built and registered with seed data and tests
+- [x] Paper trading engine with $1K simulated portfolio
+- [x] Trade memory (Phase 1) — per-detector/per-price-tier/per-exit-reason stats
+- [x] Haiku AI signal scoring (log-only mode)
+- [x] Telegram push notifications
+- [x] 2.6% tiered stop-loss with detector-specific exit profiles
+- [x] Flask web dashboard
+- [x] SEC EDGAR client + CIK→ticker mapping
+- [x] CORPORATE_FEEDS for corporate-action detectors
+- [x] check-feeds diagnostic command
+- [x] Security audit — public repo clean, .gitignore covers secrets
+- [x] dividend_surprise detector (was idea — now built)
+- [x] fda_decision detector (was FDA_approval idea — now built)
