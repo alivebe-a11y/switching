@@ -9,6 +9,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template_string, request
 
+from switching.exit_tracker import ExitTracker
 from switching.paper_trader import Portfolio
 
 log = logging.getLogger(__name__)
@@ -110,6 +111,20 @@ def create_app(state_path: Path | None = None) -> Flask:
             running += t.pnl
             points.append({"dt": t.exit_dt, "value": round(running, 2)})
         return jsonify({"points": points})
+
+    @app.route("/api/exit-tracker")
+    def api_exit_tracker():
+        tracker_path = _STATE_PATH.parent / "exit_tracker.json"
+        tracker = ExitTracker.load(tracker_path)
+        completed = [t for t in tracker.tracked if t.tracking_complete]
+        active = [t for t in tracker.tracked if not t.tracking_complete]
+        return jsonify({
+            "active_count": len(active),
+            "completed_count": len(completed),
+            "active": [t.to_dict() for t in active],
+            "completed": [t.to_dict() for t in completed],
+            "summary": tracker._build_summary(),
+        })
 
     return app
 
@@ -304,6 +319,17 @@ tr:hover { background: rgba(255,255,255,0.02); }
       <div class="empty-state">Waiting for paper trader scan...</div>
     </div>
   </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>Post-Exit Tracker</h2>
+      <span class="badge" id="tracker-count">0</span>
+    </div>
+    <div id="tracker-insights" style="padding:0.8rem 1.2rem;display:none"></div>
+    <div id="tracker-body">
+      <div class="empty-state">No post-exit data yet. Tracks prices for 20 days after each trade closes.</div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -437,10 +463,83 @@ async function loadSignals() {
   }
 }
 
+async function loadExitTracker() {
+  try {
+    const r = await fetch('/api/exit-tracker');
+    const d = await r.json();
+    let total = d.active_count + d.completed_count;
+    $('#tracker-count').textContent = total;
+
+    if (total === 0) {
+      $('#tracker-body').innerHTML = '<div class="empty-state">No post-exit data yet. Tracks prices for 20 days after each trade closes.</div>';
+      $('#tracker-insights').style.display = 'none';
+      return;
+    }
+
+    // Show insights if any
+    let insights = (d.summary && d.summary.insights) || [];
+    if (insights.length > 0) {
+      let ihtml = '<div style="font-size:0.8rem;color:var(--amber);margin-bottom:0.5rem;font-weight:600">Insights</div>';
+      insights.forEach(i => { ihtml += '<div style="font-size:0.8rem;color:var(--dim);margin-bottom:0.3rem">&bull; ' + i + '</div>'; });
+      $('#tracker-insights').innerHTML = ihtml;
+      $('#tracker-insights').style.display = 'block';
+    } else {
+      $('#tracker-insights').style.display = 'none';
+    }
+
+    // Show summary by detector if available
+    let byDet = (d.summary && d.summary.by_detector) || {};
+    let detKeys = Object.keys(byDet);
+
+    if (detKeys.length > 0) {
+      let html = '<table><thead><tr><th>Detector</th><th>Tracks</th><th>Avg Exit Return</th><th>Avg Max Post-Exit</th><th>Avg Left on Table</th><th>Exit Too Early %</th></tr></thead><tbody>';
+      detKeys.forEach(det => {
+        let s = byDet[det];
+        let lotClass = s.avg_left_on_table > 0.02 ? 'neg' : s.avg_left_on_table < 0 ? 'pos' : '';
+        html += '<tr>';
+        html += '<td><span class="detector-tag">' + det + '</span></td>';
+        html += '<td>' + s.count + '</td>';
+        html += '<td>' + (s.avg_exit_return * 100).toFixed(1) + '%</td>';
+        html += '<td>' + (s.avg_max_post_exit != null ? (s.avg_max_post_exit * 100).toFixed(1) + '%' : '--') + '</td>';
+        html += '<td class="' + lotClass + '">' + (s.avg_left_on_table != null ? (s.avg_left_on_table * 100).toFixed(1) + '%' : '--') + '</td>';
+        html += '<td>' + (s.exit_too_early_pct != null ? (s.exit_too_early_pct * 100).toFixed(0) + '%' : '--') + '</td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      $('#tracker-body').innerHTML = html;
+    } else {
+      // Show active tracks
+      let items = d.active.concat(d.completed).slice(0, 20);
+      if (items.length === 0) {
+        $('#tracker-body').innerHTML = '<div class="empty-state">Tracking in progress...</div>';
+        return;
+      }
+      let html = '<table><thead><tr><th>Ticker</th><th>Detector</th><th>Exit Return</th><th>Days Tracked</th><th>Max After</th><th>Left on Table</th><th>Exit Reason</th></tr></thead><tbody>';
+      items.forEach(t => {
+        let lotClass = t.left_on_table > 0.02 ? 'neg' : t.left_on_table < 0 ? 'pos' : '';
+        html += '<tr>';
+        html += '<td class="ticker">' + t.ticker + '</td>';
+        html += '<td><span class="detector-tag">' + t.detector + '</span></td>';
+        html += '<td class="' + color(t.pct_return) + '">' + (t.pct_return * 100).toFixed(1) + '%</td>';
+        html += '<td>' + t.days_tracked + '/20</td>';
+        html += '<td>' + (t.max_post_exit_return != null ? (t.max_post_exit_return * 100).toFixed(1) + '%' : '--') + '</td>';
+        html += '<td class="' + lotClass + '">' + (t.left_on_table != null ? (t.left_on_table * 100).toFixed(1) + '%' : '--') + '</td>';
+        html += '<td><span class="exit-tag exit-' + t.exit_reason + '">' + t.exit_reason + '</span></td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      $('#tracker-body').innerHTML = html;
+    }
+  } catch(e) {
+    console.error('exit tracker load failed', e);
+  }
+}
+
 function refresh() {
   loadPortfolio();
   loadTrades();
   loadSignals();
+  loadExitTracker();
   $('#last-update').textContent = 'Updated ' + new Date().toLocaleTimeString();
 }
 
