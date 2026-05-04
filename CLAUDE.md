@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `claude/add-ai-recommendations-ABZZX`
-- **291 tests**, run with: `pytest tests/`
+- **304 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path: `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -77,6 +77,7 @@ src/switching/
 ├── backtest.py         — Historical replay engine
 ├── reporter.py         — rank, render_table, write_json/csv
 ├── trade_memory.py     — Per-detector/per-price-tier stats from closed trades
+├── exit_tracker.py     — Post-exit price tracker (20 days) for detector refinement
 ├── ai_filter.py        — Claude Haiku scoring (0-1), log-only mode
 ├── notifications.py    — Telegram push (buy/sell/skip/daily summary/startup)
 ├── detectors/          — All detector modules (one per file)
@@ -491,3 +492,5 @@ event_dt,ticker,company,headline,url,evidence,severity
 - [x] fda_decision detector (was on roadmap as FDA_approval idea — now built)
 - [x] Diagnostic logging: all 11 RSS detectors log items/classified/with_ticker per scan
 - [x] SEC company-name-to-ticker fallback (sources/ticker_lookup.py) — fixes empty dashboard signals
+- [x] Post-exit price tracker (exit_tracker.py) — 20-day post-close monitoring for detector refinement
+- [x] Dashboard "Post-Exit Tracker" panel with per-detector insights

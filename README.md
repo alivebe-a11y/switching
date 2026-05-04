@@ -164,7 +164,7 @@ Required environment variables in Dockge `.env`:
 pytest
 ```
 
-291 tests, all offline — pricing, backtest, RSS, and EDGAR tests use in-memory
+304 tests, all offline — pricing, backtest, RSS, and EDGAR tests use in-memory
 fixtures. Live yfinance / RSS / SEC calls only happen when running
 `switching scan`, `switching backtest`, or `switching paper-trade` against
 real data.

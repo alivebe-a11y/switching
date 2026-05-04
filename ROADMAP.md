@@ -8,7 +8,7 @@
 - 2.6% tiered stop-loss, detector-specific exit profiles
 - Flask web dashboard (portfolio, trades, signals, equity curve)
 - SEC EDGAR integration (13D filings, Form 4)
-- 291 tests passing
+- 304 tests passing
 
 ## Phase 1 — Prove the Strategy (Now → Month 3)
 - [ ] Collect 50+ live trades with AI scores attached
@@ -80,4 +80,6 @@
 - [x] fda_decision detector (was FDA_approval idea — now built)
 - [x] Diagnostic logging: all 11 RSS detectors log items/classified/with_ticker per scan
 - [x] SEC company-name-to-ticker fallback — extract_ticker() now resolves company names via SEC data
-- [x] 291 tests passing (23 new for ticker lookup module)
+- [x] 304 tests passing
+- [x] Post-exit price tracker — 20-day post-close monitoring for detector refinement
+- [x] Dashboard "Post-Exit Tracker" panel with per-detector insights and left-on-table metrics
