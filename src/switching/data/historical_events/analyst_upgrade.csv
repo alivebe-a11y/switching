@@ -1,0 +1,13 @@
+event_dt,ticker,company,headline,url,evidence,severity
+2022-01-18,AAPL,Apple,Goldman Sachs upgrades Apple to Buy from Neutral with $200 price target,,Goldman Sachs upgrades Apple to Buy,0.70
+2022-03-08,TSLA,Tesla,Morgan Stanley initiates coverage on Tesla with Overweight rating and $1200 price target,,Morgan Stanley initiates coverage on Tesla with Overweight,0.75
+2022-05-25,META,Meta Platforms,Jefferies upgrades Meta Platforms to Buy from Hold on valuation,,Jefferies upgrades Meta Platforms to Buy,0.60
+2022-09-13,NVDA,NVIDIA,JP Morgan raises price target on NVIDIA to $220 from $190,,JP Morgan raises price target on NVIDIA,0.60
+2022-11-01,AMZN,Amazon,Goldman Sachs raises price target on Amazon to $145,,Goldman Sachs raises price target on Amazon,0.60
+2023-01-06,MSFT,Microsoft,Barclays upgrades Microsoft to Overweight from Equal Weight,,Barclays upgrades Microsoft to Overweight,0.60
+2023-04-17,GOOGL,Alphabet,UBS initiates coverage on Alphabet with Buy rating and $130 price target,,UBS initiates coverage on Alphabet with Buy,0.65
+2023-06-22,TSLA,Tesla,Morgan Stanley upgrades Tesla to Overweight from Equal Weight citing FSD progress,,Morgan Stanley upgrades Tesla to Overweight,0.70
+2023-08-29,NVDA,NVIDIA,Goldman Sachs raises price target on NVIDIA to $605 from $495,,Goldman Sachs raises price target on NVIDIA,0.60
+2024-01-08,META,Meta Platforms,JP Morgan upgrades Meta Platforms to Overweight from Neutral,,JP Morgan upgrades Meta Platforms to Overweight,0.70
+2024-03-04,AAPL,Apple,Piper Sandler lowers price target on Apple to $205 from $225 on supply concerns,,Piper Sandler lowers price target on Apple,0.45
+2024-07-11,AMZN,Amazon,Wedbush upgrades Amazon to Outperform from Sell citing cloud reacceleration,,Wedbush upgrades Amazon to Outperform from Sell,0.70
