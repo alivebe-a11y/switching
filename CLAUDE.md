@@ -111,6 +111,295 @@ src/switching/
 
 ---
 
+## Maintenance: Review & Update This File
+At the start of each session, verify this file is still accurate. Update when:
+- A new detector is added or removed
+- Exit profiles change based on live performance data
+- Infrastructure changes (new services, new env vars)
+- Performance baselines shift (win rates after 50+ trades)
+- Architecture decisions are revisited
+
+---
+
+## Architecture Decision Records (ADRs)
+
+### ADR-001: Regex classifiers over ML/LLM classification
+**Decision**: All detectors use compiled regex patterns, not ML models.
+**Why**: (1) Zero latency — regex runs in <1ms vs 500ms+ for API call. (2) No training
+data needed — financial headlines follow predictable templates. (3) Interpretable —
+can debug exactly why a headline matched or didn't. (4) Free — no API costs per scan.
+**When to revisit**: If win rate across detectors drops below 50% consistently, or if
+headline formats diversify beyond regex capability. Phase 2 may add Sonnet for complex
+multi-factor signals.
+
+### ADR-002: yfinance over Polygon.io / paid data
+**Decision**: Use yfinance (free) for price data.
+**Why**: (1) Zero cost during paper-trading phase. (2) Good enough for daily OHLC.
+(3) No API key management. (4) Acceptable latency for 10-minute scan interval.
+**Tradeoffs**: Rate-limited, occasionally unreliable, no real-time quotes, no options
+chains. Blocks in some environments (CI, sandboxes).
+**When to revisit**: When scaling to real capital (Phase 2). Polygon.io at $30/month
+gives real-time + options.
+
+### ADR-003: First-green exit strategy
+**Decision**: Most detectors exit on the first day that closes above entry price (+ a
+percentage threshold per detector).
+**Why**: Momentum catalysts (upgrades, FDA, M&A) tend to gap up then fade. Taking
+profit on the first green close captures the initial pop without holding through the
+pullback. Backtests showed higher Sharpe ratios vs fixed hold-period exits.
+**Exceptions**: Buyback uses NO first-green (slow grind, not a pop). MNA targets hold
+longer (deal spread takes time to close).
+
+### ADR-004: Detector-specific exit profiles over one-size-fits-all
+**Decision**: Each detector has its own first_green_pct, hold_days, and first_green flag.
+**Why**: Different catalysts move differently. FDA approvals gap 10-30% (take profit at
++3%). Analyst upgrades drift 1-3% (take at +1%). Buybacks are slow grinds (hold 5 days,
+no first-green). One exit rule can't serve all.
+**Data**: Tuned from backtest seeds. Will refine with live trade data (Phase 1 goal).
+
+### ADR-005: Public GitHub repo
+**Decision**: Repo is public. No secrets in code.
+**Why**: (1) Docker build context uses GitHub URL — needs public access for TrueNAS
+builds without SSH keys. (2) Demonstrates transparency for potential investors/partners.
+(3) No competitive moat in the code itself — edge comes from execution and tuning.
+**Mitigations**: .gitignore covers .env, keys, state files, portfolio JSON. All secrets
+live in Dockge .env only.
+
+### ADR-006: 10-minute scan interval
+**Decision**: Paper trader scans every 10 minutes (was 30 minutes initially).
+**Why**: RSS feeds update frequently. Financial catalysts (upgrades, FDA, M&A) can move
+stocks within minutes. 10 min is a balance between catching signals early and not
+hammering yfinance/EDGAR rate limits.
+**Tradeoff**: More scans = more API calls = higher chance of rate-limit hits. Acceptable
+at current scale (13 detectors, ~20 RSS feeds).
+
+---
+
+## Performance Baselines (from backtest seeds — update with live data)
+
+These are expected ranges. If a detector consistently falls below its floor, investigate
+or disable. Update as live trades accumulate.
+
+| Detector | Expected Win Rate | Avg Return | Notes |
+|----------|-------------------|------------|-------|
+| earnings_surprise | 60-70% | +1.5-3% | Strongest historical signal |
+| analyst_upgrade | 55-65% | +1-2% | Top-tier firms score better |
+| fda_decision | 60-75% | +3-8% | High variance — approvals vs rejections |
+| mna_target | 70-85% | +5-15% | Targets gap to offer price; acquirers flat/down |
+| guidance_raise | 55-65% | +1-3% | Full-year raises stronger than quarterly |
+| dividend_surprise | 50-60% | +1-2% | Special dividends strongest; cuts are bearish |
+| contract_win | 55-65% | +2-5% | Billion-dollar DoD contracts move most |
+| index_inclusion | 65-75% | +3-8% | Passive flow forces buying over days |
+| activist_13d | 60-70% | +3-7% | Icahn/Elliott best; small caps move more |
+| ai_pivot | 50-60% | +1-3% | Noisy — many false positives in AI hype |
+| buyback | 35-45% | +0-1% | WEAK — needs work or disable |
+| insider_cluster | 55-65% | +2-4% | C-suite clusters strongest signal |
+| spinoff | 55-65% | +2-5% | Announcement vs completion matters |
+
+**Key metrics to track (Phase 1)**:
+- Win rate per detector (target: >55% to keep enabled)
+- Average return per trade vs stop-loss hit rate
+- AI score correlation with actual outcome (does Haiku >0.7 = better trades?)
+- Time-to-exit: are hold periods optimal or leaving money on table?
+
+---
+
+## Runbook
+
+### Deploy new code to TrueNAS
+```bash
+curl -sL "https://raw.githubusercontent.com/alivebe-a11y/switching/claude/add-ai-recommendations-ABZZX/docker-compose.yml" -o compose.yaml && docker compose build --no-cache paper-trade && docker compose down paper-trade && docker compose up paper-trade -d
+```
+For dashboard: `docker compose up dashboard -d`
+For both: add `dashboard` to the up command.
+
+### Rollback a broken deploy
+```bash
+docker compose down paper-trade
+docker compose build --build-arg CACHEBUST=$(date +%s) paper-trade
+# Or pin to a known-good commit by editing compose.yaml build context:
+# context: https://github.com/alivebe-a11y/switching.git#<commit-sha>
+docker compose up paper-trade -d
+```
+
+### Debug a detector not firing
+1. **Check feeds**: `switching check-feeds` — are RSS feeds returning items?
+2. **Check classify**: Run the classify function directly with a known-good headline:
+   ```python
+   from switching.detectors.<name> import classify
+   print(classify("Known headline that should match", ""))
+   ```
+3. **Check ticker extraction**: RSS items need a ticker in the title or body.
+4. **Check severity filter**: Is `min_severity` filtering it out?
+5. **Check dedup**: Has this signal already been seen? (check `seen_signals` in portfolio JSON)
+6. **For EDGAR detectors**: Is `SWITCHING_EDGAR_UA` set? Check with `echo $SWITCHING_EDGAR_UA`
+
+### Run a backtest
+```bash
+switching backtest -d <detector> --from 2022-01-01 --to 2024-12-31 --hold-days 5
+```
+Add `--first-green` to test first-green exit. Add `--stop-loss 0.026` for stop-loss.
+Events=12, Trades=0 means yfinance is blocked (expected in sandbox).
+
+### Check container health
+```bash
+docker compose ps                    # Which services are running?
+docker compose logs paper-trade --tail 50  # Recent scan output
+docker compose logs dashboard --tail 20    # Dashboard errors
+```
+
+### Handle duplicate Telegram notifications
+Old container still running alongside new one. Fix:
+```bash
+docker compose down paper-trade && docker compose up paper-trade -d
+```
+
+### Add a new RSS feed
+1. Add URL to appropriate tuple in `src/switching/sources/rss.py`:
+   - `DEFAULT_FEEDS` — general financial news
+   - `EARNINGS_FEEDS` — earnings-specific
+   - `CORPORATE_FEEDS` — corporate actions (M&A, buybacks, dividends)
+2. Test: `switching check-feeds` — verify it returns items
+3. No restart needed for live system (feeds re-fetched every scan cycle)
+
+---
+
+## Detector Template
+
+Use this skeleton when building a new detector. Copy, rename, fill in regexes.
+
+```python
+"""<Name> detector.
+
+<One paragraph explaining what this detects and why it moves stocks.>
+
+Source: <RSS feeds / EDGAR forms / etc.>
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from datetime import datetime
+from typing import Iterable
+
+from switching.detectors.base import Detector
+from switching.registry import register
+from switching.signal import Signal
+from switching.sources import rss
+
+log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Core regexes
+# ---------------------------------------------------------------------------
+
+_PRIMARY_RX = re.compile(
+    r"(?i)(?:"
+    r"pattern_one"
+    r"|pattern_two"
+    r")"
+)
+
+# ---------------------------------------------------------------------------
+# Detector class
+# ---------------------------------------------------------------------------
+
+@register
+class <Name>Detector(Detector):
+    name = "<snake_name>"
+    description = "<One-line description for list-detectors output.>"
+
+    def __init__(self, feeds: tuple[str, ...] | None = None) -> None:
+        self._feeds = feeds
+
+    def scan(self, since: datetime) -> Iterable[Signal]:
+        feeds = self._feeds or (rss.DEFAULT_FEEDS + rss.CORPORATE_FEEDS)
+        items = rss.fetch(feeds, since=since)
+        log.info("%s: scanned %d RSS items", self.name, len(items))
+        for item in items:
+            match = classify(item.title, item.summary)
+            if match is None:
+                continue
+            ticker = item.extract_ticker()
+            if not ticker:
+                continue
+            yield Signal(
+                detector=self.name,
+                ticker=ticker,
+                company=_company_from_headline(item.title),
+                event_dt=item.published,
+                headline=item.title,
+                url=item.url,
+                evidence=match["evidence"],
+                severity=match["severity"],
+                extra={},  # Add detector-specific fields here
+            )
+
+
+def classify(title: str, summary: str = "") -> dict | None:
+    """Return match metadata or None if no match."""
+    text = f"{title}\n{summary}"
+
+    primary_m = _PRIMARY_RX.search(text)
+    if not primary_m:
+        return None
+
+    severity = 0.60  # Base severity
+    # Add bonuses/penalties here
+    severity = min(severity, 0.95)
+
+    return {
+        "severity": round(severity, 3),
+        "evidence": _evidence_snippet(text, primary_m),
+    }
+
+
+def _evidence_snippet(text: str, *matches: re.Match | None) -> str:
+    spans = sorted(m.span() for m in matches if m is not None)
+    if not spans:
+        return text[:160].strip()
+    start = max(0, spans[0][0] - 40)
+    end = min(len(text), spans[-1][1] + 60)
+    return re.sub(r"\s+", " ", text[start:end]).strip()
+
+
+def _company_from_headline(title: str) -> str:
+    """Best-effort company name extraction."""
+    return title.split(" ")[0]  # Replace with proper extraction
+```
+
+### Test template
+```python
+"""Tests for the <name> detector."""
+
+from switching.detectors.<name> import classify
+
+
+def test_positive_match():
+    m = classify("Headline that should match", "")
+    assert m is not None
+    assert m["severity"] >= 0.60
+
+
+def test_rejects_unrelated():
+    assert classify("Apple launches new MacBook Pro lineup", "") is None
+
+
+def test_severity_capped():
+    m = classify("Strong match with all bonuses", "Extra context.")
+    assert m is not None
+    assert m["severity"] <= 0.95
+```
+
+### Seed CSV template
+```csv
+event_dt,ticker,company,headline,url,evidence,severity
+2022-01-15,AAPL,Apple,Headline text here,,Evidence snippet,0.70
+```
+
+---
+
 ## Roadmap
 
 ### Phase 1 — Prove the Strategy (Now → Month 3)
