@@ -7,7 +7,7 @@ services:
     environment:
       - SWITCHING_EDGAR_UA=${SWITCHING_EDGAR_UA:-}
     volumes:
-      - switching-cache:/app/.cache
+      - ${SWITCHING_DATA_DIR:-./data/cache}:/app/.cache
     entrypoint: ["switching"]
     command: ["list-detectors"]
 
@@ -22,7 +22,7 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
     volumes:
-      - switching-cache:/app/.cache
+      - ${SWITCHING_DATA_DIR:-./data/cache}:/app/.cache
     entrypoint: ["switching"]
     command: ["paper-trade", "--seed", "1000", "--interval", "10", "--stop-loss", "0.026", "--hold-days", "5"]
     restart: unless-stopped
@@ -38,7 +38,7 @@ services:
       - ALPACA_PAPER=${ALPACA_PAPER:-true}
       - SWITCHING_EDGAR_UA=${SWITCHING_EDGAR_UA:-}
     volumes:
-      - switching-cache:/app/.cache
+      - ${SWITCHING_DATA_DIR:-./data/cache}:/app/.cache
     entrypoint: ["switching"]
     command: ["trade", "--interval", "30", "--stop-loss", "0.05", "--hold-days", "5"]
     restart: unless-stopped
@@ -51,12 +51,9 @@ services:
     environment:
       - SWITCHING_EDGAR_UA=${SWITCHING_EDGAR_UA:-}
     volumes:
-      - switching-cache:/app/.cache
+      - ${SWITCHING_DATA_DIR:-./data/cache}:/app/.cache
     ports:
       - "${DASHBOARD_PORT:-8080}:8080"
     entrypoint: ["switching"]
     command: ["web", "--port", "8080"]
     restart: unless-stopped
-
-volumes:
-  switching-cache:
