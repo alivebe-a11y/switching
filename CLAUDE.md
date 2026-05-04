@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `claude/add-ai-recommendations-ABZZX`
-- **268 tests**, run with: `pytest tests/`
+- **291 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path: `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -84,7 +84,8 @@ src/switching/
 ├── sources/
 │   ├── rss.py          — DEFAULT_FEEDS, EARNINGS_FEEDS, CORPORATE_FEEDS
 │   ├── historical.py   — Seed CSV loader + live EDGAR augmentation
-│   └── sec_edgar.py    — EdgarClient (rate-limited, needs SWITCHING_EDGAR_UA)
+│   ├── sec_edgar.py    — EdgarClient (rate-limited, needs SWITCHING_EDGAR_UA)
+│   └── ticker_lookup.py — SEC company-name→ticker fallback for extract_ticker()
 └── data/historical_events/*.csv  — Seed data for backtests
 ```
 
@@ -102,12 +103,22 @@ src/switching/
 - RSS-based detectors take optional `feeds: tuple[str, ...] | None`
 - Every detector has a standalone `classify(title, summary)` function for unit testing
 - Severity always capped at 0.95
+- All 11 RSS detectors log `items/classified/with_ticker` counters per scan cycle
+- `extract_ticker()` has two-stage pipeline: exchange-prefix regex → SEC company-name lookup fallback
+
+## Ticker Extraction
+`FeedItem.extract_ticker()` in `sources/rss.py` resolves tickers in two stages:
+1. **Regex**: matches `NASDAQ:AAPL`, `NYSE:XYZ` etc. (original, works for ~10% of headlines)
+2. **SEC fallback**: `sources/ticker_lookup.py` downloads SEC `company_tickers.json` (~13K mappings),
+   matches company names (e.g. "Apple", "NVIDIA") and standalone ticker symbols in headline text.
+   Cached to disk for 7 days, degrades gracefully if SEC unreachable.
 
 ## Known Issues / Gotchas
 - yfinance blocked in CI/sandbox — backtests show 0 trades but events load fine
 - Telegram: duplicate notifications if old container still running alongside new one
 - Terminal hyperlinks can mangle Python module names in Dockge console
 - EDGAR rate limit: 8 req/s (conservative vs SEC's 10 req/s limit)
+- SEC ticker map caches to `/tmp/sec_company_tickers.json` (override via `SWITCHING_CACHE_DIR`)
 
 ---
 
@@ -316,14 +327,17 @@ class <Name>Detector(Detector):
     def scan(self, since: datetime) -> Iterable[Signal]:
         feeds = self._feeds or (rss.DEFAULT_FEEDS + rss.CORPORATE_FEEDS)
         items = rss.fetch(feeds, since=since)
-        log.info("%s: scanned %d RSS items", self.name, len(items))
+        classified = 0
+        with_ticker = 0
         for item in items:
             match = classify(item.title, item.summary)
             if match is None:
                 continue
+            classified += 1
             ticker = item.extract_ticker()
             if not ticker:
                 continue
+            with_ticker += 1
             yield Signal(
                 detector=self.name,
                 ticker=ticker,
@@ -335,6 +349,10 @@ class <Name>Detector(Detector):
                 severity=match["severity"],
                 extra={},  # Add detector-specific fields here
             )
+        log.info(
+            "%s: %d items, %d classified, %d with ticker",
+            self.name, len(items), classified, with_ticker,
+        )
 
 
 def classify(title: str, summary: str = "") -> dict | None:
@@ -471,3 +489,5 @@ event_dt,ticker,company,headline,url,evidence,severity
 - [x] check-feeds diagnostic command
 - [x] dividend_surprise detector (was on roadmap as idea — now built)
 - [x] fda_decision detector (was on roadmap as FDA_approval idea — now built)
+- [x] Diagnostic logging: all 11 RSS detectors log items/classified/with_ticker per scan
+- [x] SEC company-name-to-ticker fallback (sources/ticker_lookup.py) — fixes empty dashboard signals
