@@ -1,0 +1,13 @@
+event_dt,ticker,company,headline,url,evidence,severity
+2022-06-15,NVDA,NVIDIA,NVIDIA Raises Full-Year Revenue Guidance on Strong Data Center Demand,,NVIDIA raises full-year revenue guidance,0.75
+2022-09-08,COST,Costco,Costco Raises Full-Year Outlook Amid Strong Membership Growth,,Costco raises full-year outlook,0.75
+2023-01-10,TSLA,Tesla,Tesla Cuts Full-Year Delivery Guidance Amid Softening Demand,,Tesla lowers guidance,0.65
+2023-03-22,CRWD,CrowdStrike,CrowdStrike Raises FY2024 Revenue Guidance Above Street Estimates,,CrowdStrike raises FY2024 revenue guidance,0.75
+2023-05-24,NVDA,NVIDIA,NVIDIA Raises Revenue Forecast to $11 Billion from $7 Billion for Q2,,NVIDIA raises forecast from $7 billion to $11 billion,0.85
+2023-07-11,META,Meta Platforms,Meta Raises Q3 Revenue Guidance Above Consensus,,Meta raises Q3 revenue guidance,0.70
+2023-09-13,ORCL,Oracle,Oracle Raises Full-Year Revenue Guidance on Cloud Strength,,Oracle raises full-year revenue guidance,0.75
+2023-11-08,UBER,Uber,Uber Raises Full-Year Outlook for Gross Bookings and EBITDA,,Uber raises full-year outlook,0.75
+2024-02-14,SHOP,Shopify,Shopify Pre-Announces Results Above Guidance on Strong Holiday,,Shopify pre-announces results above guidance,0.75
+2024-05-15,WMT,Walmart,Walmart Raises Full-Year Guidance After Strong Q1 Beat,,Walmart raises full-year guidance,0.75
+2024-08-20,LOW,Lowes,Lowes Lowers Full-Year Outlook on Weak Home Improvement Spending,,Lowes lowers full-year outlook,0.65
+2024-10-09,DELL,Dell Technologies,Dell Raises FY2025 Revenue Guidance on AI Server Demand,,Dell raises FY2025 revenue guidance,0.75

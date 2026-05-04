@@ -1,0 +1,13 @@
+event_dt,ticker,company,headline,url,evidence,severity
+2022-01-18,ATVI,Activision Blizzard,Microsoft to Acquire Activision Blizzard for $95 Per Share in All-Cash Deal,,Microsoft to Acquire Activision Blizzard $95 per share all-cash,0.95
+2022-05-26,VMW,VMware,Broadcom to Acquire VMware in $61 Billion Cash-and-Stock Deal,,Broadcom to Acquire VMware definitive agreement,0.90
+2022-10-27,SAVE,Spirit Airlines,JetBlue Completes Tender Offer for Spirit Airlines at $33.50 Per Share,,JetBlue tender offer Spirit Airlines $33.50 per share,0.90
+2023-03-13,SGEN,Seagen,Pfizer to Acquire Seagen for $43 Billion in All-Cash Deal,,Pfizer to acquire Seagen all-cash definitive agreement,0.95
+2023-05-22,PCP,Precision Castparts,Berkshire Hathaway Acquires Precision Castparts for $37.2 Billion,,Berkshire acquires Precision Castparts $37.2 billion,0.85
+2023-08-14,FIGS,FIGS,Private Equity Firm Exploring Potential Acquisition of FIGS,,Exploring potential acquisition of FIGS,0.65
+2023-10-10,SPLK,Splunk,Cisco to Acquire Splunk for $157 Per Share in All-Cash Deal,,Cisco to acquire Splunk $157 per share all-cash definitive agreement,0.95
+2024-01-16,JNPR,Juniper Networks,HPE to Acquire Juniper Networks for $40 Per Share in All-Cash Deal,,HPE to acquire Juniper Networks $40 per share all-cash,0.95
+2024-03-25,DSGX,Descartes Systems,Vista Equity Partners in Talks to Acquire Descartes Systems,,In talks to acquire Descartes Systems,0.65
+2024-04-24,HCP,HashiCorp,IBM to Acquire HashiCorp for $35 Per Share in All-Cash Transaction,,IBM to acquire HashiCorp $35 per share all-cash,0.95
+2024-07-15,SOUN,SoundHound AI,Strategic Acquirer Evaluating Potential Bid for SoundHound AI,,Potential bid for SoundHound AI,0.60
+2024-09-04,KEX,Kirby Corp,Kirby Corporation Enters Definitive Agreement with Private Buyer,,Definitive agreement acquisition,0.85

@@ -85,12 +85,28 @@ Reply with ONLY valid JSON: {{"score": 0.XX, "reasoning": "one sentence"}}"""
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip()
+        text = _extract_json(text)
         result = json.loads(text)
         result["score"] = max(0.0, min(1.0, float(result["score"])))
         return result
     except Exception as exc:
-        log.warning("AI filter failed for %s: %s", ticker, exc)
+        log.warning("AI filter failed for %s: %s (raw: %r)", ticker, exc,
+                     response.content[0].text[:200] if 'response' in dir() else "no response")
         return None
+
+
+def _extract_json(text: str) -> str:
+    """Strip markdown code fences and extract JSON object from response."""
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        lines = [l for l in lines if not l.strip().startswith("```")]
+        text = "\n".join(lines).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1:
+        return text[start:end + 1]
+    return text
 
 
 def score_signals(signals: list, memory: dict[str, Any] | None = None) -> list:

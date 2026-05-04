@@ -35,18 +35,30 @@ def load_builtin_detectors() -> None:
     # registers in case the registry was reset (test helper) after first import.
     from switching.detectors.activist_13d import Activist13DDetector
     from switching.detectors.ai_pivot import AIPivotDetector
+    from switching.detectors.analyst_upgrade import AnalystUpgradeDetector
     from switching.detectors.buyback import BuybackDetector
+    from switching.detectors.contract_win import ContractWinDetector
+    from switching.detectors.dividend_surprise import DividendSurpriseDetector
     from switching.detectors.earnings_surprise import EarningsSurpriseDetector
+    from switching.detectors.fda_decision import FdaDecisionDetector
+    from switching.detectors.guidance_raise import GuidanceRaiseDetector
     from switching.detectors.index_inclusion import IndexInclusionDetector
     from switching.detectors.insider_cluster import InsiderClusterDetector
+    from switching.detectors.mna_target import MnaTargetDetector
     from switching.detectors.spinoff import SpinoffDetector
 
     _REGISTRY[AIPivotDetector.name] = AIPivotDetector
+    _REGISTRY[AnalystUpgradeDetector.name] = AnalystUpgradeDetector
     _REGISTRY[BuybackDetector.name] = BuybackDetector
+    _REGISTRY[ContractWinDetector.name] = ContractWinDetector
+    _REGISTRY[DividendSurpriseDetector.name] = DividendSurpriseDetector
     _REGISTRY[Activist13DDetector.name] = Activist13DDetector
     _REGISTRY[EarningsSurpriseDetector.name] = EarningsSurpriseDetector
+    _REGISTRY[FdaDecisionDetector.name] = FdaDecisionDetector
+    _REGISTRY[GuidanceRaiseDetector.name] = GuidanceRaiseDetector
     _REGISTRY[InsiderClusterDetector.name] = InsiderClusterDetector
     _REGISTRY[IndexInclusionDetector.name] = IndexInclusionDetector
+    _REGISTRY[MnaTargetDetector.name] = MnaTargetDetector
     _REGISTRY[SpinoffDetector.name] = SpinoffDetector
 
 

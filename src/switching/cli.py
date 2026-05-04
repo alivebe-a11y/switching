@@ -236,6 +236,8 @@ def _render_performance(perf, *, detector: str, hold_days: int, events: int, tra
 _DEFAULT_DETECTORS = [
     "earnings_surprise", "ai_pivot", "index_inclusion",
     "buyback", "insider_cluster", "activist_13d",
+    "analyst_upgrade", "fda_decision",
+    "mna_target", "guidance_raise", "dividend_surprise", "contract_win",
 ]
 
 

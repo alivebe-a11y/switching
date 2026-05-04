@@ -11,3 +11,9 @@ dist/
 build/
 *.sqlite
 .cache/
+.env
+.env.*
+*.key
+*.pem
+paper_portfolio.json
+trade_memory.json

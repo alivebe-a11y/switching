@@ -1,0 +1,13 @@
+event_dt,ticker,company,headline,url,evidence,severity
+2023-12-08,VRTX,Vertex Pharmaceuticals,Vertex Pharmaceuticals receives FDA approval for CASGEVY sickle cell gene therapy,,FDA approves CASGEVY first-in-class gene editing therapy for sickle cell disease,0.95
+2023-11-08,LLY,Eli Lilly,Eli Lilly receives FDA approval for Mounjaro obesity indication,,FDA approves Mounjaro (tirzepatide) for chronic weight management,0.85
+2023-01-06,BIIB,Biogen,Biogen receives traditional FDA approval for Leqembi Alzheimer's treatment,,FDA grants traditional approval for Leqembi (lecanemab) Alzheimer's disease,0.85
+2023-05-26,MRNA,Moderna,Moderna receives FDA approval for mRESVIA RSV vaccine for older adults,,FDA approves Moderna mRESVIA mRNA-based RSV vaccine,0.85
+2021-12-22,PFE,Pfizer,Pfizer receives FDA approval for Paxlovid COVID-19 antiviral treatment,,FDA approves Paxlovid (nirmatrelvir/ritonavir) for COVID-19 treatment,0.85
+2021-05-28,AMGN,Amgen,Amgen receives FDA approval for Lumakras KRAS inhibitor lung cancer,,FDA approves Lumakras first-in-class KRAS G12C inhibitor for NSCLC,0.95
+2022-09-09,BMY,Bristol Myers Squibb,Bristol Myers Squibb receives FDA approval for Sotyktu psoriasis treatment,,FDA approves Sotyktu (deucravacitinib) for moderate-to-severe plaque psoriasis,0.85
+2023-03-17,MDGL,Madrigal Pharmaceuticals,Madrigal Pharmaceuticals receives complete response letter from FDA for resmetirom,,FDA issues CRL for resmetirom NASH treatment requesting additional data,0.80
+2022-08-26,SNDX,Syndax Pharmaceuticals,Syndax Pharmaceuticals receives CRL from FDA for olutasidenib,,FDA complete response letter CRL for olutasidenib in AML,0.80
+2023-06-13,RCUS,Arcus Biosciences,Arcus Biosciences receives FDA breakthrough therapy designation for etrumadenant,,FDA grants breakthrough therapy designation for etrumadenant combination in colorectal cancer,0.70
+2022-11-04,BEAM,Beam Therapeutics,Beam Therapeutics receives FDA fast track designation for BEAM-101 sickle cell program,,FDA grants fast track designation for BEAM-101 base editing therapy,0.60
+2023-09-21,RXRX,Recursion Pharmaceuticals,Recursion Pharmaceuticals receives FDA priority review for REC-994 cerebral cavernous malformation,,FDA grants priority review designation PDUFA date set for REC-994,0.55
