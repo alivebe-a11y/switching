@@ -191,6 +191,10 @@ def open_position(
             log.info("already holding %s, skipping", signal.ticker)
             return None
 
+    if price < 1.0:
+        log.info("price $%.4f below $1.00 floor, skipping %s", price, signal.ticker)
+        return None
+
     alloc = portfolio.total_value * portfolio.max_position_pct
     alloc = min(alloc, portfolio.cash)
     if alloc < 1.0:
@@ -251,7 +255,7 @@ def check_exits(portfolio: Portfolio) -> list[ClosedTrade]:
         if ret_low <= -pos.stop_loss:
             reason = "stop_loss"
             price = pos.entry_price * (1.0 - pos.stop_loss)
-        elif pos.first_green and ret >= pos.first_green_pct:
+        elif pos.first_green and ret >= pos.first_green_pct and days_elapsed >= 1:
             reason = "first_green"
         elif days_elapsed >= pos.hold_days:
             reason = "hold_expiry"
@@ -356,10 +360,14 @@ def run_loop(
     from rich.console import Console
     from switching import notifications
     from switching.exit_tracker import ExitTracker
+    from switching.skipped_tracker import SkippedTracker
     console = Console()
 
     tracker_path = state_path.parent / "exit_tracker.json"
     exit_tracker = ExitTracker.load(tracker_path)
+
+    skipped_path = state_path.parent / "skipped_signals.json"
+    skipped_tracker = SkippedTracker.load(skipped_path)
 
     if notifications.is_configured():
         notifications.notify_startup(
@@ -396,6 +404,11 @@ def run_loop(
         if tracked:
             console.print(f"  [dim]Post-exit tracker: updated {tracked} price(s), {exit_tracker.active_count} active[/dim]")
         exit_tracker.save(tracker_path)
+
+        skipped_updated = skipped_tracker.update(get_current_price)
+        if skipped_updated:
+            console.print(f"  [dim]Skipped-signal tracker: updated {skipped_updated} price(s), {skipped_tracker.active_count} active, {skipped_tracker.completed_count} completed[/dim]")
+        skipped_tracker.save(skipped_path)
 
         since = now - timedelta(hours=24)
         signals = scan_for_signals(detectors, since, min_severity=min_severity)
@@ -447,8 +460,27 @@ def run_loop(
                     ai_score=sig.extra.get("ai_score"),
                 )
             elif pos is None and price is not None:
-                reason = "max positions" if len(portfolio.positions) >= portfolio.max_positions else "already holding or insufficient cash"
-                notifications.notify_skip(sig.ticker, reason, sig.detector, sig.headline)
+                if portfolio.max_positions > 0 and len(portfolio.positions) >= portfolio.max_positions:
+                    skip_reason = "max_positions"
+                elif any(p.ticker == sig.ticker for p in portfolio.positions):
+                    skip_reason = "already_holding"
+                else:
+                    skip_reason = "insufficient_cash"
+                notifications.notify_skip(sig.ticker, skip_reason.replace("_", " "), sig.detector, sig.headline)
+                if skip_reason != "already_holding":
+                    profile = _exit_profile(sig.detector, price)
+                    skipped_tracker.add(
+                        ticker=sig.ticker,
+                        detector=sig.detector,
+                        severity=sig.severity,
+                        headline=sig.headline,
+                        skip_reason=skip_reason,
+                        price=price,
+                        hold_days=profile["hold_days"],
+                        first_green=profile["first_green"],
+                        first_green_pct=profile["first_green_pct"],
+                        stop_loss_pct=_tiered_stop_loss(stop_loss, price),
+                    )
 
         held_tickers = {p.ticker for p in portfolio.positions}
         portfolio.cached_prices = {

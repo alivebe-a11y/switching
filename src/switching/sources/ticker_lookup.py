@@ -33,6 +33,8 @@ _lock = threading.Lock()
 _name_to_ticker: dict[str, str] | None = None
 _ticker_to_name: dict[str, str] | None = None
 
+_MNA_VERB_RX = re.compile(r"\b(?:acquires?|acquisition|buys?|purchases?|merges?\s+with)\b")
+
 # Common suffixes to strip for matching
 _SUFFIXES = re.compile(
     r"\s*(?:,?\s*(?:Inc\.?|Corp\.?|Corporation|Ltd\.?|Limited|PLC|plc|LLC|L\.P\.|LP|N\.V\.|S\.A\.|SE|AG|Co\.?|Group|Holdings?|Bancorp|Technologies|Technology|Therapeutics|Pharmaceuticals|Biosciences|Solutions))+\s*$",
@@ -168,10 +170,11 @@ def lookup_ticker(text: str) -> str | None:
     best_match: str | None = None
     best_len = 0
 
+    has_mna_verb = bool(_MNA_VERB_RX.search(search_text))
+
     for name, ticker in n2t.items():
         if len(name) <= best_len:
             continue
-        # Require company names to be at least 5 chars to avoid false matches
         if len(name) < 5:
             continue
         if name in search_text:
@@ -179,9 +182,18 @@ def lookup_ticker(text: str) -> str | None:
             before_ok = idx == 0 or not search_text[idx - 1].isalnum()
             after_idx = idx + len(name)
             after_ok = after_idx >= len(search_text) or not search_text[after_idx].isalnum()
-            if before_ok and after_ok:
-                best_match = ticker
-                best_len = len(name)
+            if not (before_ok and after_ok):
+                continue
+            # Names not at position 0 must be longer to reduce false positives
+            if idx > 0 and len(name) < 8:
+                continue
+            # In M&A headlines, reject matches after the verb (likely a private target)
+            if has_mna_verb and idx > 0:
+                before_text = search_text[:idx]
+                if _MNA_VERB_RX.search(before_text):
+                    continue
+            best_match = ticker
+            best_len = len(name)
 
     return best_match
 

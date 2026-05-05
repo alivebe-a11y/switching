@@ -11,6 +11,7 @@ from flask import Flask, jsonify, render_template_string, request
 
 from switching.exit_tracker import ExitTracker
 from switching.paper_trader import Portfolio
+from switching.skipped_tracker import SkippedTracker
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +125,26 @@ def create_app(state_path: Path | None = None) -> Flask:
             "completed_count": len(completed),
             "active": [t.to_dict() for t in active],
             "completed": [t.to_dict() for t in completed],
+            "summary": tracker._build_summary(),
+        })
+
+    @app.route("/api/skipped-signals")
+    def api_skipped_signals():
+        path = _STATE_PATH.parent / "skipped_signals.json"
+        tracker = SkippedTracker.load(path)
+        recent_active = sorted(
+            (s for s in tracker.skipped if not s.tracking_complete),
+            key=lambda s: s.skipped_at, reverse=True,
+        )[:50]
+        recent_completed = sorted(
+            (s for s in tracker.skipped if s.tracking_complete),
+            key=lambda s: s.simulated_exit_dt or s.skipped_at, reverse=True,
+        )[:50]
+        return jsonify({
+            "active_count": tracker.active_count,
+            "completed_count": tracker.completed_count,
+            "active": [s.to_dict() for s in recent_active],
+            "completed": [s.to_dict() for s in recent_completed],
             "summary": tracker._build_summary(),
         })
 
@@ -324,6 +345,17 @@ tr:hover { background: rgba(255,255,255,0.02); }
     <div id="tracker-insights" style="padding:0.8rem 1.2rem;display:none"></div>
     <div id="tracker-body">
       <div class="empty-state">No post-exit data yet. Tracks prices for 20 days after each trade closes.</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>Missed Signals (Would-Have-Been P&L)</h2>
+      <span class="badge" id="skipped-count">0</span>
+    </div>
+    <div id="skipped-summary" style="padding:0.8rem 1.2rem;display:none;font-size:0.85rem;color:var(--dim)"></div>
+    <div id="skipped-body">
+      <div class="empty-state">No skipped signals tracked yet. Signals skipped due to max-positions or insufficient cash will appear here with simulated outcomes.</div>
     </div>
   </div>
 </div>
@@ -537,11 +569,68 @@ async function loadExitTracker() {
   }
 }
 
+async function loadSkippedSignals() {
+  try {
+    const r = await fetch('/api/skipped-signals');
+    const d = await r.json();
+    let total = d.active_count + d.completed_count;
+    $('#skipped-count').textContent = total;
+
+    if (total === 0) {
+      $('#skipped-body').innerHTML = '<div class="empty-state">No skipped signals tracked yet. Signals skipped due to max-positions or insufficient cash will appear here with simulated outcomes.</div>';
+      $('#skipped-summary').style.display = 'none';
+      return;
+    }
+
+    let s = d.summary || {};
+    if (s.completed_count > 0) {
+      let wr = (s.would_be_win_rate * 100).toFixed(0);
+      let ar = (s.would_be_avg_return * 100).toFixed(2);
+      let cls = s.would_be_avg_return >= 0 ? 'pos' : 'neg';
+      $('#skipped-summary').innerHTML =
+        '<b>Would-have-been:</b> ' + s.completed_count + ' simulated trades, ' +
+        wr + '% win rate, avg return <span class="' + cls + '">' + ar + '%</span>' +
+        ' &mdash; <span style="color:var(--dim)">' + d.active_count + ' still tracking</span>';
+      $('#skipped-summary').style.display = 'block';
+    } else {
+      $('#skipped-summary').innerHTML =
+        '<span style="color:var(--dim)">' + d.active_count + ' signals tracking, none completed yet</span>';
+      $('#skipped-summary').style.display = 'block';
+    }
+
+    let items = d.completed.concat(d.active).slice(0, 30);
+    let html = '<table><thead><tr><th>Ticker</th><th>Detector</th><th>Skip Reason</th><th>Sev</th><th>Entry</th><th>Sim Return</th><th>Status</th><th>Headline</th></tr></thead><tbody>';
+    items.forEach(t => {
+      let ret = t.tracking_complete ? t.simulated_pct_return : t.max_pct_return;
+      let cls = ret == null ? '' : (ret > 0 ? 'pos' : ret < 0 ? 'neg' : '');
+      let retStr = ret == null ? '--' : (ret * 100).toFixed(1) + '%';
+      let status = t.tracking_complete
+        ? '<span class="exit-tag exit-' + (t.simulated_exit_reason || 'hold') + '">' + (t.simulated_exit_reason || '?') + '</span>'
+        : '<span style="color:var(--dim)">tracking ' + t.days_tracked + '/' + t.hold_days + 'd</span>';
+      html += '<tr>';
+      html += '<td class="ticker">' + t.ticker + '</td>';
+      html += '<td><span class="detector-tag">' + t.detector + '</span></td>';
+      html += '<td><span style="color:var(--dim);font-size:0.75rem">' + t.skip_reason + '</span></td>';
+      html += '<td>' + t.severity.toFixed(2) + '</td>';
+      html += '<td>$' + t.would_be_entry_price.toFixed(2) + '</td>';
+      html += '<td class="' + cls + '">' + retStr + '</td>';
+      html += '<td>' + status + '</td>';
+      html += '<td class="headline-text">' + (t.headline || '').slice(0, 50) + '</td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    $('#skipped-body').innerHTML = html;
+  } catch(e) {
+    console.error('skipped signals load failed', e);
+  }
+}
+
 function refresh() {
   loadPortfolio();
   loadTrades();
   loadSignals();
   loadExitTracker();
+  loadSkippedSignals();
   $('#last-update').textContent = 'Updated ' + new Date().toLocaleTimeString();
 }
 

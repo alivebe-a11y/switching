@@ -81,7 +81,7 @@ Reply with ONLY valid JSON: {{"score": 0.XX, "reasoning": "one sentence"}}"""
     try:
         response = client.messages.create(
             model=_MODEL,
-            max_tokens=100,
+            max_tokens=200,
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip()
