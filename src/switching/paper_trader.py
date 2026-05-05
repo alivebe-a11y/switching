@@ -191,6 +191,10 @@ def open_position(
             log.info("already holding %s, skipping", signal.ticker)
             return None
 
+    if price < 1.0:
+        log.info("price $%.4f below $1.00 floor, skipping %s", price, signal.ticker)
+        return None
+
     alloc = portfolio.total_value * portfolio.max_position_pct
     alloc = min(alloc, portfolio.cash)
     if alloc < 1.0:
@@ -251,7 +255,7 @@ def check_exits(portfolio: Portfolio) -> list[ClosedTrade]:
         if ret_low <= -pos.stop_loss:
             reason = "stop_loss"
             price = pos.entry_price * (1.0 - pos.stop_loss)
-        elif pos.first_green and ret >= pos.first_green_pct:
+        elif pos.first_green and ret >= pos.first_green_pct and days_elapsed >= 1:
             reason = "first_green"
         elif days_elapsed >= pos.hold_days:
             reason = "hold_expiry"

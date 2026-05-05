@@ -111,10 +111,10 @@ class TestCheckExits:
         assert closed[0].exit_reason == "stop_loss"
 
     def test_closes_on_first_green(self):
-        now = datetime.now(tz=timezone.utc)
+        yesterday = datetime.now(tz=timezone.utc) - timedelta(days=1)
         portfolio = Portfolio(
             cash=800.0,
-            positions=[_make_position(now, first_green=True)],
+            positions=[_make_position(yesterday, first_green=True)],
         )
         with patch(
             "switching.paper_trader.get_intraday_data",
@@ -236,12 +236,35 @@ class TestOpenPositionProfiles:
         assert pos.hold_days == 2
         assert pos.first_green is True
 
-    def test_first_green_pct_prevents_early_exit(self):
-        """A +1% return should NOT trigger first_green when threshold is 2%."""
+    def test_first_green_blocked_on_entry_day(self):
+        """First-green must not fire on the same calendar day as entry."""
         now = datetime.now(tz=timezone.utc)
         portfolio = Portfolio(
             cash=800.0,
-            positions=[_make_position(now, first_green=True, first_green_pct=0.02)],
+            positions=[_make_position(now, first_green=True, first_green_pct=0.0)],
+        )
+        with patch(
+            "switching.paper_trader.get_intraday_data",
+            return_value={"open": 100.0, "high": 103.0, "low": 99.5, "close": 102.0},
+        ):
+            closed = check_exits(portfolio)
+        assert closed == []
+        assert len(portfolio.positions) == 1
+
+    def test_price_floor_rejects_penny_stock(self):
+        """Stocks under $1.00 should be rejected."""
+        portfolio = Portfolio(cash=1000.0)
+        sig = self._make_signal("ai_pivot")
+        pos = open_position(portfolio, sig, 0.50)
+        assert pos is None
+        assert portfolio.cash == 1000.0
+
+    def test_first_green_pct_prevents_early_exit(self):
+        """A +1% return should NOT trigger first_green when threshold is 2%."""
+        yesterday = datetime.now(tz=timezone.utc) - timedelta(days=1)
+        portfolio = Portfolio(
+            cash=800.0,
+            positions=[_make_position(yesterday, first_green=True, first_green_pct=0.02)],
         )
         with patch(
             "switching.paper_trader.get_intraday_data",
@@ -253,10 +276,10 @@ class TestOpenPositionProfiles:
 
     def test_first_green_pct_triggers_at_threshold(self):
         """A +2% return SHOULD trigger first_green when threshold is 2%."""
-        now = datetime.now(tz=timezone.utc)
+        yesterday = datetime.now(tz=timezone.utc) - timedelta(days=1)
         portfolio = Portfolio(
             cash=800.0,
-            positions=[_make_position(now, first_green=True, first_green_pct=0.02)],
+            positions=[_make_position(yesterday, first_green=True, first_green_pct=0.02)],
         )
         with patch(
             "switching.paper_trader.get_intraday_data",

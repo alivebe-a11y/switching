@@ -121,11 +121,22 @@ def test_private_company_not_matched(loaded_map):
     assert result is None
 
 
+def test_mna_target_not_matched_after_acquires(loaded_map):
+    """Company names after 'acquires' verb should not match (often private targets)."""
+    result = ticker_lookup.lookup_ticker("PrivateCo Acquires CrowdStrike Holdings Division")
+    assert result is None
+
+
+def test_mna_acquirer_at_position_zero_matches(loaded_map):
+    """The acquiring company at position 0 should still match in M&A headlines."""
+    result = ticker_lookup.lookup_ticker("Microsoft to Acquire SmallStartup for $1B")
+    assert result == "MSFT"
+
+
 def test_prefers_longer_name_match(loaded_map):
     """Should prefer longer company name matches over shorter ones."""
     result = ticker_lookup.lookup_ticker("Goldman Sachs Upgrades Apple to Buy")
-    # Goldman Sachs is longer than Apple — should match GS
-    assert result in ("GS", "AAPL")
+    assert result == "GS"
 
 
 def test_handles_empty_text(loaded_map):
