@@ -6,12 +6,14 @@ from unittest.mock import patch, MagicMock
 
 from switching.notifications import (
     _send,
+    flush_buy_queue,
     is_configured,
     notify_buy,
     notify_sell,
     notify_skip,
     notify_daily_summary,
     notify_startup,
+    pending_buy_count,
 )
 
 
@@ -58,22 +60,54 @@ class TestSend:
 
 
 class TestNotifyBuy:
-    def test_sends_buy_notification(self):
+    def setup_method(self):
+        flush_buy_queue()
+
+    def teardown_method(self):
+        flush_buy_queue()
+
+    def test_buy_is_queued_not_sent_immediately(self):
         with patch("switching.notifications._send") as mock:
             with patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "1"}):
                 notify_buy("AAPL", 150.0, 1.3333, 200.0, "ai_pivot", "Apple AI pivot", 0.8)
+        mock.assert_not_called()
+        assert pending_buy_count() == 1
+
+    def test_flush_sends_single_buy(self):
+        with patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "1"}):
+            notify_buy("AAPL", 150.0, 1.3333, 200.0, "ai_pivot", "Apple AI pivot", 0.8)
+            with patch("switching.notifications._send") as mock:
+                flush_buy_queue()
         mock.assert_called_once()
         text = mock.call_args[0][0]
         assert "BUY AAPL" in text
         assert "$150.00" in text
         assert "ai_pivot" in text
 
+    def test_flush_batches_multiple_buys(self):
+        with patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "1"}):
+            notify_buy("AAPL", 150.0, 1.0, 150.0, "ai_pivot", "h1", 0.8)
+            notify_buy("MSFT", 300.0, 0.5, 150.0, "buyback", "h2", 0.7)
+            notify_buy("NVDA", 500.0, 0.3, 150.0, "ai_pivot", "h3", 0.9)
+            with patch("switching.notifications._send") as mock:
+                flush_buy_queue()
+        mock.assert_called_once()
+        text = mock.call_args[0][0]
+        assert "3 new positions" in text
+        assert "AAPL" in text and "MSFT" in text and "NVDA" in text
+
     def test_includes_ai_score(self):
-        with patch("switching.notifications._send") as mock:
-            with patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "1"}):
-                notify_buy("AAPL", 150.0, 1.0, 150.0, "ai_pivot", "headline", 0.8, ai_score=0.92)
+        with patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "1"}):
+            notify_buy("AAPL", 150.0, 1.0, 150.0, "ai_pivot", "headline", 0.8, ai_score=0.92)
+            with patch("switching.notifications._send") as mock:
+                flush_buy_queue()
         text = mock.call_args[0][0]
         assert "0.92" in text
+
+    def test_flush_with_empty_queue_is_noop(self):
+        with patch("switching.notifications._send") as mock:
+            flush_buy_queue()
+        mock.assert_not_called()
 
 
 class TestNotifySell:

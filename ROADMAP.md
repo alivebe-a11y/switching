@@ -2,13 +2,14 @@
 
 ## Current Status
 - 13 detectors live (ai_pivot, earnings_surprise, buyback, activist_13d, insider_cluster, index_inclusion, spinoff, analyst_upgrade, fda_decision, mna_target, guidance_raise, dividend_surprise, contract_win)
-- Paper trading on TrueNAS via Docker (Dockge), 10-minute scan interval
+- Paper trading on TrueNAS via Docker (Dockge), 10-minute scan interval, $20K seed, $200/trade, unlimited positions
 - Trade memory + Haiku AI scoring (log-only)
-- Telegram notifications (buy/sell/skip/daily summary/startup)
+- Telegram notifications: buys batched 2h, sells/stops immediate, daily summary at close
 - 2.6% tiered stop-loss, detector-specific exit profiles
-- Flask web dashboard (portfolio, trades, signals, equity curve)
+- Flask web dashboard reads cached prices from portfolio JSON (no live yfinance polling)
 - SEC EDGAR integration (13D filings, Form 4)
-- 304 tests passing
+- Post-exit price tracker (20 days) for detector refinement
+- 309 tests passing
 
 ## Phase 1 — Prove the Strategy (Now → Month 3)
 - [ ] Collect 50+ live trades with AI scores attached
@@ -44,6 +45,8 @@
 - [ ] Automated backup of trade state and memory files
 - [ ] Circuit breaker: disable detector after N consecutive empty scans
 - [ ] Health dashboard: feed status, scan counts, API latency
+- [ ] Migrate state from JSON to SQLite (trigger: 1,000+ closed trades or cross-detector queries) — schema mapped in `docs/SQL_SCHEMA.md`
+- [ ] Batch yfinance price fetches (`yf.download(tickers)`) instead of one call per held position
 
 ## AI Improvements
 - [ ] Turn on Haiku filter gating (after 50+ scored trades)
@@ -80,6 +83,9 @@
 - [x] fda_decision detector (was FDA_approval idea — now built)
 - [x] Diagnostic logging: all 11 RSS detectors log items/classified/with_ticker per scan
 - [x] SEC company-name-to-ticker fallback — extract_ticker() now resolves company names via SEC data
-- [x] 304 tests passing
+- [x] 309 tests passing
 - [x] Post-exit price tracker — 20-day post-close monitoring for detector refinement
 - [x] Dashboard "Post-Exit Tracker" panel with per-detector insights and left-on-table metrics
+- [x] Telegram buy notifications batched every 2 hours (digest format) — sells/stops still immediate
+- [x] Dashboard reads cached prices from portfolio JSON — no live yfinance polling per page load
+- [x] SQL schema mapping doc (`docs/SQL_SCHEMA.md`) — forward-looking, JSON stays for now

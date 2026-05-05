@@ -66,6 +66,7 @@ class Portfolio:
     last_scan_dt: str = ""
     max_position_pct: float = 0.20
     max_positions: int = 5
+    cached_prices: dict[str, float] = field(default_factory=dict)
 
     @property
     def total_value(self) -> float:
@@ -82,6 +83,7 @@ class Portfolio:
             "last_scan_dt": self.last_scan_dt,
             "max_position_pct": self.max_position_pct,
             "max_positions": self.max_positions,
+            "cached_prices": self.cached_prices,
         }
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -99,6 +101,7 @@ class Portfolio:
             last_scan_dt=data.get("last_scan_dt", ""),
             max_position_pct=data.get("max_position_pct", 0.20),
             max_positions=data.get("max_positions", 5),
+            cached_prices=data.get("cached_prices", {}),
         )
 
 
@@ -180,7 +183,7 @@ def open_position(
     stop_loss: float = 0.026,
     hold_days: int = 5,
 ) -> Position | None:
-    if len(portfolio.positions) >= portfolio.max_positions:
+    if portfolio.max_positions > 0 and len(portfolio.positions) >= portfolio.max_positions:
         log.info("max positions reached, skipping %s", signal.ticker)
         return None
     for p in portfolio.positions:
@@ -340,11 +343,15 @@ def run_loop(
     hold_days: int = 5,
     scan_interval_minutes: int = 30,
     min_severity: float = 0.0,
+    max_position_pct: float = 0.20,
+    max_positions: int = 5,
     once: bool = False,
 ) -> Portfolio:
     portfolio = Portfolio.load(state_path)
     if not portfolio.trades and not portfolio.positions and portfolio.cash == 1000.0:
         portfolio.cash = seed_cash
+    portfolio.max_position_pct = max_position_pct
+    portfolio.max_positions = max_positions
 
     from rich.console import Console
     from switching import notifications
@@ -443,11 +450,16 @@ def run_loop(
                 reason = "max positions" if len(portfolio.positions) >= portfolio.max_positions else "already holding or insufficient cash"
                 notifications.notify_skip(sig.ticker, reason, sig.detector, sig.headline)
 
+        held_tickers = {p.ticker for p in portfolio.positions}
+        portfolio.cached_prices = {
+            t: v for t, v in portfolio.cached_prices.items() if t in held_tickers
+        }
         if portfolio.positions:
             console.print("  [dim]Open positions:[/dim]")
             for p in portfolio.positions:
                 cur = get_current_price(p.ticker)
                 if cur:
+                    portfolio.cached_prices[p.ticker] = cur
                     ret = (cur / p.entry_price - 1.0) * 100
                     color = "green" if ret >= 0 else "red"
                     console.print(f"    {p.ticker}: entry ${p.entry_price:.2f} now ${cur:.2f} [{color}]{ret:+.1f}%[/{color}] day {p.days_held}/{p.hold_days}")
@@ -465,6 +477,7 @@ def run_loop(
         market_closed = now.hour >= 21
         if market_closed and today_str != last_summary_date:
             last_summary_date = today_str
+            notifications.flush_buy_queue()
             todays_trades = [
                 {"ticker": t.ticker, "pnl": t.pnl, "pct_return": t.pct_return, "exit_reason": t.exit_reason}
                 for t in portfolio.trades

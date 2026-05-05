@@ -42,9 +42,9 @@ def loaded_map():
         ticker_lookup._load_map()
 
 
-def test_lookup_by_ticker_in_text(loaded_map):
-    """Direct ticker symbol in text should be found."""
-    result = ticker_lookup.lookup_ticker("AAPL announces new product line")
+def test_lookup_by_parenthesized_ticker(loaded_map):
+    """Parenthesized ticker symbol like (AAPL) should be found."""
+    result = ticker_lookup.lookup_ticker("Big news today (AAPL) launches new product line")
     assert result == "AAPL"
 
 
@@ -96,17 +96,36 @@ def test_common_words_not_matched(loaded_map):
     assert result is None
 
 
+def test_bare_ticker_not_matched(loaded_map):
+    """Bare uppercase words should NOT match as tickers — too many false positives."""
+    result = ticker_lookup.lookup_ticker("Analyst upgrades NVDA to Outperform")
+    # NVDA is a valid ticker but without parentheses it could be an abbreviation
+    # Company name "NVIDIA" will match via Strategy 2 instead
+    assert result is None
+
+
+def test_ai_word_not_matched_as_ticker(loaded_map):
+    """The word 'AI' in headlines should NOT match C3.ai ticker."""
+    _FAKE_SEC_DATA_WITH_AI = dict(_FAKE_SEC_DATA)
+    _FAKE_SEC_DATA_WITH_AI["99"] = {"cik_str": "1750", "ticker": "AI", "title": "C3.ai, Inc."}
+    ticker_lookup.invalidate_cache()
+    with patch.object(ticker_lookup, "_read_cached_or_fetch", return_value=_FAKE_SEC_DATA_WITH_AI):
+        ticker_lookup._load_map()
+        result = ticker_lookup.lookup_ticker("Applied Materials Broadens Advanced Packaging Portfolio with Acquisition of NEXX to Power Agentic AI")
+    assert result is None
+
+
+def test_private_company_not_matched(loaded_map):
+    """Headlines about private companies shouldn't match random public tickers."""
+    result = ticker_lookup.lookup_ticker("Nickolas Asset Management Acquires Ranch Road Cargo")
+    assert result is None
+
+
 def test_prefers_longer_name_match(loaded_map):
     """Should prefer longer company name matches over shorter ones."""
     result = ticker_lookup.lookup_ticker("Goldman Sachs Upgrades Apple to Buy")
-    # Both Apple and Goldman Sachs are in the map — Goldman Sachs is longer
+    # Goldman Sachs is longer than Apple — should match GS
     assert result in ("GS", "AAPL")
-
-
-def test_ticker_symbol_priority(loaded_map):
-    """Explicit ticker symbol should be found even without company name."""
-    result = ticker_lookup.lookup_ticker("Analyst upgrades NVDA to Outperform")
-    assert result == "NVDA"
 
 
 def test_handles_empty_text(loaded_map):

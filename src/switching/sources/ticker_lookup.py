@@ -138,29 +138,32 @@ def _normalize_name(name: str) -> str:
 def lookup_ticker(text: str) -> str | None:
     """Scan text for a known SEC-registered company name, return its ticker.
 
-    Tries progressively shorter spans from the beginning of the text
-    (where company names appear in press-release headlines).
+    Two strategies, in order:
+    1. Parenthesized ticker: (AAPL) or (NASDAQ: AAPL) patterns
+    2. Company name match in the headline's first ~120 chars (longest wins)
+
+    We do NOT scan for bare uppercase words as ticker symbols — too many
+    false positives (AI, G, F, V, etc. appear as common words in headlines).
     """
     n2t, _ = _load_map()
     if not n2t:
         return None
 
-    # Strategy 1: Check if any ticker symbol appears as a standalone word
-    # e.g. "(AAPL)" or "AAPL " in the text
-    ticker_m = re.findall(r"\b([A-Z]{1,5})\b", text)
+    # Strategy 1: Parenthesized ticker symbols — high confidence
+    # Matches "(AAPL)", "(ticker: MSFT)", "(NYSE: XOM)" etc.
+    paren_tickers = re.findall(r"\((?:\w+:\s*)?([A-Z]{2,5})\)", text)
     _, t2n = _load_map()
-    for candidate in ticker_m:
+    for candidate in paren_tickers:
         if candidate in t2n and candidate not in _COMMON_WORDS_UPPER:
             return candidate
 
     # Strategy 2: Match company names from the headline
     # Press releases typically start with "CompanyName Announces..."
-    # Try to find the longest matching company name
     normalized_text = _normalize_name(text)
 
-    # Try matching against known company names, longest first
-    # We search for matches within the first ~100 chars (headline area)
-    search_text = normalized_text[:150]
+    # Only search the headline portion (first line, or first ~120 chars)
+    first_line = normalized_text.split("\n")[0] if "\n" in normalized_text else normalized_text
+    search_text = first_line[:120]
 
     best_match: str | None = None
     best_len = 0
@@ -168,10 +171,10 @@ def lookup_ticker(text: str) -> str | None:
     for name, ticker in n2t.items():
         if len(name) <= best_len:
             continue
-        if len(name) < 4:
+        # Require company names to be at least 5 chars to avoid false matches
+        if len(name) < 5:
             continue
         if name in search_text:
-            # Verify it's at a word boundary
             idx = search_text.find(name)
             before_ok = idx == 0 or not search_text[idx - 1].isalnum()
             after_idx = idx + len(name)

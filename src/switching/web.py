@@ -32,7 +32,7 @@ def create_app(state_path: Path | None = None) -> Flask:
         p = Portfolio.load(_STATE_PATH)
         positions = []
         for pos in p.positions:
-            cur_price = _safe_price(pos.ticker)
+            cur_price = p.cached_prices.get(pos.ticker)
             pnl_pct = (cur_price / pos.entry_price - 1.0) if cur_price and pos.entry_price else None
             positions.append({
                 "ticker": pos.ticker,
@@ -69,6 +69,7 @@ def create_app(state_path: Path | None = None) -> Flask:
             "wins": wins,
             "win_rate": (wins / total_trades * 100) if total_trades else 0,
             "total_pnl": total_pnl,
+            "prices_updated_at": p.last_scan_dt,
         })
 
     @app.route("/api/trades")
@@ -127,14 +128,6 @@ def create_app(state_path: Path | None = None) -> Flask:
         })
 
     return app
-
-
-def _safe_price(ticker: str) -> float | None:
-    try:
-        from switching.paper_trader import get_current_price
-        return get_current_price(ticker)
-    except Exception:
-        return None
 
 
 _DASHBOARD_HTML = r"""<!DOCTYPE html>
@@ -292,7 +285,10 @@ tr:hover { background: rgba(255,255,255,0.02); }
   <div class="panel">
     <div class="panel-header">
       <h2>Open Positions</h2>
-      <span class="badge" id="pos-count">0</span>
+      <div>
+        <span id="prices-stamp" style="font-size:0.7rem;color:var(--dim);margin-right:0.5rem"></span>
+        <span class="badge" id="pos-count">0</span>
+      </div>
     </div>
     <div id="positions-body">
       <div class="empty-state">No open positions</div>
@@ -361,6 +357,12 @@ async function loadPortfolio() {
     $('#kpi-return-sub').textContent = 'from ' + fmt(startVal) + ' start';
 
     $('#pos-count').textContent = d.open_count;
+
+    if (d.prices_updated_at) {
+      let ts = d.prices_updated_at.slice(0, 16).replace('T', ' ');
+      let elem = $('#prices-stamp');
+      if (elem) elem.textContent = 'Prices as of ' + ts + ' UTC (cached, 10-min refresh)';
+    }
 
     if (d.positions.length === 0) {
       $('#positions-body').innerHTML = '<div class="empty-state">No open positions</div>';

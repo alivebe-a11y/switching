@@ -3,6 +3,10 @@
 Sends trade alerts, daily summaries, and skipped signals to a Telegram
 chat via the Bot API. Requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
 env vars. If not configured, all send functions are silent no-ops.
+
+Buy notifications are batched and sent as a digest every 2 hours to avoid
+spam when many positions open in quick succession. Sells and stop-losses
+are sent immediately (time-sensitive).
 """
 
 from __future__ import annotations
@@ -10,15 +14,19 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 log = logging.getLogger(__name__)
 
 _API_BASE = "https://api.telegram.org/bot{token}"
+_BATCH_INTERVAL_SECONDS = 2 * 60 * 60  # 2 hours
 
 
 def _config() -> tuple[str, str] | None:
@@ -55,6 +63,92 @@ def _send(text: str, parse_mode: str = "HTML") -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Buy notification batching
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _BuyRecord:
+    ticker: str
+    price: float
+    shares: float
+    cost: float
+    detector: str
+    headline: str
+    severity: float
+    ai_score: float | None = None
+    timestamp: str = ""
+
+
+class _NotificationQueue:
+    """Batches buy notifications and flushes every 2 hours."""
+
+    def __init__(self) -> None:
+        self._queue: list[_BuyRecord] = []
+        self._lock = threading.Lock()
+        self._last_flush: float = time.time()
+        self._timer: threading.Timer | None = None
+
+    def enqueue_buy(self, record: _BuyRecord) -> None:
+        with self._lock:
+            self._queue.append(record)
+            if self._timer is None:
+                self._timer = threading.Timer(_BATCH_INTERVAL_SECONDS, self.flush)
+                self._timer.daemon = True
+                self._timer.start()
+
+    def flush(self) -> None:
+        with self._lock:
+            pending = self._queue[:]
+            self._queue.clear()
+            self._last_flush = time.time()
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+
+        if not pending:
+            return
+
+        if len(pending) == 1:
+            b = pending[0]
+            ai_line = f"\nAI: <b>{b.ai_score:.2f}</b>" if b.ai_score is not None else ""
+            text = (
+                f"📈 <b>BUY {b.ticker}</b>\n"
+                f"${b.price:.2f} × {b.shares:.4f} = ${b.cost:.2f}\n"
+                f"{b.detector} (sev {b.severity:.2f}){ai_line}\n"
+                f"<i>{_truncate(b.headline, 100)}</i>"
+            )
+        else:
+            total_cost = sum(b.cost for b in pending)
+            lines = [
+                f"📈 <b>{len(pending)} new positions opened</b> (${total_cost:.2f} deployed)",
+                "",
+            ]
+            for b in pending:
+                ai_tag = f" AI:{b.ai_score:.1f}" if b.ai_score is not None else ""
+                lines.append(
+                    f"• <b>{b.ticker}</b> ${b.price:.2f} × {b.shares:.2f} = ${b.cost:.2f}"
+                    f" — {b.detector}{ai_tag}"
+                )
+            text = "\n".join(lines)
+
+        _send(text)
+
+    @property
+    def pending_count(self) -> int:
+        with self._lock:
+            return len(self._queue)
+
+    @property
+    def seconds_until_flush(self) -> float:
+        elapsed = time.time() - self._last_flush
+        return max(0, _BATCH_INTERVAL_SECONDS - elapsed)
+
+
+_buy_queue = _NotificationQueue()
+
+
 def notify_buy(
     ticker: str,
     price: float,
@@ -65,14 +159,18 @@ def notify_buy(
     severity: float,
     ai_score: float | None = None,
 ) -> None:
-    ai_line = f"\nAI score: <b>{ai_score:.2f}</b>" if ai_score is not None else ""
-    text = (
-        f"📈 <b>BUY {ticker}</b>\n"
-        f"Price: ${price:.2f} × {shares:.4f} = ${cost:.2f}\n"
-        f"Detector: {detector} (severity {severity:.2f}){ai_line}\n"
-        f"<i>{_truncate(headline, 120)}</i>"
+    record = _BuyRecord(
+        ticker=ticker,
+        price=price,
+        shares=shares,
+        cost=cost,
+        detector=detector,
+        headline=headline,
+        severity=severity,
+        ai_score=ai_score,
+        timestamp=datetime.now(tz=timezone.utc).isoformat(),
     )
-    _send(text)
+    _buy_queue.enqueue_buy(record)
 
 
 def notify_sell(
@@ -167,6 +265,16 @@ def notify_startup(
 
 def is_configured() -> bool:
     return _config() is not None
+
+
+def flush_buy_queue() -> None:
+    """Force-flush any pending buy notifications (call before shutdown or daily summary)."""
+    _buy_queue.flush()
+
+
+def pending_buy_count() -> int:
+    """Number of buy notifications waiting in the batch queue."""
+    return _buy_queue.pending_count
 
 
 def _truncate(text: str, length: int) -> str:

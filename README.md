@@ -112,12 +112,16 @@ Backtest — ai_pivot (hold=5d, events=10, trades=10)
 - **`paper_trader.py`** — continuous trading loop, position management,
   detector-specific exit profiles, Telegram notifications.
 - **`web.py`** — Flask dashboard rendering portfolio, trades, signals, and
-  equity curve.
+  equity curve. Reads cached prices from the portfolio JSON state — never
+  calls yfinance per request, so refreshes are instant regardless of how
+  many positions are open.
 - **`trade_memory.py`** — per-detector / per-price-tier / per-exit-reason
   performance stats from closed trades.
 - **`ai_filter.py`** — Claude Haiku scoring (0-1) for signals (log-only mode).
-- **`notifications.py`** — Telegram push alerts for buys, sells, skips, daily
-  summary, and startup.
+- **`notifications.py`** — Telegram push alerts. Buys are batched into a
+  digest every 2 hours to avoid spam when many positions open at once;
+  sells, stop-losses, and skips fire immediately. End-of-day summary at
+  market close.
 - **`sources/rss.py`** — RSS feed lists (`DEFAULT_FEEDS`, `EARNINGS_FEEDS`,
   `CORPORATE_FEEDS`); `FeedItem.extract_ticker()` with two-stage resolution.
 - **`sources/sec_edgar.py`** — rate-limited SEC EDGAR client for 13D / Form 4.
@@ -164,7 +168,7 @@ Required environment variables in Dockge `.env`:
 pytest
 ```
 
-304 tests, all offline — pricing, backtest, RSS, and EDGAR tests use in-memory
+309 tests, all offline — pricing, backtest, RSS, and EDGAR tests use in-memory
 fixtures. Live yfinance / RSS / SEC calls only happen when running
 `switching scan`, `switching backtest`, or `switching paper-trade` against
 real data.
