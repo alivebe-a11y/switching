@@ -83,9 +83,10 @@
 - [x] fda_decision detector (was FDA_approval idea — now built)
 - [x] Diagnostic logging: all 11 RSS detectors log items/classified/with_ticker per scan
 - [x] SEC company-name-to-ticker fallback — extract_ticker() now resolves company names via SEC data
-- [x] 309 tests passing
+- [x] 319 tests passing
 - [x] Post-exit price tracker — 20-day post-close monitoring for detector refinement
 - [x] Dashboard "Post-Exit Tracker" panel with per-detector insights and left-on-table metrics
 - [x] Telegram buy notifications batched every 2 hours (digest format) — sells/stops still immediate
 - [x] Dashboard reads cached prices from portfolio JSON — no live yfinance polling per page load
 - [x] SQL schema mapping doc (`docs/SQL_SCHEMA.md`) — forward-looking, JSON stays for now
+- [x] Skipped-signal tracker — captures signals skipped due to max-positions / insufficient cash and runs the same exit logic to surface would-have-been P&L

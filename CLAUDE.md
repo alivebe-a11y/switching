@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `claude/add-ai-recommendations-ABZZX`
-- **309 tests**, run with: `pytest tests/`
+- **319 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path: `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -78,6 +78,7 @@ src/switching/
 ├── reporter.py         — rank, render_table, write_json/csv
 ├── trade_memory.py     — Per-detector/per-price-tier stats from closed trades
 ├── exit_tracker.py     — Post-exit price tracker (20 days) for detector refinement
+├── skipped_tracker.py  — Tracks signals skipped due to max-positions / insufficient cash; runs same exit logic for "would-have-been" P&L
 ├── ai_filter.py        — Claude Haiku scoring (0-1), log-only mode
 ├── notifications.py    — Telegram push (buys batched 2h, sells/stops immediate, daily summary at close)
 ├── detectors/          — All detector modules (one per file)
@@ -513,3 +514,4 @@ event_dt,ticker,company,headline,url,evidence,severity
 - [x] Telegram buy notifications batched every 2 hours (digest format) — sells/stops still immediate
 - [x] Dashboard reads cached prices from portfolio JSON — no live yfinance polling per page load
 - [x] SQL schema mapping doc (`docs/SQL_SCHEMA.md`) — forward plan, JSON stays for now
+- [x] Skipped-signal tracker (`skipped_tracker.py`) + dashboard panel — when a signal is skipped (max-positions / insufficient-cash), record it and run same exit logic for would-have-been P&L

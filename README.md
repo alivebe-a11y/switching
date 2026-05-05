@@ -117,6 +117,12 @@ Backtest — ai_pivot (hold=5d, events=10, trades=10)
   many positions are open.
 - **`trade_memory.py`** — per-detector / per-price-tier / per-exit-reason
   performance stats from closed trades.
+- **`exit_tracker.py`** — 20-day post-exit price path tracker; surfaces
+  "left on table" / "stop too tight" insights per detector.
+- **`skipped_tracker.py`** — when a signal can't be traded (max
+  positions or insufficient cash) we record the price and run the same
+  exit logic to capture a would-have-been P&L. Quantifies the cost of
+  the position cap.
 - **`ai_filter.py`** — Claude Haiku scoring (0-1) for signals (log-only mode).
 - **`notifications.py`** — Telegram push alerts. Buys are batched into a
   digest every 2 hours to avoid spam when many positions open at once;
@@ -168,7 +174,7 @@ Required environment variables in Dockge `.env`:
 pytest
 ```
 
-309 tests, all offline — pricing, backtest, RSS, and EDGAR tests use in-memory
+319 tests, all offline — pricing, backtest, RSS, and EDGAR tests use in-memory
 fixtures. Live yfinance / RSS / SEC calls only happen when running
 `switching scan`, `switching backtest`, or `switching paper-trade` against
 real data.
