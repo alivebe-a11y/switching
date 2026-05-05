@@ -252,6 +252,8 @@ def paper_trade(
     hold_days: int = typer.Option(5, "--hold-days", help="Max hold window in trading days."),
     interval: int = typer.Option(30, "--interval", help="Scan interval in minutes."),
     min_severity: float = typer.Option(0.0, help="Minimum signal severity to trade."),
+    max_position_pct: float = typer.Option(0.20, "--max-position", help="Max % of portfolio per trade."),
+    max_positions: int = typer.Option(5, "--max-positions", help="Max concurrent positions (0 = unlimited)."),
     state_file: Path = typer.Option(
         "/app/.cache/paper_portfolio.json", "--state",
         help="Path to portfolio state file.",
@@ -270,6 +272,8 @@ def paper_trade(
         hold_days=hold_days,
         scan_interval_minutes=interval,
         min_severity=min_severity,
+        max_position_pct=max_position_pct,
+        max_positions=max_positions,
         once=once,
     )
 

@@ -180,7 +180,7 @@ def open_position(
     stop_loss: float = 0.026,
     hold_days: int = 5,
 ) -> Position | None:
-    if len(portfolio.positions) >= portfolio.max_positions:
+    if portfolio.max_positions > 0 and len(portfolio.positions) >= portfolio.max_positions:
         log.info("max positions reached, skipping %s", signal.ticker)
         return None
     for p in portfolio.positions:
@@ -340,11 +340,15 @@ def run_loop(
     hold_days: int = 5,
     scan_interval_minutes: int = 30,
     min_severity: float = 0.0,
+    max_position_pct: float = 0.20,
+    max_positions: int = 5,
     once: bool = False,
 ) -> Portfolio:
     portfolio = Portfolio.load(state_path)
     if not portfolio.trades and not portfolio.positions and portfolio.cash == 1000.0:
         portfolio.cash = seed_cash
+    portfolio.max_position_pct = max_position_pct
+    portfolio.max_positions = max_positions
 
     from rich.console import Console
     from switching import notifications
