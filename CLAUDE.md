@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `claude/add-ai-recommendations-ABZZX`
-- **304 tests**, run with: `pytest tests/`
+- **309 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path: `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -70,7 +70,7 @@ The top-level `data/` directory is a mirror/legacy — always put seeds in both.
 src/switching/
 ├── cli.py              — Typer CLI (scan, backtest, paper-trade, web, check-feeds)
 ├── paper_trader.py     — Core trading loop, position/exit management
-├── web.py              — Flask dashboard (single HTML template with JS)
+├── web.py              — Flask dashboard (reads cached prices from portfolio JSON, no live yfinance polling)
 ├── registry.py         — @register decorator, load_builtin_detectors()
 ├── signal.py           — Signal dataclass, PriceReaction, dedup_key
 ├── pricing.py          — yfinance wrapper, PriceCache (SQLite)
@@ -79,7 +79,7 @@ src/switching/
 ├── trade_memory.py     — Per-detector/per-price-tier stats from closed trades
 ├── exit_tracker.py     — Post-exit price tracker (20 days) for detector refinement
 ├── ai_filter.py        — Claude Haiku scoring (0-1), log-only mode
-├── notifications.py    — Telegram push (buy/sell/skip/daily summary/startup)
+├── notifications.py    — Telegram push (buys batched 2h, sells/stops immediate, daily summary at close)
 ├── detectors/          — All detector modules (one per file)
 │   └── base.py         — Detector ABC
 ├── sources/
@@ -106,13 +106,29 @@ src/switching/
 - Severity always capped at 0.95
 - All 11 RSS detectors log `items/classified/with_ticker` counters per scan cycle
 - `extract_ticker()` has two-stage pipeline: exchange-prefix regex → SEC company-name lookup fallback
+- Dashboard reads `cached_prices` dict from portfolio JSON — no per-request yfinance calls
+- Buy notifications batch every 2 hours via `_NotificationQueue`; sells/stops fire immediately
 
 ## Ticker Extraction
 `FeedItem.extract_ticker()` in `sources/rss.py` resolves tickers in two stages:
 1. **Regex**: matches `NASDAQ:AAPL`, `NYSE:XYZ` etc. (original, works for ~10% of headlines)
-2. **SEC fallback**: `sources/ticker_lookup.py` downloads SEC `company_tickers.json` (~13K mappings),
-   matches company names (e.g. "Apple", "NVIDIA") and standalone ticker symbols in headline text.
-   Cached to disk for 7 days, degrades gracefully if SEC unreachable.
+2. **SEC fallback**: `sources/ticker_lookup.py` parses parenthesized tickers like `(AAPL)`
+   and matches SEC-registered company names (≥5 chars) in the first 120 chars of the headline.
+   Bare uppercase words are NOT matched (too many false positives). Cached to disk for 7 days.
+
+## Notification Batching
+`src/switching/notifications.py` queues buy notifications in `_NotificationQueue` and flushes
+every 2 hours via a daemon timer. Sells, stop-losses, skips, and the end-of-day summary call
+`_send()` directly. The paper trader calls `flush_buy_queue()` before sending the daily summary
+so the digest is up-to-date. With unlimited positions this prevents Telegram spam (10-20 buys
+per scan cycle would otherwise produce 10-20 separate messages).
+
+## Dashboard Data Flow
+The Flask dashboard (`src/switching/web.py`) reads everything from the portfolio JSON
+state file — it never calls yfinance. The paper trader's scan loop populates
+`portfolio.cached_prices[ticker] = current_price` for every held position each cycle, then
+saves. Dashboard refreshes show prices stamped with `last_scan_dt`. Stale by at most one
+scan interval (default 10 min). Stale tickers (no longer held) are pruned each cycle.
 
 ## Known Issues / Gotchas
 - yfinance blocked in CI/sandbox — backtests show 0 trades but events load fine
@@ -494,3 +510,6 @@ event_dt,ticker,company,headline,url,evidence,severity
 - [x] SEC company-name-to-ticker fallback (sources/ticker_lookup.py) — fixes empty dashboard signals
 - [x] Post-exit price tracker (exit_tracker.py) — 20-day post-close monitoring for detector refinement
 - [x] Dashboard "Post-Exit Tracker" panel with per-detector insights
+- [x] Telegram buy notifications batched every 2 hours (digest format) — sells/stops still immediate
+- [x] Dashboard reads cached prices from portfolio JSON — no live yfinance polling per page load
+- [x] SQL schema mapping doc (`docs/SQL_SCHEMA.md`) — forward plan, JSON stays for now
