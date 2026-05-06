@@ -18,6 +18,7 @@
 - [ ] Enable AI filter gating once score threshold is validated
 - [ ] Improve buyback detector (36% win rate — needs work or disable)
 - [ ] Build Form 4 XML parser for insider_cluster (currently stub)
+- [ ] Add Benzinga/Zacks RSS feeds for better earnings beat/miss coverage
 
 ## Phase 2 — Scale to Real Capital (Month 3-6)
 - [ ] Set up UK Ltd company for tax efficiency (25% vs 40%)
@@ -69,12 +70,15 @@
 
 ## Completed
 - [x] 13 detectors built and registered with seed data and tests
-- [x] Paper trading engine with $1K simulated portfolio
+- [x] Paper trading engine — scaled to $20K seed, $200/trade, unlimited positions
 - [x] Trade memory (Phase 1) — per-detector/per-price-tier/per-exit-reason stats
-- [x] Haiku AI signal scoring (log-only mode)
+- [x] Haiku AI signal scoring (log-only mode, max_tokens=200 to prevent JSON truncation)
 - [x] Telegram push notifications
 - [x] 2.6% tiered stop-loss with detector-specific exit profiles
+- [x] $1.00 minimum price floor — rejects sub-dollar stocks
+- [x] First-green exit guard: requires days_elapsed >= 1 (prevents same-day 0% exits)
 - [x] Flask web dashboard
+- [x] Dashboard market hours banner — US open 14:30 GMT / close 21:00 GMT + live countdown
 - [x] SEC EDGAR client + CIK→ticker mapping
 - [x] CORPORATE_FEEDS for corporate-action detectors
 - [x] check-feeds diagnostic command
@@ -83,7 +87,8 @@
 - [x] fda_decision detector (was FDA_approval idea — now built)
 - [x] Diagnostic logging: all 11 RSS detectors log items/classified/with_ticker per scan
 - [x] SEC company-name-to-ticker fallback — extract_ticker() now resolves company names via SEC data
-- [x] 319 tests passing
+- [x] Ticker lookup tightened — 8+ char minimum for non-position-0 names, M&A verb guard
+- [x] 323 tests passing
 - [x] Post-exit price tracker — 20-day post-close monitoring for detector refinement
 - [x] Dashboard "Post-Exit Tracker" panel with per-detector insights and left-on-table metrics
 - [x] Telegram buy notifications batched every 2 hours (digest format) — sells/stops still immediate
