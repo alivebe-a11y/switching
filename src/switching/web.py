@@ -280,6 +280,27 @@ tr:hover { background: rgba(255,255,255,0.02); }
     </div>
   </header>
 
+  <div id="market-clock" style="
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.8rem 1.2rem; margin-bottom: 1.5rem; display: flex;
+    align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;
+  ">
+    <div style="display:flex;align-items:center;gap:1rem">
+      <span id="market-indicator" style="
+        display:inline-block; width:10px; height:10px; border-radius:50%;
+        background:var(--red);
+      "></span>
+      <span id="market-status" style="font-weight:600;font-size:0.95rem">Market Closed</span>
+    </div>
+    <div style="display:flex;gap:1.5rem;font-size:0.85rem;color:var(--dim)">
+      <span>Open: <b style="color:var(--text)">14:30 GMT</b></span>
+      <span>Close: <b style="color:var(--text)">21:00 GMT</b></span>
+    </div>
+    <div style="font-size:0.9rem">
+      <span id="market-countdown" style="color:var(--amber);font-weight:600"></span>
+    </div>
+  </div>
+
   <div class="kpi-grid">
     <div class="kpi">
       <div class="label">Portfolio Value</div>
@@ -624,6 +645,71 @@ async function loadSkippedSignals() {
     console.error('skipped signals load failed', e);
   }
 }
+
+function updateMarketClock() {
+  const now = new Date();
+  const utcH = now.getUTCHours();
+  const utcM = now.getUTCMinutes();
+  const utcS = now.getUTCSeconds();
+  const mins = utcH * 60 + utcM;
+  const openMins = 14 * 60 + 30;  // 14:30 GMT (9:30 AM ET)
+  const closeMins = 21 * 60;      // 21:00 GMT (4:00 PM ET)
+
+  const indicator = $('#market-indicator');
+  const status = $('#market-status');
+  const countdown = $('#market-countdown');
+
+  // Check if today is a weekday
+  const day = now.getUTCDay(); // 0=Sun, 6=Sat
+  const isWeekday = day >= 1 && day <= 5;
+  const isOpen = isWeekday && mins >= openMins && mins < closeMins;
+
+  if (isOpen) {
+    indicator.style.background = 'var(--green)';
+    status.textContent = 'Market Open';
+    status.style.color = 'var(--green)';
+    let remaining = closeMins - mins;
+    let rH = Math.floor(remaining / 60);
+    let rM = remaining % 60;
+    countdown.textContent = 'Closes in ' + rH + 'h ' + rM + 'm';
+    countdown.style.color = 'var(--green)';
+  } else {
+    indicator.style.background = 'var(--red)';
+    status.textContent = 'Market Closed';
+    status.style.color = 'var(--red)';
+
+    // Calculate time until next open
+    let target = new Date(now);
+    target.setUTCHours(14, 30, 0, 0);
+
+    if (isWeekday && mins >= closeMins) {
+      // After close on weekday — next open is tomorrow (or Monday if Friday)
+      target.setUTCDate(target.getUTCDate() + (day === 5 ? 3 : 1));
+    } else if (day === 6) {
+      // Saturday — next open is Monday
+      target.setUTCDate(target.getUTCDate() + 2);
+    } else if (day === 0) {
+      // Sunday — next open is Monday
+      target.setUTCDate(target.getUTCDate() + 1);
+    } else if (isWeekday && mins < openMins) {
+      // Before open on weekday — opens today
+    }
+
+    let diff = Math.max(0, Math.floor((target - now) / 1000));
+    let dH = Math.floor(diff / 3600);
+    let dM = Math.floor((diff % 3600) / 60);
+    let dS = diff % 60;
+    let parts = [];
+    if (dH > 0) parts.push(dH + 'h');
+    parts.push(dM + 'm');
+    parts.push(dS + 's');
+    countdown.textContent = 'Opens in ' + parts.join(' ');
+    countdown.style.color = 'var(--amber)';
+  }
+}
+
+updateMarketClock();
+setInterval(updateMarketClock, 1000);
 
 function refresh() {
   loadPortfolio();
