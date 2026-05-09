@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -34,6 +35,12 @@ log = logging.getLogger(__name__)
 
 _SEARCH_URL = "https://efts.sec.gov/LATEST/search-index"
 _TICKER_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
+# ATOM feed of the most recent Form 4 filings across all issuers.
+# Paginated via &start=N (0-indexed, 40 entries per page).
+_FORM4_ATOM_URL = (
+    "https://www.sec.gov/cgi-bin/browse-edgar"
+    "?action=getcurrent&type=4&dateb=&owner=include&count=40&output=atom"
+)
 
 _UA_ENV = "SWITCHING_EDGAR_UA"
 
@@ -113,7 +120,12 @@ class EdgarClient:
                 return resp.read()
         except urllib.error.HTTPError as exc:
             if exc.code == 429:
-                log.warning("EDGAR 429 — backing off 2s")
+                try:
+                    from switching.notifications import notify_rate_limit_warning
+                    notify_rate_limit_warning(url)
+                except Exception:
+                    pass
+                log.warning("EDGAR 429 — backing off 2s on %s", url)
                 time.sleep(2.0)
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     return resp.read()
@@ -183,6 +195,118 @@ class EdgarClient:
                 results.append(self._hit_to_filing(hit))
             if len(hits) < 10:
                 break
+        return results
+
+    # -------- Form 4 feed -----------------------------------------------
+
+    def fetch_recent_form4_filings(
+        self,
+        since: datetime,
+        *,
+        max_filings: int = 120,
+    ) -> list[tuple[str, str, str]]:
+        """Return ``(cik, accession_dashed, xml_url)`` for Form 4s filed since *since*.
+
+        Uses the EDGAR current-filings ATOM feed rather than the full-text
+        search index — the ATOM feed is the most reliable source for raw
+        Form 4 volume.  Lookback is capped at **24 hours** to avoid
+        overwhelming EDGAR on cold starts (300-500 Form 4s are filed every
+        trading day; going further back would bust both rate limits and
+        memory).
+
+        The returned *xml_url* follows the standard EDGAR naming convention
+        ``https://…/Archives/edgar/data/{cik}/{accession_nodash}/{accession_dashed}.xml``
+        which covers the vast majority of electronically-filed Form 4s.
+        """
+        import xml.etree.ElementTree as ET
+        from datetime import timedelta
+
+        # Cap lookback to the last 24 h.
+        since_tz = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
+        cap = datetime.now(tz=timezone.utc) - timedelta(hours=24)
+        if since_tz < cap:
+            log.info(
+                "Form 4 lookback capped to 24 h (requested since=%s)",
+                since_tz.isoformat()[:16],
+            )
+            since_tz = cap
+
+        _ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
+        _ACCESSION_RX = re.compile(r"(\d{10}-\d{2}-\d{6})")
+        _CIK_RX = re.compile(r"\(0*(\d+)\)")
+
+        results: list[tuple[str, str, str]] = []
+        page = 0
+
+        while len(results) < max_filings:
+            url = f"{_FORM4_ATOM_URL}&start={page * 40}"
+            try:
+                raw = self._fetch(url)
+            except Exception as exc:
+                log.warning("Form 4 ATOM fetch failed (page %d): %s", page, exc)
+                break
+
+            try:
+                tree = ET.fromstring(raw)
+            except ET.ParseError as exc:
+                log.warning("Form 4 ATOM parse error: %s", exc)
+                break
+
+            entries = tree.findall("atom:entry", _ATOM_NS)
+            if not entries:
+                break
+
+            stop_paging = False
+            for entry in entries:
+                updated_el = entry.find("atom:updated", _ATOM_NS)
+                if updated_el is None or not updated_el.text:
+                    continue
+                try:
+                    updated = datetime.fromisoformat(
+                        updated_el.text.replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    continue
+
+                if updated < since_tz:
+                    stop_paging = True  # feed is sorted newest-first; bail early
+                    continue
+
+                # Accession from <id>: urn:tag:…,2008:accession-number=XXXX-XX-XXXXXX
+                id_el = entry.find("atom:id", _ATOM_NS)
+                if id_el is None or not id_el.text:
+                    continue
+                acc_m = _ACCESSION_RX.search(id_el.text)
+                if not acc_m:
+                    continue
+                accession_dashed = acc_m.group(1)
+                accession_nodash = accession_dashed.replace("-", "")
+
+                # CIK from <title>: "4 - COMPANY NAME (0001234567) (Filed …)"
+                title_el = entry.find("atom:title", _ATOM_NS)
+                if title_el is None:
+                    continue
+                cik_m = _CIK_RX.search(title_el.text or "")
+                if not cik_m:
+                    continue
+                cik = cik_m.group(1).lstrip("0") or "0"
+
+                xml_url = (
+                    f"https://www.sec.gov/Archives/edgar/data/{cik}"
+                    f"/{accession_nodash}/{accession_dashed}.xml"
+                )
+                results.append((cik, accession_dashed, xml_url))
+
+            if stop_paging or len(entries) < 40:
+                break
+            page += 1
+
+        log.info(
+            "Form 4 ATOM: %d filings since %s (pages=%d)",
+            len(results),
+            since_tz.isoformat()[:16],
+            page + 1,
+        )
         return results
 
     def _hit_to_filing(self, hit: dict[str, Any]) -> Filing:

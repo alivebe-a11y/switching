@@ -181,17 +181,165 @@ def _cluster_to_signal(ticker: str, members: Sequence[InsiderPurchase]) -> Signa
     )
 
 
+def parse_form4_xml(xml_bytes: bytes, url: str = "") -> list[InsiderPurchase]:
+    """Parse a Form 4 XML document and return InsiderPurchase objects.
+
+    Only returns transactions with transaction code ``P`` (open-market
+    purchase).  Derivative transactions (stock options, SARs, etc.) are
+    ignored — we only want voluntary cash-on-the-table stock purchases.
+
+    Form 4 XML structure (abbreviated)::
+
+        <ownershipDocument>
+          <issuer>
+            <issuerName>Tesla, Inc.</issuerName>
+            <issuerTradingSymbol>TSLA</issuerTradingSymbol>
+          </issuer>
+          <reportingOwner>
+            <reportingOwnerId>
+              <rptOwnerName>Musk Elon</rptOwnerName>
+            </reportingOwnerId>
+            <reportingOwnerRelationship>
+              <isOfficer>1</isOfficer>
+              <officerTitle>CEO</officerTitle>
+            </reportingOwnerRelationship>
+          </reportingOwner>
+          <nonDerivativeTable>
+            <nonDerivativeTransaction>
+              <transactionDate><value>2024-01-15</value></transactionDate>
+              <transactionCoding>
+                <transactionCode>P</transactionCode>
+              </transactionCoding>
+              <transactionAmounts>
+                <transactionShares><value>1000</value></transactionShares>
+                <transactionPricePerShare><value>250.50</value></transactionPricePerShare>
+              </transactionAmounts>
+            </nonDerivativeTransaction>
+          </nonDerivativeTable>
+        </ownershipDocument>
+    """
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError as exc:
+        log.debug("Form 4 XML parse error at %s: %s", url, exc)
+        return []
+
+    # ---- issuer -----------------------------------------------------------
+    issuer_el = root.find(".//issuer")
+    if issuer_el is None:
+        return []
+    ticker_el = issuer_el.find("issuerTradingSymbol")
+    issuer_name_el = issuer_el.find("issuerName")
+    ticker = (ticker_el.text or "").strip().upper() if ticker_el is not None else ""
+    issuer_name = (issuer_name_el.text or "").strip() if issuer_name_el is not None else ""
+
+    if not ticker:
+        return []
+
+    # ---- reporting owner --------------------------------------------------
+    owner_el = root.find(".//reportingOwner")
+    if owner_el is None:
+        return []
+    owner_name_el = owner_el.find(".//rptOwnerName")
+    insider_name = (
+        (owner_name_el.text or "").strip() if owner_name_el is not None else ""
+    )
+    officer_title_el = owner_el.find(".//officerTitle")
+    is_director_el = owner_el.find(".//isDirector")
+    insider_title = ""
+    if officer_title_el is not None and (officer_title_el.text or "").strip():
+        insider_title = officer_title_el.text.strip()
+    elif (
+        is_director_el is not None
+        and (is_director_el.text or "").strip() == "1"
+    ):
+        insider_title = "Director"
+
+    # ---- non-derivative transactions (stock purchases) -------------------
+    results: list[InsiderPurchase] = []
+    for txn in root.findall(".//nonDerivativeTransaction"):
+        # Transaction code must be "P" (open-market purchase)
+        code_el = txn.find(".//transactionCoding/transactionCode")
+        if code_el is None:
+            continue
+        if (code_el.text or "").strip().upper() != "P":
+            continue
+
+        date_el = txn.find(".//transactionDate/value")
+        shares_el = txn.find(".//transactionAmounts/transactionShares/value")
+        price_el = txn.find(".//transactionAmounts/transactionPricePerShare/value")
+
+        if date_el is None or shares_el is None:
+            continue
+
+        try:
+            txn_date = date.fromisoformat((date_el.text or "").strip())
+        except ValueError:
+            continue
+
+        try:
+            shares = float((shares_el.text or "0").replace(",", ""))
+        except ValueError:
+            continue
+
+        try:
+            price = float(
+                (price_el.text or "0").replace(",", "").strip()
+            ) if price_el is not None else 0.0
+        except ValueError:
+            price = 0.0
+
+        dollar_amount = shares * price
+        if dollar_amount <= 0:
+            # Skip zero-price grants / transfers
+            continue
+
+        results.append(InsiderPurchase(
+            ticker=ticker,
+            issuer=issuer_name,
+            insider_name=insider_name,
+            insider_title=insider_title,
+            transaction_date=txn_date,
+            dollar_amount=dollar_amount,
+            transaction_code="P",
+            url=url,
+        ))
+
+    return results
+
+
 def _pull_form4_purchases(
     client: EdgarClient, *, since: datetime
 ) -> list[InsiderPurchase]:
-    """Placeholder: emit nothing from Form 4 metadata alone.
+    """Fetch recent Form 4 filings from EDGAR and parse open-market purchases.
 
-    Real implementation requires fetching each Form 4 XML and parsing
-    transaction lines. That's out of scope for v1 — the detector's value
-    is in the clustering logic, which is reached via the seed CSV.
+    Calls ``EdgarClient.fetch_recent_form4_filings()`` to get the ATOM feed
+    of recent filings, then downloads and parses each Form 4 XML to extract
+    code-P (open-market purchase) transactions.
     """
-    log.info("pull_live for insider_cluster is a stub; use the seed CSV for backtests")
-    return []
+    filings = client.fetch_recent_form4_filings(since)
+    purchases: list[InsiderPurchase] = []
+    errors = 0
+
+    for cik, _accession_dashed, xml_url in filings:
+        try:
+            xml_bytes = client._fetch(xml_url)
+        except Exception as exc:
+            log.debug("Form 4 XML fetch failed (%s): %s", xml_url, exc)
+            errors += 1
+            continue
+        items = parse_form4_xml(xml_bytes, url=xml_url)
+        purchases.extend(items)
+
+    log.info(
+        "insider_cluster: %d Form 4 filings fetched, %d purchases found, %d errors",
+        len(filings),
+        len(purchases),
+        errors,
+    )
+    return purchases
 
 
 def pull_live(
@@ -200,8 +348,12 @@ def pull_live(
     since: datetime | None = None,
     until: datetime | None = None,
 ) -> list[Signal]:
-    """Hook used by ``--live-seed``. Returns empty; real Form 4 parsing is roadmap."""
-    return []
+    """Hook used by ``--live-seed``.  Fetches and clusters real Form 4 purchases."""
+    if since is None:
+        from datetime import timedelta
+        since = datetime.now(tz=timezone.utc) - timedelta(hours=24)
+    purchases = _pull_form4_purchases(client, since=since)
+    return detect_clusters(purchases)
 
 
 def _as_date(v):

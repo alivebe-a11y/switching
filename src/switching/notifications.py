@@ -263,6 +263,29 @@ def notify_startup(
     _send(text)
 
 
+def notify_rate_limit_warning(endpoint: str) -> None:
+    """Send an immediate Telegram alert when EDGAR returns HTTP 429.
+
+    Called before the 2-second backoff so the operator knows the scraper
+    is being throttled. If this fires repeatedly, reduce ``rate_limit`` on
+    the EdgarClient or increase the scan interval.
+    """
+    short_url = endpoint[:120]
+    text = (
+        f"⚠️ <b>EDGAR rate limit hit (429)</b>\n"
+        f"<code>{short_url}</code>\n"
+        f"Backing off 2 s and retrying. If this repeats, check scan frequency."
+    )
+    _send(text)
+
+
+def notify_review_digest(insights: list[str], trade_count: int) -> None:
+    lines = [f"📋 <b>Daily Strategy Review</b> ({trade_count} total trades)", ""]
+    for insight in insights:
+        lines.append(f"• {insight}")
+    _send("\n".join(lines))
+
+
 def is_configured() -> bool:
     return _config() is not None
 
