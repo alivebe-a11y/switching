@@ -35,6 +35,8 @@ class Position:
     days_held: int = 0
     first_green: bool = True
     first_green_pct: float = 0.0
+    peak_price: float = 0.0
+    peak_tracking: bool = False
 
     @property
     def cost_basis(self) -> float:
@@ -54,6 +56,8 @@ class ClosedTrade:
     pct_return: float
     exit_reason: str
     headline: str
+    peak_price: float = 0.0
+    severity: float = 0.0  # signal severity — used for quality correlation in analytics
 
 
 @dataclass
@@ -67,6 +71,7 @@ class Portfolio:
     max_position_pct: float = 0.20
     max_positions: int = 5
     cached_prices: dict[str, float] = field(default_factory=dict)
+    last_review_sent_dt: str = ""
 
     @property
     def total_value(self) -> float:
@@ -84,6 +89,7 @@ class Portfolio:
             "max_position_pct": self.max_position_pct,
             "max_positions": self.max_positions,
             "cached_prices": self.cached_prices,
+            "last_review_sent_dt": self.last_review_sent_dt,
         }
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -102,6 +108,7 @@ class Portfolio:
             max_position_pct=data.get("max_position_pct", 0.20),
             max_positions=data.get("max_positions", 5),
             cached_prices=data.get("cached_prices", {}),
+            last_review_sent_dt=data.get("last_review_sent_dt", ""),
         )
 
 
@@ -150,12 +157,28 @@ def _tiered_stop_loss(base_stop: float, price: float) -> float:
     return base_stop + 0.02
 
 
+def _position_size_override(detector: str) -> float | None:
+    """Return a fixed-dollar position size for high-performing detectors.
+
+    Detectors earn a fixed-size slot when live data shows they consistently
+    outperform the standard percentage-based allocation.  ``None`` means "use
+    the normal ``portfolio.total_value * max_position_pct`` formula".
+
+    The fixed amount is still capped by ``portfolio.cash`` so we never spend
+    money we don't have.
+    """
+    _OVERRIDES: dict[str, float] = {
+        "guidance_raise": 2_000.0,   # strong live performer — bump to fixed $2k
+    }
+    return _OVERRIDES.get(detector)
+
+
 def _exit_profile(detector: str, price: float) -> dict:
     """Return detector-specific exit parameters based on observed performance."""
     if detector == "buyback":
         return {"first_green": False, "first_green_pct": 0.0, "hold_days": 5}
     if detector == "earnings_surprise":
-        return {"first_green": True, "first_green_pct": 0.0, "hold_days": 2}
+        return {"first_green": True, "first_green_pct": 0.005, "hold_days": 2}
     if detector == "ai_pivot":
         if price >= 30.0:
             return {"first_green": True, "first_green_pct": 0.02, "hold_days": 5}
@@ -172,6 +195,10 @@ def _exit_profile(detector: str, price: float) -> dict:
         return {"first_green": True, "first_green_pct": 0.01, "hold_days": 3}
     if detector == "contract_win":
         return {"first_green": True, "first_green_pct": 0.02, "hold_days": 5}
+    if detector == "stock_split":
+        return {"first_green": True, "first_green_pct": 0.015, "hold_days": 4}
+    if detector == "crypto_treasury":
+        return {"first_green": True, "first_green_pct": 0.03, "hold_days": 3}
     return {"first_green": True, "first_green_pct": 0.0, "hold_days": 5}
 
 
@@ -195,8 +222,12 @@ def open_position(
         log.info("price $%.4f below $1.00 floor, skipping %s", price, signal.ticker)
         return None
 
-    alloc = portfolio.total_value * portfolio.max_position_pct
-    alloc = min(alloc, portfolio.cash)
+    override = _position_size_override(signal.detector)
+    if override is not None:
+        alloc = min(override, portfolio.cash)
+    else:
+        alloc = portfolio.total_value * portfolio.max_position_pct
+        alloc = min(alloc, portfolio.cash)
     if alloc < 1.0:
         log.info("insufficient cash ($%.2f), skipping %s", portfolio.cash, signal.ticker)
         return None
@@ -255,6 +286,15 @@ def check_exits(portfolio: Portfolio) -> list[ClosedTrade]:
         if ret_low <= -pos.stop_loss:
             reason = "stop_loss"
             price = pos.entry_price * (1.0 - pos.stop_loss)
+        elif pos.peak_tracking:
+            if price > pos.peak_price:
+                pos.peak_price = price
+            drop_from_peak = (pos.peak_price - price) / pos.peak_price if pos.peak_price > 0 else 0
+            if drop_from_peak >= 0.005:
+                reason = "peak_trailing"
+        elif pos.first_green and ret >= 0.08 and days_elapsed == 0:
+            pos.peak_tracking = True
+            pos.peak_price = price
         elif pos.first_green and ret >= pos.first_green_pct and days_elapsed >= 1:
             reason = "first_green"
         elif days_elapsed >= pos.hold_days:
@@ -275,6 +315,8 @@ def check_exits(portfolio: Portfolio) -> list[ClosedTrade]:
                 pct_return=round(pct, 4),
                 exit_reason=reason,
                 headline=pos.headline,
+                peak_price=round(pos.peak_price, 4) if pos.peak_tracking else 0.0,
+                severity=pos.severity,
             )
             portfolio.cash += pos.shares * price
             portfolio.trades.append(trade)
@@ -336,6 +378,124 @@ def scan_for_signals(
         except Exception as exc:
             log.warning("scan failed for %s: %s", name, exc)
     return signals
+
+
+def _check_peak_exits_only(portfolio: Portfolio) -> list[ClosedTrade]:
+    """Check ONLY peak-tracking positions for the 0.5%-drop trailing exit.
+    Never touches non-peak positions.
+    """
+    closed: list[ClosedTrade] = []
+    remaining: list[Position] = []
+    for pos in portfolio.positions:
+        if not pos.peak_tracking:
+            remaining.append(pos)
+            continue
+        price = get_current_price(pos.ticker)
+        if price is None:
+            remaining.append(pos)
+            continue
+        if price > pos.peak_price:
+            pos.peak_price = price
+        drop = (pos.peak_price - price) / pos.peak_price if pos.peak_price > 0 else 0
+        if drop >= 0.005:
+            pnl = (price - pos.entry_price) * pos.shares
+            pct = price / pos.entry_price - 1.0
+            trade = ClosedTrade(
+                ticker=pos.ticker,
+                detector=pos.detector,
+                entry_price=pos.entry_price,
+                exit_price=round(price, 4),
+                shares=pos.shares,
+                entry_dt=pos.entry_dt,
+                exit_dt=datetime.now(tz=timezone.utc).isoformat(),
+                pnl=round(pnl, 2),
+                pct_return=round(pct, 4),
+                exit_reason="peak_trailing",
+                headline=pos.headline,
+                peak_price=round(pos.peak_price, 4),
+            )
+            portfolio.cash += pos.shares * price
+            portfolio.trades.append(trade)
+            closed.append(trade)
+        else:
+            remaining.append(pos)
+    portfolio.positions = remaining
+    return closed
+
+
+def _poll_peak_positions(
+    portfolio: Portfolio,
+    *,
+    until: float,
+    notifications,
+    exit_tracker,
+    tracker_path: Path,
+    state_path: Path,
+) -> None:
+    """1-second poll loop for peak-tracking positions only.
+    Runs until `until` (epoch time) or all peak-tracking positions have exited.
+    """
+    import time as _time
+    while _time.time() < until:
+        if not any(p.peak_tracking for p in portfolio.positions):
+            break
+        _time.sleep(1)
+        closed = _check_peak_exits_only(portfolio)
+        for t in closed:
+            notifications.notify_sell(
+                ticker=t.ticker,
+                exit_price=t.exit_price,
+                pnl=t.pnl,
+                pct_return=t.pct_return,
+                exit_reason=t.exit_reason,
+                detector=t.detector,
+            )
+            exit_tracker.add_trade(t)
+        if closed:
+            exit_tracker.save(tracker_path)
+            portfolio.save(state_path)
+
+
+def _build_review_insights(portfolio: Portfolio, exit_tracker) -> list[str]:
+    """Generate review insights from trade history and post-exit tracking data."""
+    from switching.exit_tracker import ExitTracker
+    insights: list[str] = []
+    total_trades = len(portfolio.trades)
+
+    # Trade count milestone (report the highest crossed)
+    for milestone in (100, 50, 25, 10):
+        if total_trades >= milestone:
+            insights.append(
+                f"Milestone: {total_trades} trades completed — review exit profiles and detector win rates"
+            )
+            break
+
+    # Per-detector win rates (need 10+ trades to be meaningful)
+    by_detector: dict[str, list] = {}
+    for t in portfolio.trades:
+        by_detector.setdefault(t.detector, []).append(t)
+
+    for det, trades in sorted(by_detector.items()):
+        if len(trades) < 10:
+            continue
+        wins = sum(1 for t in trades if t.pnl > 0)
+        win_rate = wins / len(trades)
+        avg_ret = sum(t.pct_return for t in trades) / len(trades)
+        if win_rate < 0.55:
+            insights.append(
+                f"{det}: {win_rate:.0%} win rate over {len(trades)} trades "
+                f"(avg {avg_ret*100:+.1f}%) — below 55% target, consider disabling"
+            )
+        elif win_rate >= 0.70:
+            insights.append(
+                f"{det}: {win_rate:.0%} win rate over {len(trades)} trades — strong performer"
+            )
+
+    # Post-exit insights from the exit tracker
+    completed = [t for t in exit_tracker.tracked if t.tracking_complete]
+    insights.extend(exit_tracker._generate_insights(completed))
+
+    return insights
 
 
 def run_loop(
@@ -464,9 +624,14 @@ def run_loop(
                     skip_reason = "max_positions"
                 elif any(p.ticker == sig.ticker for p in portfolio.positions):
                     skip_reason = "already_holding"
+                elif price < 1.0:
+                    skip_reason = "price_too_low"
                 else:
-                    skip_reason = "insufficient_cash"
+                    alloc = portfolio.total_value * portfolio.max_position_pct
+                    alloc = min(alloc, portfolio.cash)
+                    skip_reason = "insufficient_cash" if alloc < 1.0 else "unknown"
                 notifications.notify_skip(sig.ticker, skip_reason.replace("_", " "), sig.detector, sig.headline)
+                portfolio.seen_signals.append(_signal_key(sig))
                 if skip_reason != "already_holding":
                     profile = _exit_profile(sig.detector, price)
                     skipped_tracker.add(
@@ -506,6 +671,14 @@ def run_loop(
             console.print(f"  [dim]History: {total} trades, {wins} wins ({wr:.0f}%), total P&L: ${total_pnl:+.2f}[/dim]")
 
         today_str = now.strftime("%Y-%m-%d")
+
+        # Once-daily review digest (Telegram + persisted for dashboard)
+        if portfolio.last_review_sent_dt != today_str:
+            review_insights = _build_review_insights(portfolio, exit_tracker)
+            if review_insights:
+                notifications.notify_review_digest(review_insights, len(portfolio.trades))
+                portfolio.last_review_sent_dt = today_str
+
         market_closed = now.hour >= 21
         if market_closed and today_str != last_summary_date:
             last_summary_date = today_str
@@ -535,8 +708,21 @@ def run_loop(
         if once:
             break
 
-        console.print(f"  [dim]Next scan in {scan_interval_minutes}m...[/dim]")
-        time.sleep(scan_interval_minutes * 60)
+        next_scan_at = time.time() + scan_interval_minutes * 60
+        if any(p.peak_tracking for p in portfolio.positions):
+            console.print(f"  [yellow]Peak-tracking active — polling every 60s until next scan[/yellow]")
+            _poll_peak_positions(
+                portfolio,
+                until=next_scan_at,
+                notifications=notifications,
+                exit_tracker=exit_tracker,
+                tracker_path=tracker_path,
+                state_path=state_path,
+            )
+        remaining = next_scan_at - time.time()
+        if remaining > 0:
+            console.print(f"  [dim]Next scan in {remaining/60:.1f}m...[/dim]")
+            time.sleep(remaining)
 
     return portfolio
 

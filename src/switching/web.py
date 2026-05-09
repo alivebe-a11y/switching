@@ -128,6 +128,222 @@ def create_app(state_path: Path | None = None) -> Flask:
             "summary": tracker._build_summary(),
         })
 
+    @app.route("/api/review")
+    def api_review():
+        from switching.paper_trader import Portfolio, _build_review_insights
+        from switching.exit_tracker import ExitTracker
+        p = Portfolio.load(_STATE_PATH)
+        tracker_path = _STATE_PATH.parent / "exit_tracker.json"
+        exit_tracker = ExitTracker.load(tracker_path)
+        insights = _build_review_insights(p, exit_tracker)
+        by_detector: dict[str, dict] = {}
+        for t in p.trades:
+            d = by_detector.setdefault(t.detector, {"trades": 0, "wins": 0, "pnl": 0.0, "returns": []})
+            d["trades"] += 1
+            d["wins"] += 1 if t.pnl > 0 else 0
+            d["pnl"] += t.pnl
+            d["returns"].append(t.pct_return)
+        detector_stats = {}
+        for det, d in sorted(by_detector.items()):
+            wr = d["wins"] / d["trades"] if d["trades"] else 0
+            avg_ret = sum(d["returns"]) / len(d["returns"]) if d["returns"] else 0
+            detector_stats[det] = {
+                "trades": d["trades"],
+                "win_rate": round(wr, 3),
+                "total_pnl": round(d["pnl"], 2),
+                "avg_return": round(avg_ret, 4),
+            }
+        milestones = []
+        for m in (10, 25, 50, 100):
+            milestones.append({"target": m, "reached": len(p.trades) >= m})
+        return jsonify({
+            "insights": insights,
+            "trade_count": len(p.trades),
+            "last_review_sent_dt": p.last_review_sent_dt,
+            "detector_stats": detector_stats,
+            "milestones": milestones,
+        })
+
+    @app.route("/api/charts")
+    def api_charts():
+        p = Portfolio.load(_STATE_PATH)
+        if not p.trades:
+            return jsonify({"equity": [], "pnl": [], "win_rate": [], "cash": []})
+
+        starting = p.cash + sum(pos.cost_basis for pos in p.positions) - sum(t.pnl for t in p.trades)
+
+        trades_sorted = sorted(p.trades, key=lambda t: t.exit_dt)
+
+        equity_pts  = [{"dt": trades_sorted[0].entry_dt, "value": round(starting, 2)}]
+        pnl_pts     = [{"dt": trades_sorted[0].entry_dt, "value": 0.0}]
+        wr_pts      = []
+        cash_pts    = [{"dt": trades_sorted[0].entry_dt, "value": round(starting, 2)}]
+
+        running = starting
+        running_pnl = 0.0
+        running_cash = starting
+        wins = 0
+
+        for i, t in enumerate(trades_sorted, 1):
+            running      += t.pnl
+            running_pnl  += t.pnl
+            running_cash += t.pnl
+            wins         += 1 if t.pnl > 0 else 0
+            equity_pts.append({"dt": t.exit_dt, "value": round(running, 2)})
+            pnl_pts.append({"dt": t.exit_dt, "value": round(running_pnl, 2)})
+            wr_pts.append({"dt": t.exit_dt, "value": round(wins / i, 3)})
+            cash_pts.append({"dt": t.exit_dt, "value": round(running_cash, 2)})
+
+        return jsonify({
+            "equity": equity_pts,
+            "pnl": pnl_pts,
+            "win_rate": wr_pts,
+            "cash": cash_pts,
+        })
+
+    @app.route("/api/analytics")
+    def api_analytics():
+        from datetime import datetime as _dt
+        p = Portfolio.load(_STATE_PATH)
+
+        # ── Exit profile breakdown per detector ────────────────────────────
+        det_map: dict = {}
+        for t in p.trades:
+            d = det_map.setdefault(t.detector, {
+                "trades": 0, "wins": 0, "returns": [], "hold_days_list": [],
+                "by_exit": {},
+            })
+            d["trades"] += 1
+            if t.pnl > 0:
+                d["wins"] += 1
+            d["returns"].append(t.pct_return)
+            try:
+                e = _dt.fromisoformat(t.entry_dt.replace("Z", "+00:00"))
+                x = _dt.fromisoformat(t.exit_dt.replace("Z", "+00:00"))
+                d["hold_days_list"].append(max(0, (x.date() - e.date()).days))
+            except Exception:
+                pass
+            reason = t.exit_reason or "unknown"
+            d["by_exit"][reason] = d["by_exit"].get(reason, 0) + 1
+
+        exit_profiles = []
+        for det, d in sorted(det_map.items()):
+            n = d["trades"]
+            total_exit = sum(d["by_exit"].values()) or 1
+            exit_profiles.append({
+                "detector": det,
+                "trades": n,
+                "win_rate": round(d["wins"] / n, 3) if n else 0,
+                "avg_return": round(sum(d["returns"]) / len(d["returns"]), 4) if d["returns"] else 0,
+                "avg_hold_days": round(sum(d["hold_days_list"]) / len(d["hold_days_list"]), 1) if d["hold_days_list"] else 0,
+                "pct_stop_loss": round(d["by_exit"].get("stop_loss", 0) / total_exit, 3),
+                "pct_first_green": round(d["by_exit"].get("first_green", 0) / total_exit, 3),
+                "pct_hold_expiry": round(d["by_exit"].get("hold_expiry", 0) / total_exit, 3),
+                "pct_peak_trailing": round(d["by_exit"].get("peak_trailing", 0) / total_exit, 3),
+            })
+
+        # ── Severity buckets (signal quality correlation) ──────────────────
+        sev_buckets: dict = {}
+        for t in p.trades:
+            sev = getattr(t, "severity", 0.0)
+            if sev >= 0.90:
+                b = "0.90+"
+            elif sev >= 0.80:
+                b = "0.80–0.90"
+            elif sev >= 0.70:
+                b = "0.70–0.80"
+            else:
+                b = "<0.70"
+            bkt = sev_buckets.setdefault(b, {"trades": 0, "wins": 0, "returns": []})
+            bkt["trades"] += 1
+            if t.pnl > 0:
+                bkt["wins"] += 1
+            bkt["returns"].append(t.pct_return)
+
+        sev_data = []
+        for label in ["0.90+", "0.80–0.90", "0.70–0.80", "<0.70"]:
+            if label in sev_buckets:
+                bkt = sev_buckets[label]
+                n = bkt["trades"]
+                sev_data.append({
+                    "bucket": label,
+                    "trades": n,
+                    "win_rate": round(bkt["wins"] / n, 3) if n else 0,
+                    "avg_return": round(sum(bkt["returns"]) / len(bkt["returns"]), 4) if bkt["returns"] else 0,
+                })
+
+        # ── Peak trailing summary ──────────────────────────────────────────
+        peak_trades = [t for t in p.trades if t.exit_reason == "peak_trailing" or getattr(t, "peak_price", 0) > 0]
+        peak_summary: dict = {"total": len(peak_trades), "trades": []}
+        if peak_trades:
+            peak_returns = [t.peak_price / t.entry_price - 1.0 for t in peak_trades if getattr(t, "peak_price", 0) > 0 and t.entry_price > 0]
+            exit_returns = [t.pct_return for t in peak_trades]
+            left_on_table = [(t.peak_price / t.entry_price - 1.0) - t.pct_return for t in peak_trades if getattr(t, "peak_price", 0) > 0 and t.entry_price > 0]
+            peak_summary["avg_peak_pct"] = round(sum(peak_returns) / len(peak_returns), 4) if peak_returns else 0
+            peak_summary["avg_exit_pct"] = round(sum(exit_returns) / len(exit_returns), 4) if exit_returns else 0
+            peak_summary["avg_left_on_table"] = round(sum(left_on_table) / len(left_on_table), 4) if left_on_table else 0
+            for t in reversed(peak_trades[-20:]):
+                peak_summary["trades"].append({
+                    "ticker": t.ticker,
+                    "detector": t.detector,
+                    "entry_price": t.entry_price,
+                    "peak_price": getattr(t, "peak_price", 0),
+                    "exit_price": t.exit_price,
+                    "peak_pct": round(t.peak_price / t.entry_price - 1.0, 4) if getattr(t, "peak_price", 0) > 0 and t.entry_price > 0 else None,
+                    "exit_pct": round(t.pct_return, 4),
+                    "exit_reason": t.exit_reason,
+                    "exit_dt": t.exit_dt,
+                })
+
+        return jsonify({
+            "exit_profiles": exit_profiles,
+            "severity_buckets": sev_data,
+            "peak_trailing": peak_summary,
+            "trade_count": len(p.trades),
+        })
+
+    @app.route("/api/options-compare")
+    def api_options_compare():
+        from switching.options_model import compare_options_vs_stock
+        p = Portfolio.load(_STATE_PATH)
+        try:
+            iv = float(request.args.get("iv", "0.30"))
+            dte = int(request.args.get("dte", "14"))
+        except (ValueError, TypeError):
+            iv, dte = 0.30, 14
+        iv = max(0.05, min(2.0, iv))
+        dte = max(1, min(90, dte))
+
+        result = compare_options_vs_stock(p.trades, assumed_iv=iv, dte=dte)
+        by_det = result.by_detector()
+        by_det_list = sorted(
+            [
+                {
+                    "detector": det,
+                    "trades": v["trades"],
+                    "stock_pnl": v["stock_pnl"],
+                    "options_pnl": v["options_pnl"],
+                    "stock_win_rate": v["stock_win_rate"],
+                    "options_win_rate": v["options_win_rate"],
+                }
+                for det, v in by_det.items()
+            ],
+            key=lambda x: x["options_pnl"] - x["stock_pnl"],
+            reverse=True,
+        )
+        return jsonify({
+            "trade_count": len(result.trades),
+            "total_stock_pnl": round(result.total_stock_pnl, 2),
+            "total_options_pnl": round(result.total_options_pnl, 2),
+            "stock_win_rate": round(result.stock_win_rate, 3),
+            "options_win_rate": round(result.options_win_rate, 3),
+            "options_better_count": result.options_better_count,
+            "stock_better_count": result.stock_better_count,
+            "assumed_iv": iv,
+            "dte": dte,
+            "by_detector": by_det_list,
+        })
+
     @app.route("/api/skipped-signals")
     def api_skipped_signals():
         path = _STATE_PATH.parent / "skipped_signals.json"
@@ -233,6 +449,20 @@ tr:hover { background: rgba(255,255,255,0.02); }
 .exit-stop_loss { background: rgba(239,68,68,0.15); color: var(--red); }
 .exit-hold_expiry, .exit-hold { background: rgba(139,143,163,0.15); color: var(--dim); }
 .exit-take_profit { background: rgba(245,158,11,0.15); color: var(--amber); }
+.exit-peak_trailing { background: rgba(6,182,212,0.15); color: var(--cyan); }
+.lot-small { color: #fbbf24; }
+.lot-medium { color: #f97316; }
+.lot-large { color: var(--red); }
+.milestone-chip {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  padding: 0.2rem 0.7rem; border-radius: 12px; font-size: 0.75rem;
+  border: 1px solid var(--border);
+}
+.milestone-chip.reached { background: rgba(34,197,94,0.15); color: var(--green); border-color: rgba(34,197,94,0.3); }
+.milestone-chip.pending { background: rgba(139,143,163,0.1); color: var(--dim); }
+.insight-warn { color: var(--amber); font-size: 0.82rem; margin-bottom: 0.35rem; }
+.insight-good { color: var(--green); font-size: 0.82rem; margin-bottom: 0.35rem; }
+.insight-info { color: var(--dim); font-size: 0.82rem; margin-bottom: 0.35rem; }
 .severity-bar {
   display: inline-block; height: 6px; border-radius: 3px;
   background: var(--blue); min-width: 20px;
@@ -241,9 +471,12 @@ tr:hover { background: rgba(255,255,255,0.02); }
 .chart-area {
   padding: 1.2rem; height: 200px; display: flex;
   align-items: flex-end; gap: 2px;
+  overflow-x: auto; overflow-y: hidden;
 }
+.chart-area::-webkit-scrollbar { height: 4px; }
+.chart-area::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 .chart-bar {
-  flex: 1; background: var(--blue); border-radius: 2px 2px 0 0;
+  flex: 0 0 24px; background: var(--blue); border-radius: 2px 2px 0 0;
   min-height: 2px; position: relative;
 }
 .chart-bar.loss { background: var(--red); }
@@ -280,6 +513,24 @@ tr:hover { background: rgba(255,255,255,0.02); }
     </div>
   </header>
 
+  <div id="market-clock" style="
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.8rem 1.2rem; margin-bottom: 1.5rem; display: flex;
+    align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;
+  ">
+    <div style="display:flex;align-items:center;gap:1rem">
+      <span id="market-indicator" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--green)"></span>
+      <span id="market-status" style="font-weight:600;font-size:0.95rem;color:var(--green);">Market Open</span>
+    </div>
+    <div style="display:flex;gap:1.5rem;font-size:0.85rem;color:var(--dim)">
+      <span>Open: <b style="color:var(--text)">14:30 GMT</b></span>
+      <span>Close: <b style="color:var(--text)">21:00 GMT</b></span>
+    </div>
+    <div style="font-size:0.9rem">
+      <span id="market-countdown" style="color:var(--green);font-weight:600;"></span>
+    </div>
+  </div>
+
   <div class="kpi-grid">
     <div class="kpi">
       <div class="label">Portfolio Value</div>
@@ -300,6 +551,45 @@ tr:hover { background: rgba(255,255,255,0.02); }
       <div class="label">Total P&L</div>
       <div class="value" id="kpi-pnl">--</div>
       <div class="sub" id="kpi-return-sub"></div>
+    </div>
+  </div>
+
+  <div style="border-bottom:1px solid var(--border);margin-bottom:1.5rem">
+    <div class="tabs">
+      <div class="tab active" id="tab-btn-overview" onclick="switchTab('overview')">Overview</div>
+      <div class="tab" id="tab-btn-analytics" onclick="switchTab('analytics')">Analytics</div>
+    </div>
+  </div>
+
+  <div id="tab-overview">
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>Charts</h2>
+      <span id="charts-trade-count" style="font-size:0.75rem;color:var(--dim)"></span>
+    </div>
+    <div id="charts-empty" class="empty-state" style="display:none">No trades yet — charts will appear after the first trade closes.</div>
+    <div id="charts-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:0;padding:0">
+      <div style="padding:1rem;border-right:1px solid var(--border);border-bottom:1px solid var(--border)">
+        <div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:0.4rem">Portfolio Value</div>
+        <div id="chart-val-num" style="font-size:1.3rem;font-weight:700;margin-bottom:0.4rem">--</div>
+        <div id="chart-equity"></div>
+      </div>
+      <div style="padding:1rem;border-bottom:1px solid var(--border)">
+        <div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:0.4rem">Cash</div>
+        <div id="chart-cash-num" style="font-size:1.3rem;font-weight:700;margin-bottom:0.4rem">--</div>
+        <div id="chart-cash"></div>
+      </div>
+      <div style="padding:1rem;border-right:1px solid var(--border)">
+        <div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:0.4rem">Win Rate</div>
+        <div id="chart-wr-num" style="font-size:1.3rem;font-weight:700;margin-bottom:0.4rem">--</div>
+        <div id="chart-winrate"></div>
+      </div>
+      <div style="padding:1rem">
+        <div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:0.4rem">Cumulative P&amp;L</div>
+        <div id="chart-pnl-num" style="font-size:1.3rem;font-weight:700;margin-bottom:0.4rem">--</div>
+        <div id="chart-pnl"></div>
+      </div>
     </div>
   </div>
 
@@ -348,6 +638,22 @@ tr:hover { background: rgba(255,255,255,0.02); }
     </div>
   </div>
 
+  </div><!-- /tab-overview -->
+
+  <div id="tab-analytics" style="display:none">
+
+  <div class="panel" id="review-panel">
+    <div class="panel-header">
+      <h2>Strategy Review</h2>
+      <span class="badge" id="review-trade-count">0 trades</span>
+    </div>
+    <div id="review-milestones" style="padding:0.6rem 1.2rem;display:flex;gap:0.5rem;flex-wrap:wrap;border-bottom:1px solid var(--border)"></div>
+    <div id="review-insights" style="padding:0.8rem 1.2rem;display:none"></div>
+    <div id="review-detector-body">
+      <div class="empty-state">Accumulating trades — insights appear after 10+ trades per detector.</div>
+    </div>
+  </div>
+
   <div class="panel">
     <div class="panel-header">
       <h2>Missed Signals (Would-Have-Been P&L)</h2>
@@ -358,6 +664,73 @@ tr:hover { background: rgba(255,255,255,0.02); }
       <div class="empty-state">No skipped signals tracked yet. Signals skipped due to max-positions or insufficient cash will appear here with simulated outcomes.</div>
     </div>
   </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>Exit Profile Tuning</h2>
+      <span style="font-size:0.75rem;color:var(--dim)">% breakdown of how each detector exits — use to tune hold_days &amp; first_green_pct</span>
+    </div>
+    <div id="analytics-exit-body">
+      <div class="empty-state">No trade data yet.</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>Signal Severity → Performance</h2>
+      <span style="font-size:0.75rem;color:var(--dim)">Higher severity = stronger regex signal. Informs when to enable AI gating.</span>
+    </div>
+    <div id="analytics-sev-body">
+      <div class="empty-state">No trade data yet.</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>Peak Trailing Summary</h2>
+      <span style="font-size:0.75rem;color:var(--dim)">Trades that hit +8% day-0 and switched to 1-second trailing stop</span>
+    </div>
+    <div id="analytics-peak-kpis" style="display:none;padding:1rem 1.2rem;display:flex;gap:2rem;flex-wrap:wrap;border-bottom:1px solid var(--border)"></div>
+    <div id="analytics-peak-body">
+      <div class="empty-state">No peak trailing trades yet. Positions that hit +8% on day-0 will appear here.</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>Options Lab 🧪</h2>
+      <span style="font-size:0.75rem;color:var(--dim)">If we had bought ATM calls instead of stock — what would P&amp;L have been?</span>
+    </div>
+    <div style="padding:1rem 1.2rem;display:flex;align-items:center;gap:1.5rem;border-bottom:1px solid var(--border);flex-wrap:wrap">
+      <label style="font-size:0.85rem;display:flex;align-items:center;gap:0.5rem">
+        Implied Vol (IV)
+        <input type="range" id="options-iv" min="10" max="80" value="30" step="5"
+               style="width:110px;accent-color:var(--cyan)"
+               oninput="document.getElementById('options-iv-val').textContent=this.value+'%'">
+        <span id="options-iv-val" style="min-width:2.5rem;font-weight:700;color:var(--cyan)">30%</span>
+      </label>
+      <label style="font-size:0.85rem;display:flex;align-items:center;gap:0.5rem">
+        Days to Expiry (DTE)
+        <select id="options-dte" style="background:var(--card);border:1px solid var(--border);color:var(--fg);padding:0.25rem 0.5rem;border-radius:4px;font-size:0.85rem">
+          <option value="7">7 d — weekly</option>
+          <option value="14" selected>14 d — 2-week</option>
+          <option value="21">21 d — 3-week</option>
+          <option value="30">30 d — monthly</option>
+        </select>
+      </label>
+      <button onclick="loadOptionsLab()"
+              style="background:var(--blue);color:#fff;border:none;padding:0.35rem 1rem;border-radius:4px;cursor:pointer;font-size:0.85rem;font-weight:600">
+        Run Comparison
+      </button>
+    </div>
+    <div id="options-kpis" style="display:none;padding:1rem 1.2rem;gap:2rem;flex-wrap:wrap;border-bottom:1px solid var(--border)"></div>
+    <div id="options-body">
+      <div class="empty-state">Set IV and DTE above, then click <strong>Run Comparison</strong>. Uses Black-Scholes to model what ATM calls on the same signals would have returned (same dollar amount committed to premium as to stock).</div>
+    </div>
+  </div>
+
+  </div><!-- /tab-analytics -->
+
 </div>
 
 <script>
@@ -365,6 +738,105 @@ function $(s) { return document.querySelector(s); }
 function fmt(n, d) { return n == null ? '--' : '$' + n.toFixed(d || 2); }
 function pct(n) { return n == null ? '--' : (n * 100).toFixed(1) + '%'; }
 function color(n) { return n > 0 ? 'pos' : n < 0 ? 'neg' : ''; }
+
+function drawLineChart(containerId, points, opts = {}) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  const {
+    color = null, refLine = null,
+    fillArea = false, height = 90,
+    formatY = v => v.toFixed(2),
+  } = opts;
+
+  if (!points || points.length < 2) {
+    el.innerHTML = '<div style="height:' + height + 'px;display:flex;align-items:center;justify-content:center;color:var(--border);font-size:0.75rem">waiting for data</div>';
+    return;
+  }
+
+  const vals = points.map(p => p.value);
+  const lastVal = vals[vals.length - 1];
+  const lineColor = color || (lastVal >= (refLine ?? 0) ? 'var(--green)' : 'var(--red)');
+
+  let yMin = Math.min(...vals);
+  let yMax = Math.max(...vals);
+  if (refLine !== null) { yMin = Math.min(yMin, refLine); yMax = Math.max(yMax, refLine); }
+  const pad = yMax === yMin ? Math.abs(yMax) * 0.1 || 1 : (yMax - yMin) * 0.12;
+  yMin -= pad; yMax += pad;
+  const yRange = yMax - yMin;
+
+  const W = 400, H = height;
+  const pl = 0, pr = 0, pt = 6, pb = 6;
+  const n = points.length;
+  const toX = i  => pl + (i / (n - 1)) * (W - pl - pr);
+  const toY = v  => pt + (1 - (v - yMin) / yRange) * (H - pt - pb);
+
+  const polyPts = points.map((p, i) => `${toX(i).toFixed(1)},${toY(p.value).toFixed(1)}`).join(' ');
+  const lx = toX(n - 1).toFixed(1), ly = toY(lastVal).toFixed(1);
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" style="display:block;overflow:visible">`;
+
+  // reference line (e.g. 0 for P&L, 50% for win rate)
+  if (refLine !== null) {
+    const ry = toY(refLine).toFixed(1);
+    svg += `<line x1="0" y1="${ry}" x2="${W}" y2="${ry}" stroke="rgba(255,255,255,0.1)" stroke-width="1" stroke-dasharray="4,3"/>`;
+  }
+
+  // fill area between line and ref/baseline
+  if (fillArea) {
+    const baseY = refLine !== null ? toY(refLine).toFixed(1) : H - pb;
+    const fillCol = lastVal >= (refLine ?? 0) ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)';
+    svg += `<polygon points="${toX(0).toFixed(1)},${baseY} ${polyPts} ${lx},${baseY}" fill="${fillCol}"/>`;
+  }
+
+  // main line
+  svg += `<polyline points="${polyPts}" fill="none" stroke="${lineColor}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+
+  // end dot
+  svg += `<circle cx="${lx}" cy="${ly}" r="3" fill="${lineColor}"/>`;
+
+  svg += '</svg>';
+  el.innerHTML = svg;
+}
+
+async function loadCharts() {
+  try {
+    const r = await fetch('/api/charts');
+    const d = await r.json();
+
+    if (!d.equity || d.equity.length < 2) {
+      $('#charts-empty').style.display = 'block';
+      $('#charts-grid').style.display = 'none';
+      return;
+    }
+    $('#charts-empty').style.display = 'none';
+    $('#charts-grid').style.display = 'grid';
+
+    const lastEquity = d.equity[d.equity.length - 1].value;
+    const lastPnl    = d.pnl[d.pnl.length - 1].value;
+    const lastWr     = d.win_rate[d.win_rate.length - 1].value;
+    const lastCash   = d.cash[d.cash.length - 1].value;
+
+    $('#chart-val-num').textContent  = '$' + lastEquity.toFixed(2);
+    $('#chart-val-num').className    = '';
+
+    $('#chart-cash-num').textContent = '$' + lastCash.toFixed(2);
+
+    $('#chart-wr-num').textContent   = (lastWr * 100).toFixed(0) + '%';
+    $('#chart-wr-num').className     = lastWr >= 0.55 ? 'pos' : 'neg';
+
+    $('#chart-pnl-num').textContent  = (lastPnl >= 0 ? '+' : '') + '$' + lastPnl.toFixed(2);
+    $('#chart-pnl-num').className    = lastPnl >= 0 ? 'pos' : 'neg';
+
+    $('#charts-trade-count').textContent = d.equity.length - 1 + ' trades';
+
+    drawLineChart('chart-equity',  d.equity,   { color: 'var(--blue)',  height: 90 });
+    drawLineChart('chart-cash',    d.cash,     { color: 'var(--cyan)',  height: 90 });
+    drawLineChart('chart-winrate', d.win_rate, { refLine: 0.5, height: 90, formatY: v => (v*100).toFixed(0)+'%' });
+    drawLineChart('chart-pnl',     d.pnl,      { refLine: 0, fillArea: true, height: 90 });
+  } catch(e) {
+    console.error('charts load failed', e);
+  }
+}
 
 async function loadPortfolio() {
   try {
@@ -529,7 +1001,13 @@ async function loadExitTracker() {
       let html = '<table><thead><tr><th>Detector</th><th>Tracks</th><th>Avg Exit Return</th><th>Avg Max Post-Exit</th><th>Avg Left on Table</th><th>Exit Too Early %</th></tr></thead><tbody>';
       detKeys.forEach(det => {
         let s = byDet[det];
-        let lotClass = s.avg_left_on_table > 0.02 ? 'neg' : s.avg_left_on_table < 0 ? 'pos' : '';
+        let lotClass = '';
+        if (s.avg_left_on_table != null) {
+          if (s.avg_left_on_table > 0.03) lotClass = 'lot-large';
+          else if (s.avg_left_on_table > 0.015) lotClass = 'lot-medium';
+          else if (s.avg_left_on_table > 0.005) lotClass = 'lot-small';
+          else if (s.avg_left_on_table < 0) lotClass = 'pos';
+        }
         html += '<tr>';
         html += '<td><span class="detector-tag">' + det + '</span></td>';
         html += '<td>' + s.count + '</td>';
@@ -550,7 +1028,13 @@ async function loadExitTracker() {
       }
       let html = '<table><thead><tr><th>Ticker</th><th>Detector</th><th>Exit Return</th><th>Days Tracked</th><th>Max After</th><th>Left on Table</th><th>Exit Reason</th></tr></thead><tbody>';
       items.forEach(t => {
-        let lotClass = t.left_on_table > 0.02 ? 'neg' : t.left_on_table < 0 ? 'pos' : '';
+        let lotClass = '';
+        if (t.left_on_table != null) {
+          if (t.left_on_table > 0.03) lotClass = 'lot-large';
+          else if (t.left_on_table > 0.015) lotClass = 'lot-medium';
+          else if (t.left_on_table > 0.005) lotClass = 'lot-small';
+          else if (t.left_on_table < 0) lotClass = 'pos';
+        }
         html += '<tr>';
         html += '<td class="ticker">' + t.ticker + '</td>';
         html += '<td><span class="detector-tag">' + t.detector + '</span></td>';
@@ -625,12 +1109,351 @@ async function loadSkippedSignals() {
   }
 }
 
+function getMarketConfig() {
+  // Dynamically resolve US DST (EDT/EST) and UK DST (BST/GMT)
+  const now = new Date();
+  const yr = now.getUTCFullYear();
+
+  function nthSundayUTC(year, month, n) {
+    // month: 0-indexed. Returns UTC midnight of the nth Sunday.
+    const d = new Date(Date.UTC(year, month, 1));
+    const first = d.getUTCDay() === 0 ? 1 : 8 - d.getUTCDay();
+    return new Date(Date.UTC(year, month, first + (n - 1) * 7));
+  }
+  function lastSundayUTC(year, month) {
+    const d = new Date(Date.UTC(year, month + 1, 0));
+    d.setUTCDate(d.getUTCDate() - d.getUTCDay());
+    return d;
+  }
+
+  // US EDT: 2nd Sunday March -> 1st Sunday November
+  const isEDT = now >= nthSundayUTC(yr, 2, 2) && now < nthSundayUTC(yr, 10, 1);
+  // UK BST: last Sunday March -> last Sunday October
+  const isBST = now >= lastSundayUTC(yr, 2) && now < lastSundayUTC(yr, 9);
+
+  const openUTC  = isEDT ? 13 * 60 + 30 : 14 * 60 + 30;  // 9:30 AM ET in UTC
+  const closeUTC = isEDT ? 20 * 60       : 21 * 60;        // 4:00 PM ET in UTC
+  const tzOffset = isBST ? 60 : 0;  // minutes ahead of UTC
+  const tzLabel  = isBST ? 'BST' : 'GMT';
+
+  function minsToStr(m) {
+    return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+  }
+
+  return {
+    openUTC, closeUTC,
+    displayOpen:  minsToStr(openUTC  + tzOffset),
+    displayClose: minsToStr(closeUTC + tzOffset),
+    tzLabel,
+  };
+}
+
+function updateMarketClock() {
+  const now = new Date();
+  const cfg = getMarketConfig();
+  const mins = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const day = now.getUTCDay();
+  const isWeekday = day >= 1 && day <= 5;
+  const isOpen = isWeekday && mins >= cfg.openUTC && mins < cfg.closeUTC;
+
+  const indicator = $('#market-indicator');
+  const status    = $('#market-status');
+  const countdown = $('#market-countdown');
+
+  // Update displayed open/close times with correct TZ label
+  document.querySelectorAll('#market-clock b').forEach((el, i) => {
+    el.textContent = i === 0
+      ? cfg.displayOpen  + ' ' + cfg.tzLabel
+      : cfg.displayClose + ' ' + cfg.tzLabel;
+  });
+
+  if (isOpen) {
+    indicator.style.background = 'var(--green)';
+    status.textContent = 'Market Open'; status.style.color = 'var(--green)';
+    const rem = cfg.closeUTC - mins;
+    countdown.textContent = 'Closes in ' + Math.floor(rem / 60) + 'h ' + (rem % 60) + 'm';
+    countdown.style.color = 'var(--green)';
+  } else {
+    indicator.style.background = 'var(--red)';
+    status.textContent = 'Market Closed'; status.style.color = 'var(--red)';
+    const target = new Date(now);
+    target.setUTCHours(Math.floor(cfg.openUTC / 60), cfg.openUTC % 60, 0, 0);
+    if (isWeekday && mins >= cfg.closeUTC) target.setUTCDate(target.getUTCDate() + (day === 5 ? 3 : 1));
+    else if (day === 6) target.setUTCDate(target.getUTCDate() + 2);
+    else if (day === 0) target.setUTCDate(target.getUTCDate() + 1);
+    const diff = Math.max(0, Math.floor((target - now) / 1000));
+    const parts = [];
+    if (Math.floor(diff / 3600) > 0) parts.push(Math.floor(diff / 3600) + 'h');
+    parts.push(Math.floor((diff % 3600) / 60) + 'm ' + (diff % 60) + 's');
+    countdown.textContent = 'Opens in ' + parts.join(' ');
+    countdown.style.color = 'var(--amber)';
+  }
+}
+updateMarketClock();
+setInterval(updateMarketClock, 1000);
+
+async function loadReview() {
+  try {
+    const r = await fetch('/api/review');
+    const d = await r.json();
+
+    $('#review-trade-count').textContent = d.trade_count + ' trades';
+
+    // Milestone chips
+    let mhtml = '';
+    d.milestones.forEach(m => {
+      let cls = m.reached ? 'reached' : 'pending';
+      let icon = m.reached ? '✓' : '○';
+      mhtml += '<span class="milestone-chip ' + cls + '">' + icon + ' ' + m.target + ' trades</span>';
+    });
+    $('#review-milestones').innerHTML = mhtml;
+
+    // Insights
+    if (d.insights && d.insights.length > 0) {
+      let ihtml = '';
+      d.insights.forEach(i => {
+        let cls = i.includes('strong performer') ? 'insight-good'
+                : (i.includes('below 55%') || i.includes('left on table') || i.includes('recovered')) ? 'insight-warn'
+                : 'insight-info';
+        ihtml += '<div class="' + cls + '">&bull; ' + i + '</div>';
+      });
+      if (d.last_review_sent_dt) {
+        ihtml += '<div style="font-size:0.72rem;color:var(--dim);margin-top:0.5rem">Last Telegram digest: ' + d.last_review_sent_dt + '</div>';
+      }
+      $('#review-insights').innerHTML = ihtml;
+      $('#review-insights').style.display = 'block';
+    } else {
+      $('#review-insights').style.display = 'none';
+    }
+
+    // Per-detector table
+    let dets = Object.entries(d.detector_stats);
+    if (dets.length === 0) {
+      $('#review-detector-body').innerHTML = '<div class="empty-state">Accumulating trades — insights appear after 10+ trades per detector.</div>';
+      return;
+    }
+    let html = '<table><thead><tr><th>Detector</th><th>Trades</th><th>Win Rate</th><th>Avg Return</th><th>Total P&L</th></tr></thead><tbody>';
+    dets.forEach(([det, s]) => {
+      let wrCls = s.win_rate >= 0.70 ? 'pos' : s.win_rate < 0.55 ? 'neg' : '';
+      let retCls = color(s.avg_return);
+      let pnlCls = color(s.total_pnl);
+      html += '<tr>';
+      html += '<td><span class="detector-tag">' + det + '</span></td>';
+      html += '<td>' + s.trades + '</td>';
+      html += '<td class="' + wrCls + '">' + (s.win_rate * 100).toFixed(0) + '%</td>';
+      html += '<td class="' + retCls + '">' + (s.avg_return * 100).toFixed(1) + '%</td>';
+      html += '<td class="' + pnlCls + '">' + fmt(s.total_pnl) + '</td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    $('#review-detector-body').innerHTML = html;
+  } catch(e) {
+    console.error('review load failed', e);
+  }
+}
+
+let _activeTab = 'overview';
+
+function switchTab(name) {
+  ['overview', 'analytics'].forEach(t => {
+    document.getElementById('tab-' + t).style.display = t === name ? 'block' : 'none';
+    document.getElementById('tab-btn-' + t).classList.toggle('active', t === name);
+  });
+  _activeTab = name;
+  if (name === 'analytics') {
+    loadAnalytics();
+    loadReview();
+    loadSkippedSignals();
+  }
+}
+
+async function loadAnalytics() {
+  try {
+    const r = await fetch('/api/analytics');
+    const d = await r.json();
+
+    // ── Exit Profile Tuning table ────────────────────────────────────────
+    if (!d.exit_profiles || d.exit_profiles.length === 0) {
+      $('#analytics-exit-body').innerHTML = '<div class="empty-state">No trade data yet.</div>';
+    } else {
+      let html = '<div style="overflow-x:auto"><table><thead><tr>'
+        + '<th>Detector</th><th>Trades</th><th>Win Rate</th>'
+        + '<th>Avg Return</th><th>Avg Hold Days</th>'
+        + '<th>Stop Loss %</th><th>First Green %</th>'
+        + '<th>Hold Expiry %</th><th>Peak Trail %</th>'
+        + '</tr></thead><tbody>';
+      d.exit_profiles.forEach(p => {
+        let wrCls = p.win_rate >= 0.70 ? 'pos' : p.win_rate < 0.55 ? 'neg' : '';
+        let retCls = p.avg_return > 0 ? 'pos' : p.avg_return < 0 ? 'neg' : '';
+        let slCls  = p.pct_stop_loss > 0.40 ? 'neg' : p.pct_stop_loss > 0.25 ? 'lot-small' : '';
+        html += '<tr>';
+        html += '<td><span class="detector-tag">' + p.detector + '</span></td>';
+        html += '<td>' + p.trades + '</td>';
+        html += '<td class="' + wrCls + '">' + (p.win_rate * 100).toFixed(0) + '%</td>';
+        html += '<td class="' + retCls + '">' + (p.avg_return * 100).toFixed(1) + '%</td>';
+        html += '<td>' + p.avg_hold_days.toFixed(1) + 'd</td>';
+        html += '<td class="' + slCls + '">' + (p.pct_stop_loss * 100).toFixed(0) + '%</td>';
+        html += '<td class="pos">' + (p.pct_first_green * 100).toFixed(0) + '%</td>';
+        html += '<td style="color:var(--dim)">' + (p.pct_hold_expiry * 100).toFixed(0) + '%</td>';
+        html += '<td style="color:var(--cyan)">' + (p.pct_peak_trailing * 100).toFixed(0) + '%</td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table></div>';
+      $('#analytics-exit-body').innerHTML = html;
+    }
+
+    // ── Severity buckets table ───────────────────────────────────────────
+    if (!d.severity_buckets || d.severity_buckets.length === 0) {
+      $('#analytics-sev-body').innerHTML = '<div class="empty-state">No trade data yet. Severity is stored from first trade onwards.</div>';
+    } else {
+      let html = '<table><thead><tr><th>Severity</th><th>Trades</th><th>Win Rate</th><th>Avg Return</th><th>Signal Strength</th></tr></thead><tbody>';
+      d.severity_buckets.forEach(b => {
+        let wrCls = b.win_rate >= 0.70 ? 'pos' : b.win_rate < 0.55 ? 'neg' : '';
+        let retCls = b.avg_return > 0 ? 'pos' : b.avg_return < 0 ? 'neg' : '';
+        let barW = Math.round(b.win_rate * 80);
+        html += '<tr>';
+        html += '<td style="font-family:monospace">' + b.bucket + '</td>';
+        html += '<td>' + b.trades + '</td>';
+        html += '<td class="' + wrCls + '">' + (b.win_rate * 100).toFixed(0) + '%</td>';
+        html += '<td class="' + retCls + '">' + (b.avg_return * 100).toFixed(1) + '%</td>';
+        html += '<td><span class="severity-bar" style="width:' + barW + 'px"></span></td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      html += '<div style="padding:0.6rem 1rem;font-size:0.75rem;color:var(--dim)">Higher severity = stronger detector regex match. Once 50+ scored trades accumulate, this will show Haiku AI score correlation.</div>';
+      $('#analytics-sev-body').innerHTML = html;
+    }
+
+    // ── Peak trailing summary ────────────────────────────────────────────
+    const pt = d.peak_trailing;
+    if (!pt || pt.total === 0) {
+      $('#analytics-peak-kpis').style.display = 'none';
+      $('#analytics-peak-body').innerHTML = '<div class="empty-state">No peak trailing trades yet. Positions that hit +8% on day-0 will appear here.</div>';
+    } else {
+      let kpiHtml = '';
+      const kpis = [
+        { label: 'Total triggered', value: pt.total },
+        { label: 'Avg peak reached', value: pt.avg_peak_pct != null ? (pt.avg_peak_pct * 100).toFixed(1) + '%' : '--', cls: 'pos' },
+        { label: 'Avg exit return',  value: pt.avg_exit_pct  != null ? (pt.avg_exit_pct  * 100).toFixed(1) + '%' : '--', cls: pt.avg_exit_pct >= 0 ? 'pos' : 'neg' },
+        { label: 'Avg left on table', value: pt.avg_left_on_table != null ? (pt.avg_left_on_table * 100).toFixed(1) + '%' : '--',
+          cls: pt.avg_left_on_table > 0.02 ? 'lot-medium' : pt.avg_left_on_table > 0 ? 'lot-small' : 'pos' },
+      ];
+      kpis.forEach(k => {
+        kpiHtml += '<div><div style="font-size:0.72rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">' + k.label + '</div>'
+          + '<div style="font-size:1.4rem;font-weight:700" class="' + (k.cls || '') + '">' + k.value + '</div></div>';
+      });
+      $('#analytics-peak-kpis').innerHTML = kpiHtml;
+      $('#analytics-peak-kpis').style.display = 'flex';
+
+      if (pt.trades && pt.trades.length > 0) {
+        let html = '<table><thead><tr><th>Ticker</th><th>Detector</th><th>Entry</th><th>Peak</th><th>Exit</th><th>Peak %</th><th>Exit %</th><th>Left on Table</th><th>Date</th></tr></thead><tbody>';
+        pt.trades.forEach(t => {
+          let lot = t.peak_pct != null ? t.peak_pct - t.exit_pct : null;
+          let lotCls = lot == null ? '' : lot > 0.03 ? 'lot-large' : lot > 0.015 ? 'lot-medium' : lot > 0.005 ? 'lot-small' : 'pos';
+          html += '<tr>';
+          html += '<td class="ticker">' + t.ticker + '</td>';
+          html += '<td><span class="detector-tag">' + t.detector + '</span></td>';
+          html += '<td>$' + t.entry_price.toFixed(2) + '</td>';
+          html += '<td>' + (t.peak_price > 0 ? '$' + t.peak_price.toFixed(2) : '--') + '</td>';
+          html += '<td>$' + t.exit_price.toFixed(2) + '</td>';
+          html += '<td class="pos">' + (t.peak_pct != null ? (t.peak_pct * 100).toFixed(1) + '%' : '--') + '</td>';
+          html += '<td class="' + (t.exit_pct >= 0 ? 'pos' : 'neg') + '">' + (t.exit_pct * 100).toFixed(1) + '%</td>';
+          html += '<td class="' + lotCls + '">' + (lot != null ? (lot * 100).toFixed(1) + '%' : '--') + '</td>';
+          html += '<td>' + (t.exit_dt || '').slice(0, 10) + '</td>';
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+        $('#analytics-peak-body').innerHTML = html;
+      } else {
+        $('#analytics-peak-body').innerHTML = '<div class="empty-state">No individual peak trade details yet.</div>';
+      }
+    }
+  } catch(e) {
+    console.error('analytics load failed', e);
+  }
+}
+
+async function loadOptionsLab() {
+  const iv  = parseInt(document.getElementById('options-iv').value) / 100;
+  const dte = parseInt(document.getElementById('options-dte').value);
+  $('#options-body').innerHTML = '<div class="empty-state">Running Black-Scholes model…</div>';
+  $('#options-kpis').style.display = 'none';
+  try {
+    const r = await fetch('/api/options-compare?iv=' + iv + '&dte=' + dte);
+    const d = await r.json();
+
+    if (!d.trade_count) {
+      $('#options-body').innerHTML = '<div class="empty-state">No closed trades to compare. Wait for some trades to complete.</div>';
+      return;
+    }
+
+    // ── KPI cards ─────────────────────────────────────────────────────────
+    const stockCol  = d.total_stock_pnl  >= 0 ? 'pos' : 'neg';
+    const optCol    = d.total_options_pnl >= 0 ? 'pos' : 'neg';
+    const delta     = d.total_options_pnl - d.total_stock_pnl;
+    const deltaCol  = delta >= 0 ? 'pos' : 'neg';
+    const kpis = [
+      { label: 'Stock total P&L',       value: fmt(d.total_stock_pnl),              cls: stockCol },
+      { label: 'Options total P&L',     value: fmt(d.total_options_pnl),            cls: optCol },
+      { label: 'Δ vs stock',            value: (delta >= 0 ? '+' : '') + fmt(delta, 2), cls: deltaCol },
+      { label: 'Stock win rate',        value: (d.stock_win_rate * 100).toFixed(0) + '%' },
+      { label: 'Options win rate',      value: (d.options_win_rate * 100).toFixed(0) + '%' },
+      { label: 'Options beat stock on', value: d.options_better_count + ' / ' + d.trade_count + ' trades' },
+    ];
+    let kpiHtml = '';
+    kpis.forEach(k => {
+      kpiHtml += '<div><div style="font-size:0.72rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">' + k.label + '</div>'
+        + '<div style="font-size:1.25rem;font-weight:700" class="' + (k.cls || '') + '">' + k.value + '</div></div>';
+    });
+    $('#options-kpis').innerHTML = kpiHtml;
+    $('#options-kpis').style.display = 'flex';
+
+    // ── Per-detector table ─────────────────────────────────────────────────
+    let html = '<div style="padding:0.5rem 1.2rem;font-size:0.75rem;color:var(--dim)">'
+      + 'Assumption: ATM European call, IV=' + (d.assumed_iv * 100).toFixed(0) + '%, DTE=' + d.dte
+      + ' d, risk-free 5%, Black-Scholes mid-price. Same dollar amount committed to premium as to stock.'
+      + '</div>';
+    if (d.by_detector && d.by_detector.length > 0) {
+      html += '<div style="overflow-x:auto"><table><thead><tr>'
+        + '<th>Detector</th><th>Trades</th>'
+        + '<th>Stock P&amp;L</th><th>Options P&amp;L</th><th>Δ P&amp;L</th>'
+        + '<th>Stock WR</th><th>Options WR</th>'
+        + '</tr></thead><tbody>';
+      d.by_detector.forEach(row => {
+        const rowDelta   = row.options_pnl - row.stock_pnl;
+        const deltaClass = rowDelta > 0 ? 'pos' : rowDelta < 0 ? 'neg' : '';
+        const sCls  = row.stock_pnl   >= 0 ? 'pos' : 'neg';
+        const oCls  = row.options_pnl >= 0 ? 'pos' : 'neg';
+        html += '<tr>';
+        html += '<td><span class="detector-tag">' + row.detector + '</span></td>';
+        html += '<td>' + row.trades + '</td>';
+        html += '<td class="' + sCls + '">' + fmt(row.stock_pnl) + '</td>';
+        html += '<td class="' + oCls + '">' + fmt(row.options_pnl) + '</td>';
+        html += '<td class="' + deltaClass + '">' + (rowDelta >= 0 ? '+' : '') + fmt(rowDelta, 2) + '</td>';
+        html += '<td>' + (row.stock_win_rate * 100).toFixed(0)   + '%</td>';
+        html += '<td>' + (row.options_win_rate * 100).toFixed(0) + '%</td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+    $('#options-body').innerHTML = html;
+  } catch(e) {
+    console.error('options lab failed', e);
+    $('#options-body').innerHTML = '<div class="empty-state">Error running options model.</div>';
+  }
+}
+
 function refresh() {
   loadPortfolio();
   loadTrades();
   loadSignals();
   loadExitTracker();
-  loadSkippedSignals();
+  loadCharts();
+  if (_activeTab === 'analytics') {
+    loadAnalytics();
+    loadReview();
+    loadSkippedSignals();
+  }
   $('#last-update').textContent = 'Updated ' + new Date().toLocaleTimeString();
 }
 

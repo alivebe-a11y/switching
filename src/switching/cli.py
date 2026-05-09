@@ -238,6 +238,7 @@ _DEFAULT_DETECTORS = [
     "buyback", "insider_cluster", "activist_13d",
     "analyst_upgrade", "fda_decision",
     "mna_target", "guidance_raise", "dividend_surprise", "contract_win",
+    "stock_split", "crypto_treasury",
 ]
 
 
@@ -422,6 +423,115 @@ def check_feeds() -> None:
         console.print("  [yellow]SWITCHING_EDGAR_UA not set — EDGAR detectors disabled[/yellow]")
 
     console.print(f"\n[bold]Summary:[/bold] {total_ok} feeds OK, {total_fail} failed/empty")
+
+
+@app.command("options-compare")
+def options_compare(
+    state_file: Path = typer.Option(
+        "/app/.cache/paper_portfolio.json", "--state",
+        help="Path to portfolio state file.",
+    ),
+    iv: float = typer.Option(
+        0.30, "--iv",
+        help="Assumed implied volatility (e.g. 0.30 = 30%%). Large-caps ~0.25-0.35, "
+             "biotech/small-caps ~0.50-0.80.",
+    ),
+    dte: int = typer.Option(
+        14, "--dte",
+        help="Days to expiry for the modelled ATM call at entry (7=weekly, 14=2-week, 30=monthly).",
+    ),
+    log_level: str = typer.Option("WARNING", help="Python log level."),
+) -> None:
+    """Model what P&L would have been if we bought ATM calls instead of stock.
+
+    Uses Black-Scholes with assumed IV and DTE. Allocates the same dollar amount
+    to option premium as was deployed into each stock trade. Results are
+    hypothetical and for strategy exploration only — not investment advice.
+
+    Useful questions to answer:
+      • Which detectors would have benefited most from leverage?
+      • At what IV does the options strategy break even vs stock?
+      • Do short DTE (weekly) or longer DTE (monthly) suit our hold periods?
+    """
+    logging.basicConfig(level=log_level.upper())
+    from switching.options_model import compare_options_vs_stock
+    from switching.paper_trader import Portfolio
+
+    p = Portfolio.load(state_file)
+    if not p.trades:
+        console.print("[yellow]No closed trades found. Run some paper trades first.[/yellow]")
+        raise typer.Exit(code=0)
+
+    result = compare_options_vs_stock(p.trades, assumed_iv=iv, dte=dte)
+
+    console.print(
+        f"\n[bold]Options Lab[/bold] — ATM calls, IV={iv*100:.0f}%, DTE={dte}d\n"
+        f"[dim]Black-Scholes, European, same $ committed to premium as to stock.[/dim]"
+    )
+
+    summary = Table(title="Portfolio-Level Comparison")
+    summary.add_column("Metric")
+    summary.add_column("Stock", justify="right")
+    summary.add_column("Options", justify="right")
+
+    sc = "green" if result.total_stock_pnl >= 0 else "red"
+    oc = "green" if result.total_options_pnl >= 0 else "red"
+    delta = result.total_options_pnl - result.total_stock_pnl
+    dc = "green" if delta >= 0 else "red"
+
+    summary.add_row("Total P&L",
+        f"[{sc}]${result.total_stock_pnl:+.2f}[/{sc}]",
+        f"[{oc}]${result.total_options_pnl:+.2f}[/{oc}]",
+    )
+    summary.add_row("Δ vs stock",
+        "—",
+        f"[{dc}]{'+' if delta >= 0 else ''}${delta:.2f}[/{dc}]",
+    )
+    summary.add_row("Win Rate",
+        f"{result.stock_win_rate*100:.0f}%",
+        f"{result.options_win_rate*100:.0f}%",
+    )
+    summary.add_row("Trades analysed", str(len(result.trades)), str(len(result.trades)))
+    summary.add_row("Options beat stock on", "—",
+        f"{result.options_better_count} / {len(result.trades)} trades",
+    )
+    console.print(summary)
+
+    by_det = result.by_detector()
+    if by_det:
+        det_table = Table(title="Per-Detector (sorted by Δ options vs stock)")
+        det_table.add_column("Detector")
+        det_table.add_column("Trades", justify="right")
+        det_table.add_column("Stock P&L", justify="right")
+        det_table.add_column("Options P&L", justify="right")
+        det_table.add_column("Δ P&L", justify="right")
+        det_table.add_column("Stock WR", justify="right")
+        det_table.add_column("Options WR", justify="right")
+        for det, v in sorted(
+            by_det.items(),
+            key=lambda x: x[1]["options_pnl"] - x[1]["stock_pnl"],
+            reverse=True,
+        ):
+            d_val = v["options_pnl"] - v["stock_pnl"]
+            dc2 = "green" if d_val >= 0 else "red"
+            sc2 = "green" if v["stock_pnl"] >= 0 else "red"
+            oc2 = "green" if v["options_pnl"] >= 0 else "red"
+            det_table.add_row(
+                det,
+                str(v["trades"]),
+                f"[{sc2}]${v['stock_pnl']:+.2f}[/{sc2}]",
+                f"[{oc2}]${v['options_pnl']:+.2f}[/{oc2}]",
+                f"[{dc2}]{'+' if d_val >= 0 else ''}${d_val:.2f}[/{dc2}]",
+                f"{v['stock_win_rate']*100:.0f}%",
+                f"{v['options_win_rate']*100:.0f}%",
+            )
+        console.print(det_table)
+
+    console.print(
+        "\n[dim]Tip: try --iv 0.40 for small-caps, --dte 7 for weekly options, "
+        "--dte 30 for monthlies. Higher IV = more expensive premium, "
+        "so options need a bigger move to beat stock.[/dim]"
+    )
 
 
 @app.command("web")
