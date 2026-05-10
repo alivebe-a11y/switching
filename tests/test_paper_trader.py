@@ -72,69 +72,99 @@ class TestCheckExits:
             cash=800.0,
             positions=[_make_position(now, hold_days=5, first_green=False)],
         )
-        with patch(
-            "switching.paper_trader.get_intraday_data",
-            return_value={"open": 100.0, "high": 99.5, "low": 99.0, "close": 99.5},
-        ):
+        with patch("switching.paper_trader.get_intraday_data",
+                   return_value={"open": 100.0, "high": 99.5, "low": 99.0, "close": 99.5}), \
+             patch("switching.paper_trader.is_market_hours", return_value=True), \
+             patch("switching.paper_trader.trading_days_since", return_value=0):
             for _ in range(10):
                 closed = check_exits(portfolio)
                 assert closed == []
         assert len(portfolio.positions) == 1
 
-    def test_closes_on_calendar_day_expiry(self):
-        six_days_ago = datetime.now(tz=timezone.utc) - timedelta(days=6)
+    def test_closes_on_hold_expiry_after_trading_days(self):
+        """hold_expiry fires when trading_days_since >= hold_days during market hours."""
+        now = datetime.now(tz=timezone.utc)
         portfolio = Portfolio(
             cash=800.0,
-            positions=[_make_position(six_days_ago, hold_days=5, first_green=False)],
+            positions=[_make_position(now, hold_days=5, first_green=False)],
         )
-        with patch(
-            "switching.paper_trader.get_intraday_data",
-            return_value={"open": 100.0, "high": 99.5, "low": 99.0, "close": 99.5},
-        ):
+        with patch("switching.paper_trader.get_intraday_data",
+                   return_value={"open": 100.0, "high": 99.5, "low": 99.0, "close": 99.5}), \
+             patch("switching.paper_trader.is_market_hours", return_value=True), \
+             patch("switching.paper_trader.trading_days_since", return_value=6):
             closed = check_exits(portfolio)
         assert len(closed) == 1
         assert closed[0].exit_reason == "hold_expiry"
         assert len(portfolio.positions) == 0
 
-    def test_closes_on_stop_loss_regardless_of_days(self):
+    def test_hold_expiry_does_not_fire_outside_market_hours(self):
+        """hold_expiry must NOT fire on weekends / bank holidays."""
+        now = datetime.now(tz=timezone.utc)
+        portfolio = Portfolio(
+            cash=800.0,
+            positions=[_make_position(now, hold_days=5, first_green=False)],
+        )
+        with patch("switching.paper_trader.get_intraday_data",
+                   return_value={"open": 100.0, "high": 99.5, "low": 99.0, "close": 99.5}), \
+             patch("switching.paper_trader.is_market_hours", return_value=False), \
+             patch("switching.paper_trader.trading_days_since", return_value=6):
+            closed = check_exits(portfolio)
+        # Market closed — hold_expiry should NOT fire even though days elapsed
+        assert closed == []
+
+    def test_closes_on_stop_loss_regardless_of_market_hours(self):
+        """Stop-loss fires even on weekends (last known price, defensive exit)."""
         now = datetime.now(tz=timezone.utc)
         portfolio = Portfolio(
             cash=800.0,
             positions=[_make_position(now, stop_loss=0.05)],
         )
-        with patch(
-            "switching.paper_trader.get_intraday_data",
-            return_value={"open": 100.0, "high": 100.0, "low": 94.0, "close": 94.5},
-        ):
+        with patch("switching.paper_trader.get_intraday_data",
+                   return_value={"open": 100.0, "high": 100.0, "low": 94.0, "close": 94.5}), \
+             patch("switching.paper_trader.is_market_hours", return_value=False), \
+             patch("switching.paper_trader.trading_days_since", return_value=0):
             closed = check_exits(portfolio)
         assert len(closed) == 1
         assert closed[0].exit_reason == "stop_loss"
 
     def test_closes_on_first_green(self):
-        yesterday = datetime.now(tz=timezone.utc) - timedelta(days=1)
+        now = datetime.now(tz=timezone.utc)
         portfolio = Portfolio(
             cash=800.0,
-            positions=[_make_position(yesterday, first_green=True)],
+            positions=[_make_position(now, first_green=True)],
         )
-        with patch(
-            "switching.paper_trader.get_intraday_data",
-            return_value={"open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0},
-        ):
+        with patch("switching.paper_trader.get_intraday_data",
+                   return_value={"open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0}), \
+             patch("switching.paper_trader.is_market_hours", return_value=True), \
+             patch("switching.paper_trader.trading_days_since", return_value=1):
             closed = check_exits(portfolio)
         assert len(closed) == 1
         assert closed[0].exit_reason == "first_green"
         assert closed[0].pnl > 0
 
-    def test_updates_days_held_on_open_position(self):
-        three_days_ago = datetime.now(tz=timezone.utc) - timedelta(days=3)
+    def test_first_green_does_not_fire_outside_market_hours(self):
+        now = datetime.now(tz=timezone.utc)
         portfolio = Portfolio(
             cash=800.0,
-            positions=[_make_position(three_days_ago, hold_days=5, first_green=False)],
+            positions=[_make_position(now, first_green=True)],
         )
-        with patch(
-            "switching.paper_trader.get_intraday_data",
-            return_value={"open": 100.0, "high": 99.5, "low": 99.0, "close": 99.5},
-        ):
+        with patch("switching.paper_trader.get_intraday_data",
+                   return_value={"open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0}), \
+             patch("switching.paper_trader.is_market_hours", return_value=False), \
+             patch("switching.paper_trader.trading_days_since", return_value=1):
+            closed = check_exits(portfolio)
+        assert closed == []
+
+    def test_updates_days_held_on_open_position(self):
+        now = datetime.now(tz=timezone.utc)
+        portfolio = Portfolio(
+            cash=800.0,
+            positions=[_make_position(now, hold_days=5, first_green=False)],
+        )
+        with patch("switching.paper_trader.get_intraday_data",
+                   return_value={"open": 100.0, "high": 99.5, "low": 99.0, "close": 99.5}), \
+             patch("switching.paper_trader.is_market_hours", return_value=True), \
+             patch("switching.paper_trader.trading_days_since", return_value=3):
             check_exits(portfolio)
         assert portfolio.positions[0].days_held == 3
 
@@ -266,10 +296,10 @@ class TestOpenPositionProfiles:
             cash=800.0,
             positions=[_make_position(yesterday, first_green=True, first_green_pct=0.02)],
         )
-        with patch(
-            "switching.paper_trader.get_intraday_data",
-            return_value={"open": 100.0, "high": 101.5, "low": 99.5, "close": 101.0},
-        ):
+        with patch("switching.paper_trader.get_intraday_data",
+                   return_value={"open": 100.0, "high": 101.5, "low": 99.5, "close": 101.0}), \
+             patch("switching.paper_trader.is_market_hours", return_value=True), \
+             patch("switching.paper_trader.trading_days_since", return_value=1):
             closed = check_exits(portfolio)
         assert closed == []
         assert len(portfolio.positions) == 1
@@ -281,10 +311,10 @@ class TestOpenPositionProfiles:
             cash=800.0,
             positions=[_make_position(yesterday, first_green=True, first_green_pct=0.02)],
         )
-        with patch(
-            "switching.paper_trader.get_intraday_data",
-            return_value={"open": 100.0, "high": 103.0, "low": 99.5, "close": 102.0},
-        ):
+        with patch("switching.paper_trader.get_intraday_data",
+                   return_value={"open": 100.0, "high": 103.0, "low": 99.5, "close": 102.0}), \
+             patch("switching.paper_trader.is_market_hours", return_value=True), \
+             patch("switching.paper_trader.trading_days_since", return_value=1):
             closed = check_exits(portfolio)
         assert len(closed) == 1
         assert closed[0].exit_reason == "first_green"

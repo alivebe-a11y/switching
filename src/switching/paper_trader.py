@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Sequence
 
+from switching.market_calendar import is_market_hours, trading_days_since
 from switching.signal import Signal
 
 log = logging.getLogger(__name__)
@@ -258,7 +259,7 @@ def open_position(
 
 
 def _calendar_days_since(entry_dt_str: str) -> int:
-    """Calendar days between the position entry and now, rounded down."""
+    """Calendar days between the position entry and now (kept for the Alpaca loop)."""
     entry = datetime.fromisoformat(entry_dt_str.replace("Z", "+00:00"))
     if entry.tzinfo is None:
         entry = entry.replace(tzinfo=timezone.utc)
@@ -269,6 +270,12 @@ def _calendar_days_since(entry_dt_str: str) -> int:
 def check_exits(portfolio: Portfolio) -> list[ClosedTrade]:
     closed: list[ClosedTrade] = []
     remaining: list[Position] = []
+
+    # Compute once per call — avoids repeated syscalls inside the loop.
+    # stop_loss always checked (defensive); first_green / hold_expiry only
+    # fire when the market is actually open so we never exit at stale
+    # weekend or bank-holiday prices.
+    _mkt_open = is_market_hours()
 
     for pos in portfolio.positions:
         data = get_intraday_data(pos.ticker)
@@ -281,9 +288,12 @@ def check_exits(portfolio: Portfolio) -> list[ClosedTrade]:
         ret_low = data["low"] / pos.entry_price - 1.0
         reason = None
 
-        days_elapsed = _calendar_days_since(pos.entry_dt)
+        # Trading days elapsed — weekends and bank holidays do NOT count.
+        days_elapsed = trading_days_since(pos.entry_dt)
 
         if ret_low <= -pos.stop_loss:
+            # Stop-loss fires regardless of market hours (last-known price is
+            # the best we have; price is snapped to the stop level anyway).
             reason = "stop_loss"
             price = pos.entry_price * (1.0 - pos.stop_loss)
         elif pos.peak_tracking:
@@ -292,12 +302,12 @@ def check_exits(portfolio: Portfolio) -> list[ClosedTrade]:
             drop_from_peak = (pos.peak_price - price) / pos.peak_price if pos.peak_price > 0 else 0
             if drop_from_peak >= 0.005:
                 reason = "peak_trailing"
-        elif pos.first_green and ret >= 0.08 and days_elapsed == 0:
+        elif _mkt_open and pos.first_green and ret >= 0.08 and days_elapsed == 0:
             pos.peak_tracking = True
             pos.peak_price = price
-        elif pos.first_green and ret >= pos.first_green_pct and days_elapsed >= 1:
+        elif _mkt_open and pos.first_green and ret >= pos.first_green_pct and days_elapsed >= 1:
             reason = "first_green"
-        elif days_elapsed >= pos.hold_days:
+        elif _mkt_open and days_elapsed >= pos.hold_days:
             reason = "hold_expiry"
 
         if reason:

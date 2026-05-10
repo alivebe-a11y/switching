@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from switching.skipped_tracker import SkippedTracker, TRACK_DAYS
+
+# Patch is_trading_day to always return True in all tests so they aren't
+# skipped on weekends or bank holidays.
+pytestmark = pytest.mark.usefixtures("_force_trading_day")
+
+
+@pytest.fixture(autouse=True)
+def _force_trading_day():
+    with patch("switching.skipped_tracker.is_trading_day", return_value=True):
+        yield
 
 
 def _add(tracker: SkippedTracker, *, ticker="AAPL", detector="ai_pivot", price=100.0, hold_days=5, first_green=True, first_green_pct=0.0, stop_loss_pct=0.05) -> None:

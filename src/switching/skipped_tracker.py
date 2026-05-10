@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from switching.market_calendar import is_trading_day
+
 log = logging.getLogger(__name__)
 
 TRACK_DAYS = 30  # cap on how long we follow a skipped signal
@@ -111,7 +113,15 @@ class SkippedTracker:
             self.skipped = self.skipped[-MAX_ENTRIES:]
 
     def update(self, get_price_fn) -> int:
-        """Fetch today's price for active skipped signals and apply exit rules."""
+        """Fetch today's price for active skipped signals and apply exit rules.
+
+        Skips entirely on weekends and bank holidays — yfinance would return
+        stale data and we'd accumulate spurious "days tracked" counts that
+        trigger hold_expiry early.
+        """
+        if not is_trading_day():
+            return 0
+
         updated = 0
         today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
         now_iso = datetime.now(tz=timezone.utc).isoformat()

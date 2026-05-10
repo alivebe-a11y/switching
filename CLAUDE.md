@@ -59,6 +59,8 @@ The top-level `data/` directory is a mirror/legacy — always put seeds in both.
 | contract_win | RSS (default + corporate) | first_green +2%, 5-day hold |
 | activist_13d | SEC EDGAR (13D filings) | default |
 | insider_cluster | SEC EDGAR (Form 4) | default |
+| stock_split | RSS (default + corporate) | first_green +1.5%, 4-day hold |
+| crypto_treasury | RSS (default + corporate) | first_green +3%, 3-day hold |
 
 ## Stop-Loss Tiers
 - $30+ stocks: 2.6%
@@ -194,7 +196,18 @@ builds without SSH keys. (2) Demonstrates transparency for potential investors/p
 **Mitigations**: .gitignore covers .env, keys, state files, portfolio JSON. All secrets
 live in Dockge .env only.
 
-### ADR-006: 10-minute scan interval
+### ADR-006: IBKR as broker (not Alpaca)
+**Decision**: Interactive Brokers (IBKR) for live and paper trading. Alpaca removed from roadmap.
+**Why**: (1) Alpaca is US-focused — UK residents face regulatory friction and limited support.
+(2) IBKR has a UK entity (IBKR UK Ltd, FCA regulated), straightforward account opening for UK Ltd companies.
+(3) IBKR supports API trading of US stocks from UK accounts natively.
+(4) IBKR paper account uses live market data — best pre-live validation available.
+(5) IBKR has no PDT rule issue for UK entities trading via a UK-registered broker.
+**Tradeoff**: More complex integration than Alpaca (IB Gateway socket API vs REST). `ib_insync`
+library mitigates this. IB Gateway needs to run as a sidecar container.
+**When to revisit**: If IBKR API stability becomes a problem or a simpler UK-compatible REST broker emerges.
+
+### ADR-007: 10-minute scan interval
 **Decision**: Paper trader scans every 10 minutes (was 30 minutes initially).
 **Why**: RSS feeds update frequently. Financial catalysts (upgrades, FDA, M&A) can move
 stocks within minutes. 10 min is a balance between catching signals early and not
@@ -449,9 +462,48 @@ event_dt,ticker,company,headline,url,evidence,severity
 ### Phase 2 — Scale to Real Capital (Month 3-6)
 - [ ] Set up UK Ltd company for tax efficiency (25% vs 40%)
 - [ ] Fund with £5-10K own savings
-- [ ] Alpaca live trading (paper mode first on real API)
-- [ ] Add Polygon.io (~$30/month) for real-time price data
+- [ ] **IBKR paper trading integration** (see below — do this 4-6 weeks before going live)
+- [ ] Add Polygon.io (~$30/month) for real-time price data (or use IBKR market data subscription)
 - [ ] Claim business expenses (internet, electricity, hardware, APIs)
+
+#### IBKR Paper Trading — Implementation Plan
+Decided against Alpaca (US-only, regulatory friction for UK). IBKR is the chosen broker.
+IBKR paper account uses live market data with simulated fills — best pre-live validation.
+
+**Architecture**:
+```
+[paper-trade container]
+        ↕ TCP :4002 (paper) / :4001 (live)
+[IB Gateway container + ibc auto-login]  ←→  IBKR servers
+```
+
+**What to build** (`src/switching/broker_ibkr.py`):
+- Mirror `broker_alpaca.py` interface: `buy_market`, `sell_all`, `get_quote`, `is_market_open`
+- Use `ib_insync` Python library (cleaner than official `ibapi`)
+- Controlled by env var `IBKR_PAPER=true` (port 4002) vs `IBKR_PAPER=false` (port 4001)
+- Paper trader falls back to internal simulation if IB Gateway unreachable
+
+**Two-phase upgrade**:
+1. **Order execution only** — submit orders to IBKR paper, keep yfinance for prices
+   - Validates fills, spreads, partial fills on small caps
+2. **Live price quotes too** — replace yfinance in `check_exits()` with IBKR L1 streaming
+   - Matters most for peak_trailing (1-second polling — IBKR ticks are more reliable than yfinance)
+
+**IB Gateway Docker**:
+- Use `ghcr.io/gnzsnz/ib-gateway` image (maintained, includes `ibc` auto-login)
+- Add to `compose.yaml` as a new service alongside `paper-trade`
+- Env vars needed: `IBKR_USERNAME`, `IBKR_PASSWORD`, `TRADING_MODE=paper`
+- Session auto-renews daily via `ibc` (avoids the 24-hour expiry problem)
+
+**New env vars to add to Dockge .env when ready**:
+- `IBKR_USERNAME` — IBKR account username
+- `IBKR_PASSWORD` — IBKR account password
+- `IBKR_PAPER` — `true` for paper, `false` for live (default: `true`)
+- `IBKR_HOST` — IB Gateway hostname (default: `ib-gateway`)
+- `IBKR_PORT` — 4002 (paper) or 4001 (live)
+
+**W-8BEN-E**: UK Ltd company needs to file W-8BEN-E with IBKR to claim UK-US tax treaty
+rate on US dividends (15% vs 30% default withholding). Do this at account opening.
 
 ### Phase 3 — Options Trading (Month 6-9)
 - [ ] Historical options chain data (Polygon.io options add-on ~$200/month)
@@ -515,3 +567,7 @@ event_dt,ticker,company,headline,url,evidence,severity
 - [x] Dashboard reads cached prices from portfolio JSON — no live yfinance polling per page load
 - [x] SQL schema mapping doc (`docs/SQL_SCHEMA.md`) — forward plan, JSON stays for now
 - [x] Skipped-signal tracker (`skipped_tracker.py`) + dashboard panel — when a signal is skipped (max-positions / insufficient-cash), record it and run same exit logic for would-have-been P&L
+- [x] stock_split detector — forward split announcements, +1.5% first-green, 4-day hold
+- [x] crypto_treasury detector — Bitcoin treasury adoption (MicroStrategy-style), +3% first-green, 3-day hold
+- [x] Analytics tab in dashboard — Exit Profile Tuning, Signal Severity correlation, Peak Trailing summary
+- [x] `severity` stored on `ClosedTrade` — enables signal quality ↔ outcome correlation analysis
