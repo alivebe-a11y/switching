@@ -1,15 +1,19 @@
 """Post-exit price tracker.
 
-After a trade is closed, this module tracks the stock's daily closing price
-for up to N days. This answers the key refinement questions:
+After a trade is closed, this module tracks the stock's daily OHLC for up to
+N days. This answers the key refinement questions:
 
 - Did we exit too early? (stock kept running after first-green exit)
 - Was the stop-loss too tight? (stock recovered after stop-loss hit)
 - Was hold period right? (stock dropped after hold-expiry, or kept climbing)
+- Which day post-exit had the highest intraday price? (optimal exit day)
+- What does "average return by day held" look like across all trades?
 
-The tracker runs as part of each scan cycle in the paper-trade loop — it
-doesn't hold positions, just records prices. Data is stored in a JSON file
-alongside the portfolio state.
+The tracker runs as part of each scan cycle in the paper-trade loop.
+Data is stored in a JSON file alongside the portfolio state.
+
+Accepts either a plain float price function (legacy) or an OHLC dict function
+{open, high, low, close}. OHLC is preferred — gives richer per-day data.
 """
 
 from __future__ import annotations
@@ -19,11 +23,29 @@ import logging
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 log = logging.getLogger(__name__)
 
 TRACK_DAYS = 20
+
+
+def _parse_ohlc(raw) -> tuple[float, float, float, float] | None:
+    """Accept either a float or {open,high,low,close} dict. Returns (o,h,l,c)."""
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        f = float(raw)
+        return (f, f, f, f)
+    try:
+        return (
+            float(raw["open"]),
+            float(raw["high"]),
+            float(raw["low"]),
+            float(raw["close"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 @dataclass
@@ -36,6 +58,7 @@ class TrackedExit:
     exit_reason: str
     pct_return: float
     headline: str
+    peak_price: float = 0.0
     snapshots: list[dict] = field(default_factory=list)
     tracking_complete: bool = False
 
@@ -45,26 +68,59 @@ class TrackedExit:
 
     @property
     def max_post_exit_return(self) -> float | None:
+        """Highest daily close return from entry price, post-exit."""
         if not self.snapshots:
             return None
         return max(s["pct_from_entry"] for s in self.snapshots)
 
     @property
+    def max_intraday_high(self) -> float | None:
+        """Highest intraday HIGH reached post-exit (from entry price).
+        Answers: 'how high did it actually go, even if it didn't close there?'
+        """
+        if not self.snapshots:
+            return None
+        highs = [s["high_pct"] for s in self.snapshots if "high_pct" in s]
+        return max(highs) if highs else self.max_post_exit_return
+
+    @property
+    def day_of_peak(self) -> int | None:
+        """Which day number (1-20) had the highest intraday high post-exit."""
+        if not self.snapshots:
+            return None
+        highs = [(s.get("high_pct", s["pct_from_entry"]), s["day"]) for s in self.snapshots]
+        if not highs:
+            return None
+        return max(highs, key=lambda x: x[0])[1]
+
+    @property
     def min_post_exit_return(self) -> float | None:
+        """Lowest daily close return from entry price, post-exit."""
         if not self.snapshots:
             return None
         return min(s["pct_from_entry"] for s in self.snapshots)
 
     @property
     def final_return(self) -> float | None:
+        """Return from entry at end of tracking window."""
         if not self.snapshots:
             return None
         return self.snapshots[-1]["pct_from_entry"]
 
     @property
     def left_on_table(self) -> float | None:
-        """How much more the stock moved after we exited. Positive = left money."""
+        """How much more the stock moved (close) after we exited.
+        Positive = left money on table. Negative = we got out at the right time.
+        """
         max_r = self.max_post_exit_return
+        if max_r is None:
+            return None
+        return max_r - self.pct_return
+
+    @property
+    def left_on_table_intraday(self) -> float | None:
+        """Left on table using intraday highs — even more conservative view."""
+        max_r = self.max_intraday_high
         if max_r is None:
             return None
         return max_r - self.pct_return
@@ -73,9 +129,12 @@ class TrackedExit:
         d = asdict(self)
         d["days_tracked"] = self.days_tracked
         d["max_post_exit_return"] = self.max_post_exit_return
+        d["max_intraday_high"] = self.max_intraday_high
+        d["day_of_peak"] = self.day_of_peak
         d["min_post_exit_return"] = self.min_post_exit_return
         d["final_return"] = self.final_return
         d["left_on_table"] = self.left_on_table
+        d["left_on_table_intraday"] = self.left_on_table_intraday
         return d
 
 
@@ -97,10 +156,15 @@ class ExitTracker:
             exit_reason=trade.exit_reason,
             pct_return=trade.pct_return,
             headline=trade.headline,
+            peak_price=getattr(trade, "peak_price", 0.0),
         ))
 
-    def update(self, get_price_fn) -> int:
-        """Fetch today's price for all active tracked exits. Returns count updated."""
+    def update(self, get_price_fn: Callable) -> int:
+        """Fetch today's OHLC for all active tracked exits. Returns count updated.
+
+        Accepts either a float price function or an OHLC dict function
+        {open, high, low, close}. OHLC gives richer per-day snapshot data.
+        """
         updated = 0
         today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
 
@@ -115,19 +179,28 @@ class ExitTracker:
             if t.snapshots and t.snapshots[-1]["date"] == today:
                 continue
 
-            price = get_price_fn(t.ticker)
-            if price is None:
+            raw = get_price_fn(t.ticker)
+            parsed = _parse_ohlc(raw)
+            if parsed is None:
                 continue
 
-            pct_from_entry = round(price / t.entry_price - 1.0, 4)
-            pct_from_exit = round(price / t.exit_price - 1.0, 4)
+            o, h, l, c = parsed
+            pct_from_entry = round(c / t.entry_price - 1.0, 4)
+            pct_from_exit  = round(c / t.exit_price  - 1.0, 4)
+            high_pct       = round(h / t.entry_price - 1.0, 4)
+            low_pct        = round(l / t.entry_price - 1.0, 4)
 
             t.snapshots.append({
-                "date": today,
-                "day": t.days_tracked + 1,
-                "price": round(price, 4),
-                "pct_from_entry": pct_from_entry,
-                "pct_from_exit": pct_from_exit,
+                "date":            today,
+                "day":             t.days_tracked + 1,
+                "open":            round(o, 4),
+                "high":            round(h, 4),
+                "low":             round(l, 4),
+                "close":           round(c, 4),
+                "pct_from_entry":  pct_from_entry,
+                "pct_from_exit":   pct_from_exit,
+                "high_pct":        high_pct,
+                "low_pct":         low_pct,
             })
             updated += 1
 
@@ -158,11 +231,10 @@ class ExitTracker:
             return cls()
         tracker = cls()
         for item in data.get("tracked", []):
-            # Filter out computed fields that aren't in the constructor
             constructor_fields = {
                 "ticker", "detector", "entry_price", "exit_price",
                 "exit_dt", "exit_reason", "pct_return", "headline",
-                "snapshots", "tracking_complete",
+                "peak_price", "snapshots", "tracking_complete",
             }
             filtered = {k: v for k, v in item.items() if k in constructor_fields}
             tracker.tracked.append(TrackedExit(**filtered))
@@ -182,25 +254,54 @@ class ExitTracker:
             by_exit_reason.setdefault(t.exit_reason, []).append(t)
 
         def _summarize_group(group: list[TrackedExit]) -> dict[str, Any]:
-            left = [t.left_on_table for t in group if t.left_on_table is not None]
-            max_after = [t.max_post_exit_return for t in group if t.max_post_exit_return is not None]
-            final = [t.final_return for t in group if t.final_return is not None]
+            left       = [t.left_on_table          for t in group if t.left_on_table          is not None]
+            left_intra = [t.left_on_table_intraday  for t in group if t.left_on_table_intraday is not None]
+            max_after  = [t.max_post_exit_return    for t in group if t.max_post_exit_return    is not None]
+            max_high   = [t.max_intraday_high       for t in group if t.max_intraday_high       is not None]
+            final      = [t.final_return            for t in group if t.final_return            is not None]
+            day_peaks  = [t.day_of_peak             for t in group if t.day_of_peak             is not None]
             return {
-                "count": len(group),
-                "avg_exit_return": round(sum(t.pct_return for t in group) / len(group), 4) if group else 0,
-                "avg_left_on_table": round(sum(left) / len(left), 4) if left else None,
-                "avg_max_post_exit": round(sum(max_after) / len(max_after), 4) if max_after else None,
-                "avg_final_return_day20": round(sum(final) / len(final), 4) if final else None,
-                "exit_too_early_pct": round(
-                    sum(1 for l in left if l > 0.02) / len(left), 3
-                ) if left else None,
+                "count":                  len(group),
+                "avg_exit_return":        round(sum(t.pct_return for t in group) / len(group), 4),
+                "avg_left_on_table":      round(sum(left)       / len(left),       4) if left       else None,
+                "avg_left_on_table_intraday": round(sum(left_intra) / len(left_intra), 4) if left_intra else None,
+                "avg_max_post_exit":      round(sum(max_after)  / len(max_after),  4) if max_after  else None,
+                "avg_max_intraday_high":  round(sum(max_high)   / len(max_high),   4) if max_high   else None,
+                "avg_final_return_day20": round(sum(final)      / len(final),      4) if final      else None,
+                "avg_day_of_peak":        round(sum(day_peaks)  / len(day_peaks),  1) if day_peaks  else None,
+                "exit_too_early_pct":     round(sum(1 for l in left if l > 0.02)  / len(left), 3) if left else None,
+            }
+
+        # By-day averages across all completed tracks — answers "day N = avg X% return"
+        by_day: dict[int, dict] = {}
+        for t in completed:
+            for s in t.snapshots:
+                day = s["day"]
+                if day not in by_day:
+                    by_day[day] = {"close": [], "high": [], "low": [], "n": 0}
+                by_day[day]["close"].append(s["pct_from_entry"])
+                if "high_pct" in s:
+                    by_day[day]["high"].append(s["high_pct"])
+                if "low_pct" in s:
+                    by_day[day]["low"].append(s["low_pct"])
+                by_day[day]["n"] += 1
+
+        by_day_summary = {}
+        for day in sorted(by_day.keys()):
+            d = by_day[day]
+            by_day_summary[str(day)] = {
+                "n":         d["n"],
+                "avg_close": round(sum(d["close"]) / len(d["close"]), 4) if d["close"] else None,
+                "avg_high":  round(sum(d["high"])  / len(d["high"]),  4) if d["high"]  else None,
+                "avg_low":   round(sum(d["low"])   / len(d["low"]),   4) if d["low"]   else None,
             }
 
         return {
             "completed_tracks": len(completed),
-            "by_detector": {d: _summarize_group(g) for d, g in sorted(by_detector.items())},
-            "by_exit_reason": {r: _summarize_group(g) for r, g in sorted(by_exit_reason.items())},
-            "insights": self._generate_insights(completed),
+            "by_detector":      {d: _summarize_group(g) for d, g in sorted(by_detector.items())},
+            "by_exit_reason":   {r: _summarize_group(g) for r, g in sorted(by_exit_reason.items())},
+            "by_day":           by_day_summary,
+            "insights":         self._generate_insights(completed),
         }
 
     def _generate_insights(self, completed: list[TrackedExit]) -> list[str]:
@@ -217,14 +318,17 @@ class ExitTracker:
             if len(trades) < 3:
                 continue
             left = [t.left_on_table for t in trades if t.left_on_table is not None]
+            peaks = [t.day_of_peak  for t in trades if t.day_of_peak   is not None]
             if left:
                 avg_left = sum(left) / len(left)
                 if avg_left > 0.03:
+                    avg_peak_day = round(sum(peaks) / len(peaks), 1) if peaks else "?"
                     insights.append(
-                        f"{det}: avg {avg_left:.1%} left on table after exit — "
+                        f"{det}: avg {avg_left:.1%} left on table — "
+                        f"peak typically on day {avg_peak_day}; "
                         f"consider raising first_green_pct or extending hold_days"
                     )
-                if avg_left < -0.02:
+                elif avg_left < -0.02:
                     insights.append(
                         f"{det}: stocks drop avg {abs(avg_left):.1%} after exit — "
                         f"exit timing is good, possibly tighten further"

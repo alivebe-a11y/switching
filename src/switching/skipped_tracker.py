@@ -64,11 +64,20 @@ class SkippedSignal:
             return None
         return min(s["pct_return"] for s in self.snapshots)
 
+    @property
+    def max_intraday_high(self) -> float | None:
+        """Best intraday HIGH seen across all snapshot days (from entry price)."""
+        if not self.snapshots:
+            return None
+        highs = [s["high_pct"] for s in self.snapshots if "high_pct" in s]
+        return max(highs) if highs else self.max_pct_return
+
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["days_tracked"] = self.days_tracked
         d["max_pct_return"] = self.max_pct_return
         d["min_pct_return"] = self.min_pct_return
+        d["max_intraday_high"] = self.max_intraday_high
         return d
 
 
@@ -113,7 +122,12 @@ class SkippedTracker:
             self.skipped = self.skipped[-MAX_ENTRIES:]
 
     def update(self, get_price_fn) -> int:
-        """Fetch today's price for active skipped signals and apply exit rules.
+        """Fetch today's OHLC for active skipped signals and apply exit rules.
+
+        Accepts either a plain float price function (legacy) or an OHLC dict
+        function returning {open, high, low, close}. OHLC is preferred — it
+        mirrors the real paper trader which uses low for stop-loss and high
+        for first_green checks, and gives richer per-day snapshot data.
 
         Skips entirely on weekends and bank holidays — yfinance would return
         stale data and we'd accumulate spurious "days tracked" counts that
@@ -130,31 +144,56 @@ class SkippedTracker:
             if s.tracking_complete:
                 continue
             if s.days_tracked >= TRACK_DAYS:
-                self._finalize(s, reason="track_expiry", price=s.snapshots[-1]["price"] if s.snapshots else s.would_be_entry_price, when=now_iso)
+                last_price = s.snapshots[-1]["close"] if s.snapshots else s.would_be_entry_price
+                self._finalize(s, reason="track_expiry", price=last_price, when=now_iso)
                 continue
             if s.snapshots and s.snapshots[-1]["date"] == today:
                 continue
 
-            price = get_price_fn(s.ticker)
-            if price is None:
+            raw = get_price_fn(s.ticker)
+            if raw is None:
                 continue
 
-            pct = round(price / s.would_be_entry_price - 1.0, 4)
+            # Accept both scalar float (legacy tests) and OHLC dict
+            if isinstance(raw, (int, float)):
+                o = h = l = c = float(raw)
+            else:
+                try:
+                    o = float(raw["open"])
+                    h = float(raw["high"])
+                    l = float(raw["low"])
+                    c = float(raw["close"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+
+            entry = s.would_be_entry_price
+            pct_close = round(c / entry - 1.0, 4)
+            pct_high  = round(h / entry - 1.0, 4)
+            pct_low   = round(l / entry - 1.0, 4)
+
             s.snapshots.append({
-                "date": today,
-                "day": s.days_tracked + 1,
-                "price": round(price, 4),
-                "pct_return": pct,
+                "date":       today,
+                "day":        s.days_tracked + 1,
+                "open":       round(o, 4),
+                "high":       round(h, 4),
+                "low":        round(l, 4),
+                "close":      round(c, 4),
+                "pct_return": pct_close,   # kept for backward compat
+                "high_pct":   pct_high,
+                "low_pct":    pct_low,
             })
             updated += 1
 
-            # Apply the same exit logic the real position would have used
-            if pct <= -s.stop_loss_pct:
-                self._finalize(s, reason="stop_loss", price=price, when=now_iso)
-            elif s.first_green and pct >= s.first_green_pct and s.days_tracked >= 1:
-                self._finalize(s, reason="first_green", price=price, when=now_iso)
+            # Apply the same exit logic the real paper trader uses:
+            # stop-loss checks the day's LOW; first_green checks the day's HIGH;
+            # hold_expiry uses close.
+            if pct_low <= -s.stop_loss_pct:
+                stop_price = round(entry * (1.0 - s.stop_loss_pct), 4)
+                self._finalize(s, reason="stop_loss", price=stop_price, when=now_iso)
+            elif s.first_green and pct_high >= s.first_green_pct and s.days_tracked >= 1:
+                self._finalize(s, reason="first_green", price=h, when=now_iso)
             elif s.days_tracked >= s.hold_days:
-                self._finalize(s, reason="hold_expiry", price=price, when=now_iso)
+                self._finalize(s, reason="hold_expiry", price=c, when=now_iso)
 
         return updated
 

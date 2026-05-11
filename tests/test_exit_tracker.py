@@ -46,7 +46,9 @@ def test_update_records_snapshot():
     assert count == 1
     assert len(tracker.tracked[0].snapshots) == 1
     snap = tracker.tracked[0].snapshots[0]
-    assert snap["price"] == 105.0
+    assert snap["close"] == 105.0   # scalar price stored as close/high/low/open
+    assert snap["high"]  == 105.0
+    assert snap["low"]   == 105.0
     assert snap["pct_from_entry"] == 0.05
     assert snap["day"] == 1
 

@@ -38,6 +38,9 @@ class Position:
     first_green_pct: float = 0.0
     peak_price: float = 0.0
     peak_tracking: bool = False
+    # Daily OHLC snapshots recorded while the position is held.
+    # Each entry: {date, day, open, high, low, close, pct_from_entry, high_pct, low_pct}
+    snapshots: list = field(default_factory=list)
 
     @property
     def cost_basis(self) -> float:
@@ -570,12 +573,30 @@ def run_loop(
             )
             exit_tracker.add_trade(t)
 
-        tracked = exit_tracker.update(get_current_price)
+        # --- Daily OHLC snapshot for every open position (recorded once per day) ---
+        today_str = now.strftime("%Y-%m-%d")
+        for pos in portfolio.positions:
+            if not pos.snapshots or pos.snapshots[-1]["date"] != today_str:
+                ohlc = get_intraday_data(pos.ticker)
+                if ohlc:
+                    pos.snapshots.append({
+                        "date": today_str,
+                        "day": len(pos.snapshots) + 1,
+                        "open":  round(ohlc["open"],  4),
+                        "high":  round(ohlc["high"],  4),
+                        "low":   round(ohlc["low"],   4),
+                        "close": round(ohlc["close"], 4),
+                        "pct_from_entry":  round(ohlc["close"] / pos.entry_price - 1.0, 4),
+                        "high_pct":        round(ohlc["high"]  / pos.entry_price - 1.0, 4),
+                        "low_pct":         round(ohlc["low"]   / pos.entry_price - 1.0, 4),
+                    })
+
+        tracked = exit_tracker.update(get_intraday_data)
         if tracked:
             console.print(f"  [dim]Post-exit tracker: updated {tracked} price(s), {exit_tracker.active_count} active[/dim]")
         exit_tracker.save(tracker_path)
 
-        skipped_updated = skipped_tracker.update(get_current_price)
+        skipped_updated = skipped_tracker.update(get_intraday_data)
         if skipped_updated:
             console.print(f"  [dim]Skipped-signal tracker: updated {skipped_updated} price(s), {skipped_tracker.active_count} active, {skipped_tracker.completed_count} completed[/dim]")
         skipped_tracker.save(skipped_path)
