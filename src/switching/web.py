@@ -174,25 +174,41 @@ def create_app(state_path: Path | None = None) -> Flask:
 
         trades_sorted = sorted(p.trades, key=lambda t: t.exit_dt)
 
+        # ── Equity curve — cumulative closed-trade P&L ──────────────────────
         equity_pts  = [{"dt": trades_sorted[0].entry_dt, "value": round(starting, 2)}]
         pnl_pts     = [{"dt": trades_sorted[0].entry_dt, "value": 0.0}]
         wr_pts      = []
-        cash_pts    = [{"dt": trades_sorted[0].entry_dt, "value": round(starting, 2)}]
 
         running = starting
         running_pnl = 0.0
-        running_cash = starting
         wins = 0
 
         for i, t in enumerate(trades_sorted, 1):
-            running      += t.pnl
-            running_pnl  += t.pnl
-            running_cash += t.pnl
-            wins         += 1 if t.pnl > 0 else 0
+            running     += t.pnl
+            running_pnl += t.pnl
+            wins        += 1 if t.pnl > 0 else 0
             equity_pts.append({"dt": t.exit_dt, "value": round(running, 2)})
             pnl_pts.append({"dt": t.exit_dt, "value": round(running_pnl, 2)})
             wr_pts.append({"dt": t.exit_dt, "value": round(wins / i, 3)})
-            cash_pts.append({"dt": t.exit_dt, "value": round(running_cash, 2)})
+
+        # ── Cash curve — actual uninvested cash (drops on entry, rises on exit)
+        # Interleave all buy/sell events in time order so the chart shows
+        # the real cash balance, not a copy of the equity curve.
+        cash_events: list[tuple[str, float]] = []
+        for t in p.trades:
+            cost = round(t.entry_price * t.shares, 2)
+            cash_events.append((t.entry_dt, -cost))          # deployed
+            cash_events.append((t.exit_dt,  cost + t.pnl))  # returned + P&L
+        for pos in p.positions:
+            cash_events.append((pos.entry_dt, -pos.cost_basis))  # still deployed
+
+        cash_events.sort(key=lambda e: e[0])
+
+        running_cash = starting
+        cash_pts = [{"dt": cash_events[0][0], "value": round(running_cash, 2)}]
+        for dt, delta in cash_events:
+            running_cash = round(running_cash + delta, 2)
+            cash_pts.append({"dt": dt, "value": running_cash})
 
         return jsonify({
             "equity": equity_pts,
@@ -576,7 +592,7 @@ tr:hover { background: rgba(255,255,255,0.02); }
         <div id="chart-equity"></div>
       </div>
       <div style="padding:1rem;border-bottom:1px solid var(--border)">
-        <div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:0.4rem">Cash</div>
+        <div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:0.4rem">Uninvested Cash</div>
         <div id="chart-cash-num" style="font-size:1.3rem;font-weight:700;margin-bottom:0.4rem">--</div>
         <div id="chart-cash"></div>
       </div>
