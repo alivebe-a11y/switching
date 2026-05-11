@@ -469,6 +469,12 @@ tr:hover { background: rgba(255,255,255,0.02); }
 .lot-small { color: #fbbf24; }
 .lot-medium { color: #f97316; }
 .lot-large { color: var(--red); }
+.filter-btn {
+  background: transparent; border: 1px solid var(--border); color: var(--dim);
+  padding: 0.2rem 0.7rem; border-radius: 4px; font-size: 0.75rem; cursor: pointer;
+}
+.filter-btn:hover { border-color: var(--blue); color: var(--text); }
+.filter-btn.active-filter { background: rgba(59,130,246,0.15); border-color: var(--blue); color: var(--blue); }
 .milestone-chip {
   display: inline-flex; align-items: center; gap: 0.3rem;
   padding: 0.2rem 0.7rem; border-radius: 12px; font-size: 0.75rem;
@@ -573,6 +579,7 @@ tr:hover { background: rgba(255,255,255,0.02); }
   <div style="border-bottom:1px solid var(--border);margin-bottom:1.5rem">
     <div class="tabs">
       <div class="tab active" id="tab-btn-overview" onclick="switchTab('overview')">Overview</div>
+      <div class="tab" id="tab-btn-postexit" onclick="switchTab('postexit')">Post-Exit Tracker <span class="badge" id="tracker-tab-badge" style="margin-left:4px">0</span></div>
       <div class="tab" id="tab-btn-analytics" onclick="switchTab('analytics')">Analytics</div>
     </div>
   </div>
@@ -643,18 +650,46 @@ tr:hover { background: rgba(255,255,255,0.02); }
     </div>
   </div>
 
+  </div><!-- /tab-overview -->
+
+  <div id="tab-postexit" style="display:none">
+
   <div class="panel">
     <div class="panel-header">
       <h2>Post-Exit Tracker</h2>
-      <span class="badge" id="tracker-count">0</span>
+      <span style="font-size:0.75rem;color:var(--dim)">Price tracked for 20 days after each trade closes — did we exit too early?</span>
     </div>
-    <div id="tracker-insights" style="padding:0.8rem 1.2rem;display:none"></div>
+    <!-- KPI row -->
+    <div id="tracker-kpis" style="display:flex;gap:2rem;flex-wrap:wrap;padding:1rem 1.2rem;border-bottom:1px solid var(--border)">
+      <div><div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">Active</div><div id="tracker-kpi-active" style="font-size:1.4rem;font-weight:700">--</div></div>
+      <div><div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">Completed</div><div id="tracker-kpi-completed" style="font-size:1.4rem;font-weight:700">--</div></div>
+      <div><div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">Avg Left on Table</div><div id="tracker-kpi-lot" style="font-size:1.4rem;font-weight:700">--</div></div>
+      <div><div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">Exited Too Early</div><div id="tracker-kpi-early" style="font-size:1.4rem;font-weight:700">--</div></div>
+    </div>
+    <!-- Insights -->
+    <div id="tracker-insights" style="padding:0.8rem 1.2rem;display:none;border-bottom:1px solid var(--border)"></div>
+    <!-- Summary by detector -->
+    <div id="tracker-summary" style="display:none">
+      <div style="padding:0.6rem 1.2rem;font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--border)">By Detector (completed tracks only)</div>
+      <div id="tracker-summary-body"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>All Tracked Positions</h2>
+      <div style="display:flex;gap:0.5rem;align-items:center">
+        <button onclick="filterTracker('all')"   id="tf-all"       class="filter-btn active-filter">All</button>
+        <button onclick="filterTracker('active')"    id="tf-active"    class="filter-btn">Active</button>
+        <button onclick="filterTracker('completed')" id="tf-completed" class="filter-btn">Completed</button>
+      </div>
+    </div>
     <div id="tracker-body">
       <div class="empty-state">No post-exit data yet. Tracks prices for 20 days after each trade closes.</div>
     </div>
   </div>
 
-  </div><!-- /tab-overview -->
+  </div><!-- /tab-postexit -->
 
   <div id="tab-analytics" style="display:none">
 
@@ -985,88 +1020,156 @@ async function loadSignals() {
   }
 }
 
+let _trackerData = null;
+let _trackerFilter = 'all';
+
 async function loadExitTracker() {
   try {
     const r = await fetch('/api/exit-tracker');
-    const d = await r.json();
-    let total = d.active_count + d.completed_count;
-    $('#tracker-count').textContent = total;
+    _trackerData = await r.json();
+    const d = _trackerData;
+    const total = d.active_count + d.completed_count;
+
+    // Update tab badge (always, regardless of which tab is active)
+    $('#tracker-tab-badge').textContent = d.active_count > 0 ? d.active_count + ' active' : total;
 
     if (total === 0) {
-      $('#tracker-body').innerHTML = '<div class="empty-state">No post-exit data yet. Tracks prices for 20 days after each trade closes.</div>';
-      $('#tracker-insights').style.display = 'none';
+      ['tracker-kpi-active','tracker-kpi-completed','tracker-kpi-lot','tracker-kpi-early'].forEach(id => { const el = $('#' + id); if(el) el.textContent = '0'; });
+      const tb = $('#tracker-body'); if(tb) tb.innerHTML = '<div class="empty-state">No post-exit data yet. Tracks prices for 20 days after each trade closes.</div>';
+      const ti = $('#tracker-insights'); if(ti) ti.style.display = 'none';
+      const ts = $('#tracker-summary'); if(ts) ts.style.display = 'none';
       return;
     }
 
-    // Show insights if any
-    let insights = (d.summary && d.summary.insights) || [];
-    if (insights.length > 0) {
-      let ihtml = '<div style="font-size:0.8rem;color:var(--amber);margin-bottom:0.5rem;font-weight:600">Insights</div>';
-      insights.forEach(i => { ihtml += '<div style="font-size:0.8rem;color:var(--dim);margin-bottom:0.3rem">&bull; ' + i + '</div>'; });
-      $('#tracker-insights').innerHTML = ihtml;
-      $('#tracker-insights').style.display = 'block';
+    // KPIs
+    const el_a = $('#tracker-kpi-active'); if(el_a) el_a.textContent = d.active_count;
+    const el_c = $('#tracker-kpi-completed'); if(el_c) el_c.textContent = d.completed_count;
+
+    const byDet = (d.summary && d.summary.by_detector) || {};
+    const detKeys = Object.keys(byDet);
+
+    // Portfolio-wide avg left on table & exit-too-early
+    if (detKeys.length > 0) {
+      let allLot = [], allEarly = [];
+      detKeys.forEach(k => {
+        if (byDet[k].avg_left_on_table != null) allLot.push(byDet[k].avg_left_on_table);
+        if (byDet[k].exit_too_early_pct != null) allEarly.push(byDet[k].exit_too_early_pct);
+      });
+      const avgLot = allLot.length ? allLot.reduce((a,b) => a+b, 0) / allLot.length : null;
+      const avgEarly = allEarly.length ? allEarly.reduce((a,b) => a+b, 0) / allEarly.length : null;
+      const el_lot = $('#tracker-kpi-lot'); if(el_lot) el_lot.textContent = avgLot != null ? (avgLot * 100).toFixed(1) + '%' : '--';
+      const el_early = $('#tracker-kpi-early'); if(el_early) el_early.textContent = avgEarly != null ? (avgEarly * 100).toFixed(0) + '%' : '--';
+      if (avgLot != null) {
+        const el_lot2 = $('#tracker-kpi-lot');
+        if(el_lot2) el_lot2.className = avgLot > 0.03 ? 'lot-large' : avgLot > 0.015 ? 'lot-medium' : avgLot > 0.005 ? 'lot-small' : avgLot < 0 ? 'pos' : '';
+      }
     } else {
-      $('#tracker-insights').style.display = 'none';
+      const el_lot = $('#tracker-kpi-lot'); if(el_lot) el_lot.textContent = '--';
+      const el_early = $('#tracker-kpi-early'); if(el_early) el_early.textContent = '--';
     }
 
-    // Show summary by detector if available
-    let byDet = (d.summary && d.summary.by_detector) || {};
-    let detKeys = Object.keys(byDet);
+    // Insights
+    const insights = (d.summary && d.summary.insights) || [];
+    const ti = $('#tracker-insights');
+    if (ti) {
+      if (insights.length > 0) {
+        let ihtml = '<div style="font-size:0.8rem;color:var(--amber);margin-bottom:0.5rem;font-weight:600">⚡ Insights</div>';
+        insights.forEach(i => { ihtml += '<div style="font-size:0.82rem;color:var(--dim);margin-bottom:0.3rem">&bull; ' + i + '</div>'; });
+        ti.innerHTML = ihtml;
+        ti.style.display = 'block';
+      } else {
+        ti.style.display = 'none';
+      }
+    }
 
-    if (detKeys.length > 0) {
-      let html = '<table><thead><tr><th>Detector</th><th>Tracks</th><th>Avg Exit Return</th><th>Avg Max Post-Exit</th><th>Avg Left on Table</th><th>Exit Too Early %</th></tr></thead><tbody>';
+    // Summary by detector
+    const ts = $('#tracker-summary');
+    const tsb = $('#tracker-summary-body');
+    if (ts && tsb && detKeys.length > 0) {
+      let html = '<div style="overflow-x:auto"><table><thead><tr>'
+        + '<th>Detector</th><th>Completed</th><th>Avg Exit Return</th>'
+        + '<th>Avg Max Post-Exit</th><th>Avg Left on Table</th>'
+        + '<th>Exited Too Early</th></tr></thead><tbody>';
       detKeys.forEach(det => {
-        let s = byDet[det];
-        let lotClass = '';
-        if (s.avg_left_on_table != null) {
-          if (s.avg_left_on_table > 0.03) lotClass = 'lot-large';
-          else if (s.avg_left_on_table > 0.015) lotClass = 'lot-medium';
-          else if (s.avg_left_on_table > 0.005) lotClass = 'lot-small';
-          else if (s.avg_left_on_table < 0) lotClass = 'pos';
-        }
+        const s = byDet[det];
+        const lotClass = s.avg_left_on_table != null
+          ? (s.avg_left_on_table > 0.03 ? 'lot-large' : s.avg_left_on_table > 0.015 ? 'lot-medium' : s.avg_left_on_table > 0.005 ? 'lot-small' : s.avg_left_on_table < 0 ? 'pos' : '')
+          : '';
         html += '<tr>';
         html += '<td><span class="detector-tag">' + det + '</span></td>';
         html += '<td>' + s.count + '</td>';
-        html += '<td>' + (s.avg_exit_return * 100).toFixed(1) + '%</td>';
+        html += '<td class="' + color(s.avg_exit_return) + '">' + (s.avg_exit_return * 100).toFixed(1) + '%</td>';
         html += '<td>' + (s.avg_max_post_exit != null ? (s.avg_max_post_exit * 100).toFixed(1) + '%' : '--') + '</td>';
         html += '<td class="' + lotClass + '">' + (s.avg_left_on_table != null ? (s.avg_left_on_table * 100).toFixed(1) + '%' : '--') + '</td>';
         html += '<td>' + (s.exit_too_early_pct != null ? (s.exit_too_early_pct * 100).toFixed(0) + '%' : '--') + '</td>';
         html += '</tr>';
       });
-      html += '</tbody></table>';
-      $('#tracker-body').innerHTML = html;
-    } else {
-      // Show active tracks
-      let items = d.active.concat(d.completed).slice(0, 20);
-      if (items.length === 0) {
-        $('#tracker-body').innerHTML = '<div class="empty-state">Tracking in progress...</div>';
-        return;
-      }
-      let html = '<table><thead><tr><th>Ticker</th><th>Detector</th><th>Exit Return</th><th>Days Tracked</th><th>Max After</th><th>Left on Table</th><th>Exit Reason</th></tr></thead><tbody>';
-      items.forEach(t => {
-        let lotClass = '';
-        if (t.left_on_table != null) {
-          if (t.left_on_table > 0.03) lotClass = 'lot-large';
-          else if (t.left_on_table > 0.015) lotClass = 'lot-medium';
-          else if (t.left_on_table > 0.005) lotClass = 'lot-small';
-          else if (t.left_on_table < 0) lotClass = 'pos';
-        }
-        html += '<tr>';
-        html += '<td class="ticker">' + t.ticker + '</td>';
-        html += '<td><span class="detector-tag">' + t.detector + '</span></td>';
-        html += '<td class="' + color(t.pct_return) + '">' + (t.pct_return * 100).toFixed(1) + '%</td>';
-        html += '<td>' + t.days_tracked + '/20</td>';
-        html += '<td>' + (t.max_post_exit_return != null ? (t.max_post_exit_return * 100).toFixed(1) + '%' : '--') + '</td>';
-        html += '<td class="' + lotClass + '">' + (t.left_on_table != null ? (t.left_on_table * 100).toFixed(1) + '%' : '--') + '</td>';
-        html += '<td><span class="exit-tag exit-' + t.exit_reason + '">' + t.exit_reason + '</span></td>';
-        html += '</tr>';
-      });
-      html += '</tbody></table>';
-      $('#tracker-body').innerHTML = html;
+      html += '</tbody></table></div>';
+      tsb.innerHTML = html;
+      ts.style.display = 'block';
+    } else if (ts) {
+      ts.style.display = 'none';
     }
+
+    _renderTrackerRows();
   } catch(e) {
     console.error('exit tracker load failed', e);
   }
+}
+
+function filterTracker(f) {
+  _trackerFilter = f;
+  ['all','active','completed'].forEach(k => {
+    const btn = $('#tf-' + k);
+    if(btn) btn.classList.toggle('active-filter', k === f);
+  });
+  _renderTrackerRows();
+}
+
+function _renderTrackerRows() {
+  const tb = $('#tracker-body');
+  if (!tb || !_trackerData) return;
+  const d = _trackerData;
+
+  let items;
+  if (_trackerFilter === 'active')    items = d.active;
+  else if (_trackerFilter === 'completed') items = d.completed;
+  else items = d.active.concat(d.completed);
+
+  if (items.length === 0) {
+    tb.innerHTML = '<div class="empty-state">No entries match this filter.</div>';
+    return;
+  }
+
+  let html = '<div style="overflow-x:auto"><table><thead><tr>'
+    + '<th>Status</th><th>Ticker</th><th>Detector</th><th>Exit Reason</th>'
+    + '<th>Exit Return</th><th>Days</th><th>Max After</th>'
+    + '<th>Left on Table</th><th>Headline</th>'
+    + '</tr></thead><tbody>';
+
+  items.forEach(t => {
+    const lotClass = t.left_on_table != null
+      ? (t.left_on_table > 0.03 ? 'lot-large' : t.left_on_table > 0.015 ? 'lot-medium' : t.left_on_table > 0.005 ? 'lot-small' : t.left_on_table < 0 ? 'pos' : '')
+      : '';
+    const statusBadge = t.tracking_complete
+      ? '<span style="font-size:0.7rem;color:var(--dim)">done</span>'
+      : '<span style="font-size:0.7rem;color:var(--amber)">● live</span>';
+    const headline = (t.headline || '').replace(/</g,'&lt;').substring(0, 60);
+    html += '<tr>';
+    html += '<td>' + statusBadge + '</td>';
+    html += '<td class="ticker">' + t.ticker + '</td>';
+    html += '<td><span class="detector-tag">' + t.detector + '</span></td>';
+    html += '<td><span class="exit-tag exit-' + t.exit_reason + '">' + t.exit_reason + '</span></td>';
+    html += '<td class="' + color(t.pct_return) + '">' + (t.pct_return * 100).toFixed(1) + '%</td>';
+    html += '<td>' + t.days_tracked + '/20</td>';
+    html += '<td>' + (t.max_post_exit_return != null ? (t.max_post_exit_return >= 0 ? '+' : '') + (t.max_post_exit_return * 100).toFixed(1) + '%' : '--') + '</td>';
+    html += '<td class="' + lotClass + '">' + (t.left_on_table != null ? (t.left_on_table >= 0 ? '+' : '') + (t.left_on_table * 100).toFixed(1) + '%' : '--') + '</td>';
+    html += '<td style="font-size:0.78rem;color:var(--dim);max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + headline + '">' + headline + '</td>';
+    html += '</tr>';
+  });
+
+  html += '</tbody></table></div>';
+  tb.innerHTML = html;
 }
 
 async function loadSkippedSignals() {
@@ -1271,7 +1374,7 @@ async function loadReview() {
 let _activeTab = 'overview';
 
 function switchTab(name) {
-  ['overview', 'analytics'].forEach(t => {
+  ['overview', 'postexit', 'analytics'].forEach(t => {
     document.getElementById('tab-' + t).style.display = t === name ? 'block' : 'none';
     document.getElementById('tab-btn-' + t).classList.toggle('active', t === name);
   });
@@ -1280,6 +1383,8 @@ function switchTab(name) {
     loadAnalytics();
     loadReview();
     loadSkippedSignals();
+  } else if (name === 'postexit') {
+    loadExitTracker();
   }
 }
 
@@ -1463,8 +1568,8 @@ function refresh() {
   loadPortfolio();
   loadTrades();
   loadSignals();
-  loadExitTracker();
   loadCharts();
+  loadExitTracker();  // always refresh so tab badge stays current
   if (_activeTab === 'analytics') {
     loadAnalytics();
     loadReview();
