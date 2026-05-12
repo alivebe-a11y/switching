@@ -317,6 +317,50 @@ def trade_cmd(
     )
 
 
+@app.command("trade-t212")
+def trade_t212_cmd(
+    detectors: list[str] = typer.Option(
+        None, "--detector", "-d",
+        help="Detector(s) to trade. Omit for recommended set.",
+    ),
+    stop_loss: float = typer.Option(0.026, "--stop-loss", help="Base stop-loss fraction (e.g. 0.026 = 2.6%)."),
+    hold_days: int = typer.Option(5, "--hold-days", help="Default max hold window in trading days."),
+    interval: int = typer.Option(10, "--interval", help="Scan interval in minutes."),
+    min_severity: float = typer.Option(0.0, help="Minimum signal severity to trade."),
+    max_position_pct: float = typer.Option(0.01, "--max-position", help="Max % of portfolio per trade."),
+    max_positions: int = typer.Option(0, "--max-positions", help="Max concurrent positions (0 = unlimited)."),
+    state_file: Path = typer.Option(
+        "/app/.cache/t212_portfolio.json", "--state",
+        help="Path to T212 trade state file (separate from internal paper trader).",
+    ),
+    once: bool = typer.Option(False, "--once", help="Run one scan cycle and exit."),
+    log_level: str = typer.Option("WARNING", help="Python log level."),
+) -> None:
+    """Trade via Trading 212 (demo or live). Requires T212_API_KEY env var.
+
+    Runs the same detector-specific exit profiles as the internal paper trader
+    so you can compare execution quality side-by-side.
+
+    Set T212_DEMO=true (default) for demo account, T212_DEMO=false for real money.
+
+    State is saved to a separate JSON file — both this service and the internal
+    paper-trade service can run simultaneously for comparison.
+    """
+    logging.basicConfig(level=log_level.upper())
+    from switching.paper_trader import run_loop_t212
+    run_loop_t212(
+        state_path=state_file,
+        detectors=detectors or _DEFAULT_DETECTORS,
+        stop_loss=stop_loss,
+        hold_days=hold_days,
+        scan_interval_minutes=interval,
+        min_severity=min_severity,
+        max_position_pct=max_position_pct,
+        max_positions=max_positions,
+        once=once,
+    )
+
+
 @app.command("paper-status")
 def paper_status(
     state_file: Path = typer.Option(

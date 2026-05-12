@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `claude/add-ai-recommendations-ABZZX`
-- **420 tests**, run with: `pytest tests/`
+- **446 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path: `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -195,6 +195,15 @@ builds without SSH keys. (2) Demonstrates transparency for potential investors/p
 (3) No competitive moat in the code itself — edge comes from execution and tuning.
 **Mitigations**: .gitignore covers .env, keys, state files, portfolio JSON. All secrets
 live in Dockge .env only.
+
+### ADR-008: Trading 212 demo as parallel execution layer
+**Decision**: Add a `trade-t212` service that runs alongside the internal paper trader.
+**Why**: The internal paper trader uses yfinance theoretical next-open prices. T212 demo
+uses their own simulated fills. Running both in parallel on the same signals reveals real
+execution slippage before committing real capital.
+**Architecture**: Separate state file (`t212_portfolio.json`), same exit profiles as
+internal paper trader, acquirer filter applied. Compare P&L after 50+ trades.
+**When to go live**: Flip `T212_DEMO=false` in Dockge .env — no code changes needed.
 
 ### ADR-006: IBKR as broker (not Alpaca)
 **Decision**: Interactive Brokers (IBKR) for live and paper trading. Alpaca removed from roadmap.

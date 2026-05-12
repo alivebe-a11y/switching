@@ -930,3 +930,264 @@ def run_loop_alpaca(
 
         console.print(f"  [dim]Next scan in {scan_interval_minutes}m...[/dim]")
         time.sleep(scan_interval_minutes * 60)
+
+
+# ---------------------------------------------------------------------------
+# Trading 212 live-broker loop
+# ---------------------------------------------------------------------------
+
+def run_loop_t212(
+    *,
+    state_path: Path,
+    detectors: Sequence[str],
+    stop_loss: float = 0.026,
+    hold_days: int = 5,
+    scan_interval_minutes: int = 10,
+    min_severity: float = 0.0,
+    max_position_pct: float = 0.01,
+    max_positions: int = 0,
+    once: bool = False,
+) -> None:
+    """Trading loop that executes orders via the Trading 212 REST API.
+
+    Uses the same detector-specific exit profiles as the internal paper trader
+    so results can be compared side-by-side.  All fills come from T212
+    (demo or live), providing realistic slippage data vs the yfinance
+    theoretical fills used by the internal simulation.
+
+    State is persisted to *state_path* (separate from the internal paper
+    trader's portfolio JSON so both can run simultaneously).
+
+    Env vars required:
+        T212_API_KEY  — key from Settings → API in the T212 app
+        T212_DEMO     — "true" (default) for demo account
+    """
+    from switching.broker_trading212 import Trading212Client, T212AuthError, T212OrderError
+    from rich.console import Console
+
+    console = Console()
+
+    try:
+        client = Trading212Client()
+    except T212AuthError as exc:
+        console.print(f"[red]Trading 212 auth error: {exc}[/red]")
+        return
+
+    mode = "[bold yellow]T212 DEMO[/bold yellow]" if client.demo else "[bold red]T212 LIVE[/bold red]"
+
+    portfolio = Portfolio.load(state_path)
+    portfolio.max_position_pct = max_position_pct
+    portfolio.max_positions = max_positions
+
+    while True:
+        now = datetime.now(tz=timezone.utc)
+        console.print(f"\n[bold]── {mode} Scan at {now.strftime('%Y-%m-%d %H:%M UTC')} ──[/bold]")
+
+        try:
+            acct = client.get_account()
+        except Exception as exc:
+            console.print(f"[red]T212 account fetch failed: {exc}[/red]")
+            if once:
+                break
+            time.sleep(scan_interval_minutes * 60)
+            continue
+
+        console.print(
+            f"Free: ${acct.free:.2f} | Invested: ${acct.invested:.2f} | "
+            f"Total: ${acct.total:.2f} | P&L: ${acct.ppl:+.2f}"
+        )
+
+        # ----------------------------------------------------------------
+        # Exit checks — iterate over T212 positions
+        # ----------------------------------------------------------------
+        try:
+            t212_positions = client.get_positions()
+        except Exception as exc:
+            console.print(f"[red]T212 positions fetch failed: {exc}[/red]")
+            t212_positions = []
+
+        t212_map = {p.symbol: p for p in t212_positions}
+
+        if not client.is_market_open():
+            console.print("  [yellow]Market closed — monitoring only[/yellow]")
+            for sym, tp in t212_map.items():
+                color = "green" if tp.unrealized_pnl_pct >= 0 else "red"
+                console.print(
+                    f"    {sym}: {tp.quantity:.4f} @ ${tp.avg_entry_price:.2f} "
+                    f"[{color}]{tp.unrealized_pnl_pct*100:+.1f}% "
+                    f"(${tp.unrealized_pnl:+.2f})[/{color}]"
+                )
+            portfolio.save(state_path)
+            if once:
+                break
+            console.print(f"  [dim]Next scan in {scan_interval_minutes}m...[/dim]")
+            time.sleep(scan_interval_minutes * 60)
+            continue
+
+        # Positions we track locally (for detector/profile metadata)
+        local_map = {p.ticker: p for p in portfolio.positions}
+
+        for sym, tp in list(t212_map.items()):
+            ret = tp.unrealized_pnl_pct
+            color = "green" if ret >= 0 else "red"
+            tracker = local_map.get(sym)
+            days = trading_days_since(tracker.entry_dt) if tracker else 0
+
+            # Apply per-detector exit profile
+            profile = _exit_profile(
+                tracker.detector if tracker else "unknown",
+                tp.avg_entry_price,
+            )
+            effective_sl = _tiered_stop_loss(stop_loss, tp.avg_entry_price) + profile.get("stop_loss_extra", 0.0)
+            first_green = profile.get("first_green", True)
+            first_green_pct = profile.get("first_green_pct", 0.0)
+            max_hold = profile.get("hold_days", hold_days)
+
+            should_sell = False
+            reason = ""
+
+            if ret <= -effective_sl:
+                should_sell = True
+                reason = "stop_loss"
+            elif first_green and ret >= first_green_pct:
+                should_sell = True
+                reason = "first_green"
+            elif not first_green and days >= max_hold:
+                should_sell = True
+                reason = "hold_expiry"
+            elif days >= max_hold:
+                should_sell = True
+                reason = "hold_expiry"
+
+            if should_sell:
+                try:
+                    order = client.sell_all(sym, tp.quantity)
+                    exit_price = tp.current_price
+                    pnl = round(tp.unrealized_pnl, 2)
+                    console.print(
+                        f"  [{color}]SELL {sym} ({reason}): "
+                        f"{ret*100:+.1f}% ${pnl:+.2f} — order {order.status}[/{color}]"
+                    )
+                    portfolio.trades.append(ClosedTrade(
+                        ticker=sym,
+                        detector=tracker.detector if tracker else "unknown",
+                        entry_price=tp.avg_entry_price,
+                        exit_price=exit_price,
+                        shares=tp.quantity,
+                        entry_dt=tracker.entry_dt if tracker else now.isoformat(),
+                        exit_dt=now.isoformat(),
+                        pnl=pnl,
+                        pct_return=round(ret, 4),
+                        exit_reason=reason,
+                        headline=tracker.headline if tracker else "",
+                        severity=tracker.severity if tracker else 0.0,
+                    ))
+                    portfolio.positions = [p for p in portfolio.positions if p.ticker != sym]
+                except (T212OrderError, Exception) as exc:
+                    console.print(f"  [red]SELL FAILED {sym}: {exc}[/red]")
+            else:
+                if tracker:
+                    tracker.days_held = days
+                console.print(
+                    f"    {sym}: {tp.quantity:.4f} @ ${tp.avg_entry_price:.2f} "
+                    f"[{color}]{ret*100:+.1f}%[/{color}] day {days}/{max_hold}"
+                )
+
+        # ----------------------------------------------------------------
+        # Signal scan — buy new positions
+        # ----------------------------------------------------------------
+        since = now - timedelta(hours=24)
+        signals = scan_for_signals(detectors, since, min_severity=min_severity)
+        new_signals = [s for s in signals if _signal_key(s) not in portfolio.seen_signals]
+
+        held_symbols = set(t212_map.keys()) | {p.ticker for p in portfolio.positions}
+        active_count = len(t212_map)
+
+        if new_signals:
+            console.print(f"  Found {len(new_signals)} new signal(s)")
+
+        for sig in new_signals:
+            portfolio.seen_signals.append(_signal_key(sig))
+
+            # Skip acquirer-direction M&A signals
+            if sig.detector == "mna_target" and sig.extra.get("direction") == "acquirer":
+                console.print(f"  [dim]SKIP {sig.ticker} (mna_target acquirer)[/dim]")
+                continue
+
+            if sig.ticker in held_symbols:
+                console.print(f"  [dim]SKIP {sig.ticker}: already holding[/dim]")
+                continue
+
+            if max_positions > 0 and active_count >= max_positions:
+                console.print(f"  [dim]SKIP {sig.ticker}: max positions ({max_positions})[/dim]")
+                continue
+
+            # Get price to calculate quantity
+            price = get_current_price(sig.ticker)
+            if not price or price <= 0:
+                console.print(f"  [yellow]SKIP {sig.ticker}: price unavailable[/yellow]")
+                continue
+
+            alloc = acct.total * max_position_pct
+            alloc = min(alloc, acct.free)
+            if alloc < 1.0:
+                console.print(f"  [yellow]SKIP {sig.ticker}: insufficient buying power (${acct.free:.2f})[/yellow]")
+                continue
+
+            quantity = alloc / price
+
+            try:
+                order = client.buy_market(sig.ticker, quantity)
+                console.print(
+                    f"  [cyan]BUY {sig.ticker} {quantity:.4f} shares (~${alloc:.2f}) "
+                    f"— order {order.status} "
+                    f"— {sig.detector}: {sig.headline[:55]}[/cyan]"
+                )
+                # Fetch actual T212 fill price after order
+                actual_price = price
+                t212_pos = client.get_position(sig.ticker)
+                if t212_pos:
+                    actual_price = t212_pos.avg_entry_price
+                    quantity = t212_pos.quantity
+
+                profile = _exit_profile(sig.detector, actual_price)
+                actual_sl = _tiered_stop_loss(stop_loss, actual_price) + profile.get("stop_loss_extra", 0.0)
+
+                portfolio.positions.append(Position(
+                    ticker=sig.ticker,
+                    detector=sig.detector,
+                    entry_price=actual_price,
+                    shares=quantity,
+                    entry_dt=now.isoformat(),
+                    headline=sig.headline,
+                    severity=sig.severity,
+                    stop_loss=actual_sl,
+                    hold_days=profile["hold_days"],
+                    first_green=profile.get("first_green", True),
+                    first_green_pct=profile.get("first_green_pct", 0.0),
+                ))
+                held_symbols.add(sig.ticker)
+                active_count += 1
+            except (T212OrderError, Exception) as exc:
+                console.print(f"  [red]BUY FAILED {sig.ticker}: {exc}[/red]")
+
+        # ----------------------------------------------------------------
+        # Summary
+        # ----------------------------------------------------------------
+        wins = sum(1 for t in portfolio.trades if t.pnl > 0)
+        total_trades = len(portfolio.trades)
+        if total_trades:
+            wr = wins / total_trades * 100
+            total_pnl = sum(t.pnl for t in portfolio.trades)
+            console.print(
+                f"  [dim]History: {total_trades} trades, {wins} wins ({wr:.0f}%), "
+                f"total P&L: ${total_pnl:+.2f}[/dim]"
+            )
+
+        portfolio.save(state_path)
+
+        if once:
+            break
+
+        console.print(f"  [dim]Next scan in {scan_interval_minutes}m...[/dim]")
+        time.sleep(scan_interval_minutes * 60)

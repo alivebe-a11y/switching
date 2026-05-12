@@ -43,6 +43,21 @@ services:
     command: ["trade", "--interval", "30", "--stop-loss", "0.05", "--hold-days", "5"]
     restart: unless-stopped
 
+  trade-t212:
+    image: ${SWITCHING_IMAGE:-ghcr.io/alivebe-a11y/switching:latest}
+    build:
+      context: https://github.com/alivebe-a11y/switching.git#claude/add-ai-recommendations-ABZZX
+      dockerfile: Dockerfile
+    environment:
+      - T212_API_KEY=${T212_API_KEY}
+      - T212_DEMO=${T212_DEMO:-true}
+      - SWITCHING_EDGAR_UA=${SWITCHING_EDGAR_UA:-}
+    volumes:
+      - ${SWITCHING_DATA_DIR:-./data/cache}:/app/.cache
+    entrypoint: ["switching"]
+    command: ["trade-t212", "--interval", "10", "--stop-loss", "0.026", "--hold-days", "5", "--max-position", "0.01", "--max-positions", "0"]
+    restart: unless-stopped
+
   dashboard:
     image: ${SWITCHING_IMAGE:-ghcr.io/alivebe-a11y/switching:latest}
     build:
