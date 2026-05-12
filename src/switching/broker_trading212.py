@@ -117,13 +117,22 @@ class Trading212Client:
     # ------------------------------------------------------------------
 
     def get_account(self) -> T212Account:
-        """Return a snapshot of account cash / equity."""
-        data = self._get("/equity/account/cash")
+        """Return a snapshot of account cash / equity.
+
+        Uses GET /equity/account/summary which returns:
+          { totalValue, currency,
+            cash: { availableToTrade, inPies, reservedForOrders },
+            investments: { currentValue, totalCost,
+                           unrealizedProfitLoss, realizedProfitLoss } }
+        """
+        data = self._get("/equity/account/summary")
+        cash = data.get("cash", {})
+        investments = data.get("investments", {})
         return T212Account(
-            free=float(data.get("free", 0.0)),
-            total=float(data.get("total", 0.0)),
-            invested=float(data.get("invested", 0.0)),
-            ppl=float(data.get("ppl", 0.0)),
+            free=float(cash.get("availableToTrade", 0.0)),
+            total=float(data.get("totalValue", 0.0)),
+            invested=float(investments.get("currentValue", 0.0)),
+            ppl=float(investments.get("unrealizedProfitLoss", 0.0)),
         )
 
     # ------------------------------------------------------------------
@@ -142,12 +151,17 @@ class Trading212Client:
         items: list[dict] = data if isinstance(data, list) else data.get("items", [])
         result: list[T212Position] = []
         for item in items:
-            t212_ticker = item.get("ticker", "")
+            # ticker is nested: item["instrument"]["ticker"] e.g. "AAPL_US_EQ"
+            instrument = item.get("instrument") or {}
+            t212_ticker = instrument.get("ticker", "")
             symbol = _from_t212_ticker(t212_ticker)
             qty = float(item.get("quantity", 0.0))
-            avg = float(item.get("averagePrice", 0.0))
+            # field is "averagePricePaid", not "averagePrice"
+            avg = float(item.get("averagePricePaid", 0.0))
             cur = float(item.get("currentPrice", avg))
-            ppl = float(item.get("ppl", 0.0))
+            # P&L is nested: item["walletImpact"]["unrealizedProfitLoss"]
+            wallet = item.get("walletImpact") or {}
+            ppl = float(wallet.get("unrealizedProfitLoss", 0.0))
             pnl_pct = (cur - avg) / avg if avg > 0 else 0.0
             result.append(T212Position(
                 symbol=symbol,

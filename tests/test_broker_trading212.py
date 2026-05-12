@@ -109,9 +109,22 @@ def _mock_response(json_data, status_code=200):
 
 
 def test_get_account(client):
+    # Real T212 schema: GET /equity/account/summary
     client._session.get.return_value = _mock_response({
-        "free": 9500.0, "total": 10200.0, "invested": 700.0, "ppl": 50.0,
-        "blocked": 0.0, "pieCash": 0.0, "result": 0.0,
+        "id": 123,
+        "currency": "GBP",
+        "totalValue": 10200.0,
+        "cash": {
+            "availableToTrade": 9500.0,
+            "inPies": 0.0,
+            "reservedForOrders": 0.0,
+        },
+        "investments": {
+            "currentValue": 700.0,
+            "totalCost": 650.0,
+            "unrealizedProfitLoss": 50.0,
+            "realizedProfitLoss": 0.0,
+        },
     })
     acct = client.get_account()
     assert acct.free == 9500.0
@@ -121,11 +134,11 @@ def test_get_account(client):
 
 
 def test_get_account_missing_fields(client):
-    """Partial response (new API fields not yet in our mapping) should not crash."""
-    client._session.get.return_value = _mock_response({"free": 1000.0})
+    """Partial response should not crash — missing sections default to 0."""
+    client._session.get.return_value = _mock_response({"totalValue": 1000.0})
     acct = client.get_account()
-    assert acct.free == 1000.0
-    assert acct.total == 0.0
+    assert acct.free == 0.0
+    assert acct.total == 1000.0
 
 
 # ---------------------------------------------------------------------------
@@ -133,16 +146,30 @@ def test_get_account_missing_fields(client):
 # ---------------------------------------------------------------------------
 
 
+def _make_position_item(t212_ticker, quantity, avg_price, current_price, ppl):
+    """Build a position dict matching the real T212 API schema."""
+    return {
+        "instrument": {"ticker": t212_ticker, "currency": "USD",
+                       "isin": "US0378331005", "name": "Apple Inc."},
+        "quantity": quantity,
+        "averagePricePaid": avg_price,   # real field name (not averagePrice)
+        "currentPrice": current_price,
+        "quantityAvailableForTrading": quantity,
+        "quantityInPies": 0.0,
+        "walletImpact": {                # real field name (not ppl)
+            "currency": "GBP",
+            "currentValue": quantity * current_price,
+            "totalCost": quantity * avg_price,
+            "unrealizedProfitLoss": ppl,
+            "fxImpact": 0.0,
+        },
+    }
+
+
 def test_get_positions_list_format(client):
     """T212 may return a bare list or a paginated dict."""
     client._session.get.return_value = _mock_response([
-        {
-            "ticker": "AAPL_US_EQ",
-            "quantity": 5.0,
-            "averagePrice": 180.0,
-            "currentPrice": 190.0,
-            "ppl": 50.0,
-        }
+        _make_position_item("AAPL_US_EQ", 5.0, 180.0, 190.0, 50.0)
     ])
     positions = client.get_positions()
     assert len(positions) == 1
@@ -159,10 +186,7 @@ def test_get_positions_list_format(client):
 def test_get_positions_paginated_format(client):
     """Paginated response with items key."""
     client._session.get.return_value = _mock_response({
-        "items": [
-            {"ticker": "MSFT_US_EQ", "quantity": 2.0, "averagePrice": 400.0,
-             "currentPrice": 410.0, "ppl": 20.0}
-        ],
+        "items": [_make_position_item("MSFT_US_EQ", 2.0, 400.0, 410.0, 20.0)],
         "nextPagePath": None,
     })
     positions = client.get_positions()
@@ -177,10 +201,8 @@ def test_get_positions_empty(client):
 
 def test_get_position_by_symbol(client):
     client._session.get.return_value = _mock_response([
-        {"ticker": "NVDA_US_EQ", "quantity": 1.0, "averagePrice": 900.0,
-         "currentPrice": 950.0, "ppl": 50.0},
-        {"ticker": "AAPL_US_EQ", "quantity": 3.0, "averagePrice": 170.0,
-         "currentPrice": 175.0, "ppl": 15.0},
+        _make_position_item("NVDA_US_EQ", 1.0, 900.0, 950.0, 50.0),
+        _make_position_item("AAPL_US_EQ", 3.0, 170.0, 175.0, 15.0),
     ])
     pos = client.get_position("NVDA")
     assert pos is not None
