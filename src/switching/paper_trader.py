@@ -182,7 +182,9 @@ def _exit_profile(detector: str, price: float) -> dict:
     if detector == "buyback":
         return {"first_green": False, "first_green_pct": 0.0, "hold_days": 5}
     if detector == "earnings_surprise":
-        return {"first_green": True, "first_green_pct": 0.005, "hold_days": 2}
+        # Live data: first_green_pct 0% was leaving 5-15% on table (e.g. SNEX +14.6%).
+        # Raised to 2%; hold extended to 3 days to capture post-announcement drift.
+        return {"first_green": True, "first_green_pct": 0.02, "hold_days": 3}
     if detector == "ai_pivot":
         if price >= 30.0:
             return {"first_green": True, "first_green_pct": 0.02, "hold_days": 5}
@@ -194,9 +196,16 @@ def _exit_profile(detector: str, price: float) -> dict:
     if detector == "mna_target":
         return {"first_green": True, "first_green_pct": 0.03, "hold_days": 5}
     if detector == "guidance_raise":
-        return {"first_green": True, "first_green_pct": 0.02, "hold_days": 3}
+        # Live data: stocks consistently ran 5-25% beyond the old 2% threshold
+        # (CVS +14.3%, GEN +12.3%, TBLA +37.8% post-exit). Raised to 5%;
+        # hold extended to 5 days to capture multi-day guidance-revision drift.
+        return {"first_green": True, "first_green_pct": 0.05, "hold_days": 5}
     if detector == "dividend_surprise":
-        return {"first_green": True, "first_green_pct": 0.01, "hold_days": 3}
+        # Live data: MKTW and SII both stopped out on day-0 intraday dips then
+        # surged 18-14% — stop_loss_extra widens the effective stop by 1% for
+        # this detector only, absorbing the typical post-dividend-surprise noise.
+        return {"first_green": True, "first_green_pct": 0.01, "hold_days": 4,
+                "stop_loss_extra": 0.01}
     if detector == "contract_win":
         return {"first_green": True, "first_green_pct": 0.02, "hold_days": 5}
     if detector == "stock_split":
@@ -240,8 +249,8 @@ def open_position(
     cost = shares * price
     portfolio.cash -= cost
 
-    actual_sl = _tiered_stop_loss(stop_loss, price)
     profile = _exit_profile(signal.detector, price)
+    actual_sl = _tiered_stop_loss(stop_loss, price) + profile.get("stop_loss_extra", 0.0)
 
     pos = Position(
         ticker=signal.ticker,
@@ -627,6 +636,16 @@ def run_loop(
         if new_signals:
             console.print(f"  Found {len(new_signals)} new signal(s)")
         for sig in new_signals:
+            # Skip mna_target signals where the detected company is the ACQUIRER,
+            # not the target. Acquirers typically drop on deal announcement day
+            # (dilution / deal risk). Live data confirmed: 100% of acquirer-tagged
+            # mna_target trades hit stop-loss and many kept falling.
+            if sig.detector == "mna_target" and sig.extra.get("direction") == "acquirer":
+                log.info("mna_target acquirer signal skipped for %s: %s", sig.ticker, sig.headline[:80])
+                console.print(f"  [dim]SKIP {sig.ticker} (mna_target acquirer — direction filter)[/dim]")
+                portfolio.seen_signals.append(_signal_key(sig))
+                continue
+
             price = get_current_price(sig.ticker)
             if price is None:
                 console.print(f"  [yellow]SKIP {sig.ticker}: no price available[/yellow]")

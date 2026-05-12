@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `claude/add-ai-recommendations-ABZZX`
-- **319 tests**, run with: `pytest tests/`
+- **420 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path: `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -46,16 +46,16 @@ The top-level `data/` directory is a mirror/legacy — always put seeds in both.
 ## Detectors (13 registered)
 | Detector | Source | Exit Profile |
 |----------|--------|--------------|
-| earnings_surprise | RSS (earnings feeds) | first_green +0%, 2-day hold |
+| earnings_surprise | RSS (earnings feeds) | first_green +2%, 3-day hold *(raised from +0.5%/2d — live data: SNEX left 14.6% on table)* |
 | ai_pivot | RSS (default feeds) | first_green +2% (>$30) or +0% (<$30), 3-5 day |
 | analyst_upgrade | RSS (default feeds) | first_green +1%, 3-day hold |
 | fda_decision | RSS (default + earnings) | first_green +3%, 3-day hold |
 | buyback | RSS (default + corporate) | NO first_green, 5-day hold |
 | index_inclusion | RSS (default + corporate) | default (first_green +0%, 5-day) |
 | spinoff | RSS (default + corporate) | default |
-| mna_target | RSS (default + corporate) | first_green +3%, 5-day hold |
-| guidance_raise | RSS (default + earnings + corporate) | first_green +2%, 3-day hold |
-| dividend_surprise | RSS (default + earnings + corporate) | first_green +1%, 3-day hold |
+| mna_target | RSS (default + corporate) | first_green +3%, 5-day hold; **acquirer-direction signals are skipped** (live data: 100% hit stop-loss) |
+| guidance_raise | RSS (default + earnings + corporate) | first_green +5%, 5-day hold *(raised from +2%/3d — CVS/GEN/TBLA all ran 10-38% post-exit)* |
+| dividend_surprise | RSS (default + earnings + corporate) | first_green +1%, 4-day hold, +1% wider stop *(MKTW/SII false stops — recovered 18%/14%)* |
 | contract_win | RSS (default + corporate) | first_green +2%, 5-day hold |
 | activist_13d | SEC EDGAR (13D filings) | default |
 | insider_cluster | SEC EDGAR (Form 4) | default |

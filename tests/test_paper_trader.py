@@ -198,7 +198,7 @@ class TestExitProfile:
     def test_earnings_surprise_short_hold(self):
         p = _exit_profile("earnings_surprise", 100.0)
         assert p["first_green"] is True
-        assert p["hold_days"] == 2
+        assert p["hold_days"] == 3  # raised from 2 — live data showed drift continues
 
     def test_ai_pivot_large_cap_needs_2pct(self):
         p = _exit_profile("ai_pivot", 50.0)
@@ -226,6 +226,34 @@ class TestExitProfile:
         assert p["first_green"] is True
         assert p["first_green_pct"] == 0.0
         assert p["hold_days"] == 5
+
+    def test_guidance_raise_raised_threshold(self):
+        p = _exit_profile("guidance_raise", 100.0)
+        assert p["first_green_pct"] == 0.05   # raised from 0.02 — live data
+        assert p["hold_days"] == 5             # raised from 3
+
+    def test_dividend_surprise_widens_stop(self):
+        p = _exit_profile("dividend_surprise", 10.0)
+        assert p["stop_loss_extra"] == 0.01   # absorbs day-0 intraday noise
+
+    def test_dividend_surprise_stop_applied_in_open_position(self):
+        """Dividend surprise position should have a wider effective stop-loss."""
+        from switching.signal import Signal
+        portfolio = Portfolio(cash=1000.0)
+        sig = Signal(
+            detector="dividend_surprise", ticker="DIV",
+            company="Div Co", event_dt=__import__("datetime").datetime.now(
+                tz=__import__("datetime").timezone.utc),
+            headline="Div headline", url="", evidence="test", severity=0.7,
+        )
+        pos = open_position(portfolio, sig, 15.0, stop_loss=0.026)
+        assert pos is not None
+        # tiered stop for $15 = 3.6%, plus stop_loss_extra 1% = 4.6%
+        assert abs(pos.stop_loss - 0.046) < 0.001
+
+    def test_earnings_surprise_first_green_2pct(self):
+        p = _exit_profile("earnings_surprise", 100.0)
+        assert p["first_green_pct"] == 0.02   # raised from 0.005 — live data (SNEX)
 
 
 class TestOpenPositionProfiles:
@@ -258,12 +286,12 @@ class TestOpenPositionProfiles:
         assert pos.first_green is True
         assert pos.first_green_pct == 0.02
 
-    def test_earnings_surprise_gets_2day_hold(self):
+    def test_earnings_surprise_gets_3day_hold(self):
         portfolio = Portfolio(cash=1000.0)
         sig = self._make_signal("earnings_surprise")
         pos = open_position(portfolio, sig, 100.0)
         assert pos is not None
-        assert pos.hold_days == 2
+        assert pos.hold_days == 3  # raised from 2 — live data showed drift continues
         assert pos.first_green is True
 
     def test_first_green_blocked_on_entry_day(self):

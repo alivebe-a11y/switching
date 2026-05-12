@@ -78,7 +78,44 @@ def test_severity_capped():
     assert m["severity"] <= 0.95
 
 
-def test_to_acquire():
+def test_to_acquire_is_acquirer():
+    """'Company to Acquire X' = acquirer-side — should be direction=acquirer."""
     m = classify("Amazon to Acquire One Medical for $3.9 Billion", "")
     assert m is not None
+    assert m["direction"] == "acquirer"
     assert m["severity"] >= 0.50
+
+
+def test_acquirer_definitive_agreement():
+    """'Signs Definitive Agreement to Acquire X' = acquirer, not target."""
+    m = classify("Microsoft Signs Definitive Agreement to Acquire Activision Blizzard", "")
+    assert m is not None
+    assert m["direction"] == "acquirer"
+
+
+def test_completes_acquisition_is_acquirer():
+    """'Completes acquisition of X' = acquirer."""
+    m = classify("Suncrete Inc Completes Acquisition of Nelson Bros Ready Mix", "")
+    assert m is not None
+    assert m["direction"] == "acquirer"
+
+
+def test_following_acquisition_of_is_acquirer():
+    """'Revenue growth following acquisition of X' = acquirer."""
+    m = classify("SEGG Media Reports 1400% Revenue Growth Following Acquisition of Veloce Media Group", "")
+    assert m is not None
+    assert m["direction"] == "acquirer"
+
+
+def test_exercises_option_to_acquire_is_acquirer():
+    """'Exercises option to acquire X' = acquirer."""
+    m = classify("Artivion Reports Q1 Results and Announces Exercise of Option to Acquire Endospan", "")
+    assert m is not None
+    assert m["direction"] == "acquirer"
+
+
+def test_divestiture_is_acquirer():
+    """Divestitures are detected as acquirer-side (neither party is a pure target)."""
+    m = classify("FMC Corporation Announces Agreement to Divest India Business to Crystal Crop", "")
+    assert m is not None
+    assert m["direction"] == "acquirer"

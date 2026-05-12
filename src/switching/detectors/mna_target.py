@@ -28,24 +28,27 @@ log = logging.getLogger(__name__)
 # Core event-type regexes
 # ---------------------------------------------------------------------------
 
-# Target-side patterns: the subject is being acquired
+# Target-side patterns: the subject company is the one being acquired.
+# Only include patterns where the ticker's company is the TARGET, not the buyer.
 _TARGET_RX = re.compile(
     r"(?i)"
     r"(?:"
     r"to\s+be\s+acquired\s+by"
     r"|agrees?\s+to\s+be\s+acquired"
     r"|acquired\s+by\b"
-    r"|acquisition\s+of\b"
-    r"|to\s+acquire\b"
-    r"|to\s+buy\b.*?\bfor\s+\$"
     r"|merger\s+agreement"
     r"|definitive\s+agreement"
     r"|tender\s+offer"
     r"|takeover\s+bid"
+    r"|going[\s\-]private"
+    r"|receives?\s+(?:acquisition|takeover|buyout)\s+(?:offer|bid|proposal)"
     r")"
 )
 
-# Acquirer-side patterns: subject is doing the buying
+# Acquirer-side patterns: subject is doing the buying.
+# NOTE: "to acquire", "acquisition of", "completes acquisition" etc. are all
+# acquirer language — the subject company is BUYING, not being bought.
+# Acquirer stocks typically drift DOWN on announcement day (dilution concerns).
 _ACQUIRER_RX = re.compile(
     r"(?i)"
     r"(?:"
@@ -53,8 +56,15 @@ _ACQUIRER_RX = re.compile(
     r"|acquiring\b"
     r"|to\s+acquire\b"
     r"|acquisition\s+of\b"
+    r"|following\s+(?:its\s+)?acquisition\s+of"
+    r"|completes?\s+(?:its\s+)?acquisition\s+of"
+    r"|exercises?\s+option\s+to\s+acquire"
+    r"|announces?\s+(?:agreement\s+to\s+)?acquire"
     r"|purchase\s+of\b"
     r"|buys?\b.*?\bfor\s+\$"
+    r"|to\s+buy\b.*?\bfor\s+\$"
+    r"|\bdivests?\b"
+    r"|\bdivestiture\b"
     r")"
 )
 
@@ -140,6 +150,11 @@ def classify(title: str, summary: str = "") -> dict | None:
 
     # Determine direction: "to be acquired by" and similar target patterns
     # take priority over generic acquirer-side patterns.
+    # These are unambiguously target-side patterns — only fire when the
+    # ticker's company is the one being bought, not doing the buying.
+    # "definitive agreement" deliberately excluded: "signs definitive agreement
+    # to acquire X" is acquirer language, not target — the acquirer_match takes
+    # priority in the else branch.
     _TARGET_SIDE_RX = re.compile(
         r"(?i)"
         r"(?:"
@@ -149,7 +164,8 @@ def classify(title: str, summary: str = "") -> dict | None:
         r"|tender\s+offer"
         r"|takeover\s+bid"
         r"|merger\s+agreement"
-        r"|definitive\s+agreement"
+        r"|going[\s\-]private"
+        r"|receives?\s+(?:acquisition|takeover|buyout)\s+(?:offer|bid|proposal)"
         r")"
     )
     if _TARGET_SIDE_RX.search(text) or (
