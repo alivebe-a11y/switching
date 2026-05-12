@@ -13,6 +13,7 @@ from switching.broker_trading212 import (
     T212OrderError,
     Trading212Client,
     _from_t212_ticker,
+    _safe_float,
     _to_t212_ticker,
 )
 
@@ -43,6 +44,45 @@ def test_from_t212_ticker():
 def test_from_t212_ticker_roundtrip():
     sym = "NVDA"
     assert _from_t212_ticker(_to_t212_ticker(sym)) == sym
+
+
+def test_to_t212_ticker_rejects_invalid():
+    """Symbols with non-alphanumeric chars other than underscore must be rejected."""
+    with pytest.raises(ValueError, match="Invalid ticker"):
+        _to_t212_ticker("../../etc/passwd")
+
+
+def test_to_t212_ticker_rejects_too_long():
+    with pytest.raises(ValueError, match="Invalid ticker"):
+        _to_t212_ticker("A" * 21)
+
+
+# ---------------------------------------------------------------------------
+# _safe_float
+# ---------------------------------------------------------------------------
+
+
+def test_safe_float_normal():
+    assert _safe_float(1.5) == 1.5
+
+
+def test_safe_float_none_returns_default():
+    assert _safe_float(None) == 0.0
+    assert _safe_float(None, default=99.9) == 99.9
+
+
+def test_safe_float_string_number():
+    assert _safe_float("3.14") == 3.14
+
+
+def test_safe_float_bad_string_returns_default():
+    assert _safe_float("not-a-number") == 0.0
+
+
+def test_safe_float_corrupt_api_value():
+    """Simulate T212 returning null/object in a numeric field — must not crash."""
+    assert _safe_float({}) == 0.0
+    assert _safe_float([]) == 0.0
 
 
 # ---------------------------------------------------------------------------

@@ -973,7 +973,13 @@ def run_loop_t212(
         console.print(f"[red]Trading 212 auth error: {exc}[/red]")
         return
 
-    mode = "[bold yellow]T212 DEMO[/bold yellow]" if client.demo else "[bold red]T212 LIVE[/bold red]"
+    mode = "[bold yellow]T212 DEMO[/bold yellow]" if client.demo else "[bold red]T212 LIVE — REAL MONEY[/bold red]"
+
+    if not client.demo:
+        console.print("\n[bold red]⚠  WARNING: T212_DEMO=false — THIS WILL PLACE REAL ORDERS WITH REAL MONEY.[/bold red]")
+        console.print("[bold red]   Press Ctrl-C within 10 seconds to abort.[/bold red]\n")
+        time.sleep(10)
+        console.print("[yellow]Proceeding with live trading...[/yellow]")
 
     portfolio = Portfolio.load(state_path)
     portfolio.max_position_pct = max_position_pct

@@ -105,12 +105,17 @@ class Trading212Client:
         self.demo: bool = demo_env != "false"
         self._base = _DEMO_BASE if self.demo else _LIVE_BASE
         self._session = requests.Session()
+        self._session.verify = True   # always verify TLS — never override
         self._session.headers.update({
             "Authorization": api_key,
             "Content-Type": "application/json",
         })
+        # Never log the key itself — only mode and base URL
         mode = "DEMO" if self.demo else "LIVE"
         log.info("Trading212Client initialised (%s) base=%s", mode, self._base)
+        # Scrub the key from the stored attribute so it can't be
+        # accidentally serialised or introspected after construction.
+        del api_key
 
     # ------------------------------------------------------------------
     # Account
@@ -129,10 +134,10 @@ class Trading212Client:
         cash = data.get("cash", {})
         investments = data.get("investments", {})
         return T212Account(
-            free=float(cash.get("availableToTrade", 0.0)),
-            total=float(data.get("totalValue", 0.0)),
-            invested=float(investments.get("currentValue", 0.0)),
-            ppl=float(investments.get("unrealizedProfitLoss", 0.0)),
+            free=_safe_float(cash.get("availableToTrade")),
+            total=_safe_float(data.get("totalValue")),
+            invested=_safe_float(investments.get("currentValue")),
+            ppl=_safe_float(investments.get("unrealizedProfitLoss")),
         )
 
     # ------------------------------------------------------------------
@@ -155,13 +160,13 @@ class Trading212Client:
             instrument = item.get("instrument") or {}
             t212_ticker = instrument.get("ticker", "")
             symbol = _from_t212_ticker(t212_ticker)
-            qty = float(item.get("quantity", 0.0))
+            qty = _safe_float(item.get("quantity"))
             # field is "averagePricePaid", not "averagePrice"
-            avg = float(item.get("averagePricePaid", 0.0))
-            cur = float(item.get("currentPrice", avg))
+            avg = _safe_float(item.get("averagePricePaid"))
+            cur = _safe_float(item.get("currentPrice"), default=avg)
             # P&L is nested: item["walletImpact"]["unrealizedProfitLoss"]
             wallet = item.get("walletImpact") or {}
-            ppl = float(wallet.get("unrealizedProfitLoss", 0.0))
+            ppl = _safe_float(wallet.get("unrealizedProfitLoss"))
             pnl_pct = (cur - avg) / avg if avg > 0 else 0.0
             result.append(T212Position(
                 symbol=symbol,
@@ -271,11 +276,25 @@ def _check_response(resp: requests.Response, path: str) -> None:
             "Regenerate at Settings → API in the app."
         )
     if resp.status_code == 400:
-        raise T212OrderError(f"T212 bad request [{path}]: {resp.text[:300]}")
+        # Sanitise response body before surfacing — T212 may echo request
+        # fields (including auth headers) in error responses.
+        body = _sanitise_error_body(resp.text, max_len=200)
+        raise T212OrderError(f"T212 bad request [{path}]: {body}")
     try:
         resp.raise_for_status()
     except requests.HTTPError as exc:
-        raise T212OrderError(f"T212 HTTP error [{path}] {resp.status_code}: {resp.text[:200]}") from exc
+        body = _sanitise_error_body(resp.text, max_len=150)
+        raise T212OrderError(
+            f"T212 HTTP error [{path}] {resp.status_code}: {body}"
+        ) from exc
+
+
+def _sanitise_error_body(text: str, max_len: int = 200) -> str:
+    """Strip any line that looks like an auth header before logging."""
+    import re
+    # Remove any "Authorization: ..." or "Bearer ..." fragments
+    cleaned = re.sub(r"(?i)(authorization|bearer)\s*[:\s]\s*\S+", "[REDACTED]", text)
+    return cleaned[:max_len]
 
 
 def _to_t212_ticker(symbol: str) -> str:
@@ -283,8 +302,14 @@ def _to_t212_ticker(symbol: str) -> str:
 
     AAPL      → AAPL_US_EQ
     AAPL_US_EQ → AAPL_US_EQ  (passthrough if already formatted)
+
+    Only alphanumerics and underscores are allowed — rejects anything
+    that could be a path traversal or injection attempt.
     """
+    import re
     symbol = symbol.upper().strip()
+    if not re.fullmatch(r"[A-Z0-9_]{1,20}", symbol):
+        raise ValueError(f"Invalid ticker symbol: {symbol!r}")
     if "_" in symbol:
         return symbol
     return f"{symbol}_US_EQ"
@@ -304,3 +329,13 @@ def _parse_order(data: dict, fallback_ticker: str) -> T212Order:
         t212_ticker=data.get("ticker", fallback_ticker),
         status=data.get("status", "UNKNOWN"),
     )
+
+
+def _safe_float(value: object, *, default: float = 0.0) -> float:
+    """Convert API value to float, returning default on None / bad data."""
+    if value is None:
+        return default
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
