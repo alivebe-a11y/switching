@@ -238,7 +238,7 @@ _DEFAULT_DETECTORS = [
     "buyback", "insider_cluster", "activist_13d",
     "analyst_upgrade", "fda_decision",
     "mna_target", "guidance_raise", "dividend_surprise", "contract_win",
-    "stock_split", "crypto_treasury",
+    "spinoff", "stock_split", "crypto_treasury",
 ]
 
 
