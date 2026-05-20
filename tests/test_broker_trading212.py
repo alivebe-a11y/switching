@@ -93,12 +93,21 @@ def test_safe_float_corrupt_api_value():
 def test_missing_api_key_raises():
     with patch.dict(os.environ, {}, clear=True):
         os.environ.pop("T212_API_KEY", None)
+        os.environ.pop("T212_API_SECRET", None)
         with pytest.raises(T212AuthError, match="T212_API_KEY"):
             Trading212Client()
 
 
+def test_missing_api_secret_raises(monkeypatch):
+    monkeypatch.setenv("T212_API_KEY", "test-key")
+    monkeypatch.delenv("T212_API_SECRET", raising=False)
+    with pytest.raises(T212AuthError, match="T212_API_SECRET"):
+        Trading212Client()
+
+
 def test_demo_default(monkeypatch):
     monkeypatch.setenv("T212_API_KEY", "test-key")
+    monkeypatch.setenv("T212_API_SECRET", "test-secret")
     monkeypatch.delenv("T212_DEMO", raising=False)
     client = Trading212Client()
     assert client.demo is True
@@ -107,6 +116,7 @@ def test_demo_default(monkeypatch):
 
 def test_live_mode(monkeypatch):
     monkeypatch.setenv("T212_API_KEY", "test-key")
+    monkeypatch.setenv("T212_API_SECRET", "test-secret")
     monkeypatch.setenv("T212_DEMO", "false")
     client = Trading212Client()
     assert client.demo is False
@@ -115,9 +125,19 @@ def test_live_mode(monkeypatch):
 
 def test_demo_true_explicit(monkeypatch):
     monkeypatch.setenv("T212_API_KEY", "test-key")
+    monkeypatch.setenv("T212_API_SECRET", "test-secret")
     monkeypatch.setenv("T212_DEMO", "true")
     client = Trading212Client()
     assert client.demo is True
+
+
+def test_uses_basic_auth(monkeypatch):
+    """Session must use HTTP Basic Auth (key:secret), not a raw header."""
+    monkeypatch.setenv("T212_API_KEY", "mykey")
+    monkeypatch.setenv("T212_API_SECRET", "mysecret")
+    client = Trading212Client()
+    assert client._session.auth == ("mykey", "mysecret")
+    assert "Authorization" not in client._session.headers
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +148,7 @@ def test_demo_true_explicit(monkeypatch):
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setenv("T212_API_KEY", "fake-key")
+    monkeypatch.setenv("T212_API_SECRET", "fake-secret")
     monkeypatch.setenv("T212_DEMO", "true")
     c = Trading212Client()
     c._session = MagicMock()

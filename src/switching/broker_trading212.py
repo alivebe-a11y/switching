@@ -4,9 +4,13 @@ Wraps the Trading 212 v0 equity API for market order execution and
 portfolio queries. Supports both demo and live environments.
 
 Environment variables:
-  T212_API_KEY   — API key from Trading 212 app → Settings → API
-  T212_DEMO      — "true" (default) uses demo.trading212.com
-                   "false" uses live.trading212.com (real money!)
+  T212_API_KEY    — API key from Trading 212 app → Settings → API
+  T212_API_SECRET — API secret from Trading 212 app → Settings → API
+  T212_DEMO       — "true" (default) uses demo.trading212.com
+                    "false" uses live.trading212.com (real money!)
+
+Authentication: HTTP Basic Auth — base64(API_KEY:API_SECRET)
+Both key and secret are required for every request.
 
 Ticker format: Trading 212 uses "AAPL_US_EQ" internally.
 This client accepts plain symbols ("AAPL") and converts automatically.
@@ -96,9 +100,15 @@ class Trading212Client:
 
     def __init__(self) -> None:
         api_key = os.environ.get("T212_API_KEY", "").strip()
+        api_secret = os.environ.get("T212_API_SECRET", "").strip()
         if not api_key:
             raise T212AuthError(
                 "T212_API_KEY is not set. "
+                "Generate a key in the Trading 212 app: Settings → API."
+            )
+        if not api_secret:
+            raise T212AuthError(
+                "T212_API_SECRET is not set. "
                 "Generate a key in the Trading 212 app: Settings → API."
             )
         demo_env = os.environ.get("T212_DEMO", "true").strip().lower()
@@ -106,16 +116,14 @@ class Trading212Client:
         self._base = _DEMO_BASE if self.demo else _LIVE_BASE
         self._session = requests.Session()
         self._session.verify = True   # always verify TLS — never override
-        self._session.headers.update({
-            "Authorization": api_key,
-            "Content-Type": "application/json",
-        })
+        # T212 uses HTTP Basic Auth: base64(API_KEY:API_SECRET)
+        self._session.auth = (api_key, api_secret)
+        self._session.headers.update({"Content-Type": "application/json"})
         # Never log the key itself — only mode and base URL
         mode = "DEMO" if self.demo else "LIVE"
         log.info("Trading212Client initialised (%s) base=%s", mode, self._base)
-        # Scrub the key from the stored attribute so it can't be
-        # accidentally serialised or introspected after construction.
-        del api_key
+        # Scrub credentials from local scope after session is configured
+        del api_key, api_secret
 
     # ------------------------------------------------------------------
     # Account
