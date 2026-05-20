@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Iterable
 
@@ -45,10 +45,22 @@ CORPORATE_FEEDS: tuple[str, ...] = (
     "https://www.globenewswire.com/RssFeed/industry/9531-Financial%20Services/feedTitle/GlobeNewswire%20-%20Financial%20Services",
 )
 
+UK_FEEDS: tuple[str, ...] = (
+    # Investegate — all RNS regulatory announcements for LSE-listed companies
+    "https://www.investegate.co.uk/rss/allnews.aspx",
+    # Reuters UK business news
+    "https://feeds.reuters.com/reuters/UKBusinessNews",
+    # Proactive Investors — UK small/mid-cap coverage
+    "https://www.proactiveinvestors.co.uk/rss",
+)
+
 # "NASDAQ: BIRD", "NYSE:ABC", "(OTC: FOOB)" — capture the ticker code.
 _TICKER_RX = re.compile(
     r"\b(?:NASDAQ|NYSE|NYSE\s*American|AMEX|OTC|OTCQB|OTCQX|TSX|CBOE)\s*[:\-]\s*([A-Z][A-Z0-9\.\-]{0,6})\b"
 )
+
+# UK EPIC ticker codes appear in parentheses, e.g. "(BARC)", "(VOD)", "(RIO)"
+_EPIC_RX = re.compile(r"\(([A-Z]{2,5})\)")
 
 
 @dataclass(frozen=True)
@@ -58,12 +70,19 @@ class FeedItem:
     url: str
     published: datetime
     source: str
+    market: str = "us"
 
     @property
     def text(self) -> str:
         return f"{self.title}\n{self.summary}"
 
     def extract_ticker(self) -> str | None:
+        if self.market == "uk":
+            # First try EPIC code in parentheses — return as yfinance LSE format
+            epic_match = _EPIC_RX.search(self.text)
+            if epic_match:
+                return f"{epic_match.group(1)}.L"
+            # Fall through to US pipeline for cross-listed companies
         match = _TICKER_RX.search(self.text)
         if match:
             return match.group(1)
@@ -78,7 +97,11 @@ def _coerce_dt(entry: feedparser.FeedParserDict) -> datetime:
     return datetime.now(tz=timezone.utc)
 
 
-def fetch(urls: Iterable[str] = DEFAULT_FEEDS, since: datetime | None = None) -> list[FeedItem]:
+def fetch(
+    urls: Iterable[str] = DEFAULT_FEEDS,
+    since: datetime | None = None,
+    market: str = "us",
+) -> list[FeedItem]:
     items: list[FeedItem] = []
     for url in urls:
         try:
@@ -97,6 +120,7 @@ def fetch(urls: Iterable[str] = DEFAULT_FEEDS, since: datetime | None = None) ->
                     url=entry.get("link") or "",
                     published=dt,
                     source=url,
+                    market=market,
                 )
             )
     return items

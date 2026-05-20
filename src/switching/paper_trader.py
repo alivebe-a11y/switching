@@ -16,7 +16,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Sequence
 
-from switching.market_calendar import is_market_hours, trading_days_since
+from switching.market_calendar import (
+    is_market_hours,
+    is_lse_hours,
+    trading_days_since,
+    trading_days_since_lse,
+)
 from switching.signal import Signal
 
 log = logging.getLogger(__name__)
@@ -152,11 +157,29 @@ def _signal_key(sig: Signal) -> str:
     return f"{sig.detector}:{sig.ticker}:{sig.event_dt.date().isoformat()}"
 
 
-def _tiered_stop_loss(base_stop: float, price: float) -> float:
-    """Widen stop-loss for volatile low-price stocks, tighten for large caps."""
-    if price >= 30.0:
+def _normalise_price(price: float, market: str) -> float:
+    """Return price in major currency units. UK stocks trade in pence (GBX)."""
+    return price / 100.0 if market == "uk" else price
+
+
+def _is_market_open(market: str) -> bool:
+    """Dispatch to the correct calendar function based on market."""
+    if market == "uk":
+        return is_lse_hours()
+    return is_market_hours()
+
+
+def _tiered_stop_loss(base_stop: float, price: float, market: str = "us") -> float:
+    """Widen stop-loss for volatile low-price stocks, tighten for large caps.
+
+    Tiers are evaluated on normalised price (major currency units).
+    UK stocks quoted in pence are normalised to pounds before comparison.
+    The returned stop-loss fraction is applied to the raw price as-is.
+    """
+    normalised = _normalise_price(price, market)
+    if normalised >= 30.0:
         return base_stop
-    if price >= 5.0:
+    if normalised >= 5.0:
         return base_stop + 0.01
     return base_stop + 0.02
 
@@ -222,6 +245,7 @@ def open_position(
     *,
     stop_loss: float = 0.026,
     hold_days: int = 5,
+    market: str = "us",
 ) -> Position | None:
     if portfolio.max_positions > 0 and len(portfolio.positions) >= portfolio.max_positions:
         log.info("max positions reached, skipping %s", signal.ticker)
@@ -231,8 +255,11 @@ def open_position(
             log.info("already holding %s, skipping", signal.ticker)
             return None
 
-    if price < 1.0:
-        log.info("price $%.4f below $1.00 floor, skipping %s", price, signal.ticker)
+    # Price floor check using normalised price (pounds for UK, dollars for US)
+    normalised = _normalise_price(price, market)
+    floor = 1.0  # £1 or $1 in normalised units
+    if normalised < floor:
+        log.info("price %.4f (normalised %.4f) below floor, skipping %s", price, normalised, signal.ticker)
         return None
 
     override = _position_size_override(signal.detector)
@@ -250,7 +277,7 @@ def open_position(
     portfolio.cash -= cost
 
     profile = _exit_profile(signal.detector, price)
-    actual_sl = _tiered_stop_loss(stop_loss, price) + profile.get("stop_loss_extra", 0.0)
+    actual_sl = _tiered_stop_loss(stop_loss, price, market) + profile.get("stop_loss_extra", 0.0)
 
     pos = Position(
         ticker=signal.ticker,
@@ -279,7 +306,7 @@ def _calendar_days_since(entry_dt_str: str) -> int:
     return (now.date() - entry.date()).days
 
 
-def check_exits(portfolio: Portfolio) -> list[ClosedTrade]:
+def check_exits(portfolio: Portfolio, market: str = "us") -> list[ClosedTrade]:
     closed: list[ClosedTrade] = []
     remaining: list[Position] = []
 
@@ -287,7 +314,7 @@ def check_exits(portfolio: Portfolio) -> list[ClosedTrade]:
     # stop_loss always checked (defensive); first_green / hold_expiry only
     # fire when the market is actually open so we never exit at stale
     # weekend or bank-holiday prices.
-    _mkt_open = is_market_hours()
+    _mkt_open = _is_market_open(market)
 
     for pos in portfolio.positions:
         data = get_intraday_data(pos.ticker)
@@ -301,7 +328,10 @@ def check_exits(portfolio: Portfolio) -> list[ClosedTrade]:
         reason = None
 
         # Trading days elapsed — weekends and bank holidays do NOT count.
-        days_elapsed = trading_days_since(pos.entry_dt)
+        if market == "uk":
+            days_elapsed = trading_days_since_lse(pos.entry_dt)
+        else:
+            days_elapsed = trading_days_since(pos.entry_dt)
 
         if ret_low <= -pos.stop_loss:
             # Stop-loss fires regardless of market hours (last-known price is
@@ -370,6 +400,7 @@ def scan_for_signals(
     since: datetime,
     *,
     min_severity: float = 0.0,
+    feeds_override: "tuple[str, ...] | None" = None,
 ) -> list[Signal]:
     from switching import registry
     registry.load_builtin_detectors()
@@ -385,7 +416,7 @@ def scan_for_signals(
         if name in _EDGAR_DETECTORS:
             det = cls(client=edgar_client)
         else:
-            det = cls()
+            det = cls(feeds=feeds_override) if feeds_override is not None else cls()
         try:
             count = 0
             for sig in det.scan(since):
@@ -532,6 +563,7 @@ def run_loop(
     max_position_pct: float = 0.20,
     max_positions: int = 5,
     once: bool = False,
+    market: str = "us",
 ) -> Portfolio:
     portfolio = Portfolio.load(state_path)
     if not portfolio.trades and not portfolio.positions and portfolio.cash == 1000.0:
@@ -568,7 +600,7 @@ def run_loop(
         console.print(f"\n[bold]── Scan at {now.strftime('%Y-%m-%d %H:%M UTC')} ──[/bold]")
         console.print(f"Cash: ${portfolio.cash:.2f} | Positions: {len(portfolio.positions)} | Total: ${portfolio.total_value:.2f}")
 
-        closed = check_exits(portfolio)
+        closed = check_exits(portfolio, market=market)
         for t in closed:
             color = "green" if t.pnl >= 0 else "red"
             console.print(f"  [{color}]CLOSED {t.ticker} {t.exit_reason}: {t.pct_return*100:+.2f}% (${t.pnl:+.2f})[/{color}]")
@@ -611,7 +643,11 @@ def run_loop(
         skipped_tracker.save(skipped_path)
 
         since = now - timedelta(hours=24)
-        signals = scan_for_signals(detectors, since, min_severity=min_severity)
+        feeds_override = None
+        if market == "uk":
+            from switching.sources import rss as _rss
+            feeds_override = _rss.UK_FEEDS
+        signals = scan_for_signals(detectors, since, min_severity=min_severity, feeds_override=feeds_override)
 
         from switching.trade_memory import load_memory, update_memory
         from switching.ai_filter import score_signals
@@ -652,7 +688,7 @@ def run_loop(
                 notifications.notify_skip(sig.ticker, "no price available", sig.detector, sig.headline)
                 portfolio.seen_signals.append(_signal_key(sig))
                 continue
-            pos = open_position(portfolio, sig, price, stop_loss=stop_loss, hold_days=hold_days)
+            pos = open_position(portfolio, sig, price, stop_loss=stop_loss, hold_days=hold_days, market=market)
             if pos:
                 console.print(
                     f"  [cyan]BUY {pos.ticker} @ ${pos.entry_price:.2f} "
@@ -674,7 +710,7 @@ def run_loop(
                     skip_reason = "max_positions"
                 elif any(p.ticker == sig.ticker for p in portfolio.positions):
                     skip_reason = "already_holding"
-                elif price < 1.0:
+                elif _normalise_price(price, market) < 1.0:
                     skip_reason = "price_too_low"
                 else:
                     alloc = portfolio.total_value * portfolio.max_position_pct
@@ -694,7 +730,7 @@ def run_loop(
                         hold_days=profile["hold_days"],
                         first_green=profile["first_green"],
                         first_green_pct=profile["first_green_pct"],
-                        stop_loss_pct=_tiered_stop_loss(stop_loss, price),
+                        stop_loss_pct=_tiered_stop_loss(stop_loss, price, market),
                     )
 
         held_tickers = {p.ticker for p in portfolio.positions}

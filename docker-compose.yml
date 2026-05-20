@@ -59,6 +59,22 @@ services:
     command: ["trade-t212", "--interval", "10", "--stop-loss", "0.026", "--hold-days", "5", "--max-position", "0.01", "--max-positions", "0"]
     restart: unless-stopped
 
+  paper-trade-uk:
+    image: ${SWITCHING_IMAGE:-ghcr.io/alivebe-a11y/switching:latest}
+    build:
+      context: https://github.com/alivebe-a11y/switching.git#main
+      dockerfile: Dockerfile
+    environment:
+      - SWITCHING_EDGAR_UA=${SWITCHING_EDGAR_UA:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+    volumes:
+      - ${SWITCHING_DATA_DIR:-./data/cache}:/app/.cache
+    entrypoint: ["switching"]
+    command: ["paper-trade", "--market", "uk", "--seed", "20000", "--interval", "10", "--stop-loss", "0.026", "--hold-days", "5", "--max-position", "0.01", "--max-positions", "0", "--state", "/app/.cache/uk_portfolio.json"]
+    restart: unless-stopped
+
   dashboard:
     image: ${SWITCHING_IMAGE:-ghcr.io/alivebe-a11y/switching:latest}
     build:

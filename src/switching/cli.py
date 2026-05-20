@@ -241,6 +241,14 @@ _DEFAULT_DETECTORS = [
     "spinoff", "stock_split", "crypto_treasury",
 ]
 
+_UK_DEFAULT_DETECTORS = [
+    "earnings_surprise", "analyst_upgrade", "mna_target",
+    "guidance_raise", "dividend_surprise", "buyback",
+    "index_inclusion", "spinoff", "contract_win",
+    "stock_split", "crypto_treasury",
+    "uk_director_dealing",
+]
+
 
 @app.command("paper-trade")
 def paper_trade(
@@ -256,19 +264,30 @@ def paper_trade(
     max_position_pct: float = typer.Option(0.20, "--max-position", help="Max % of portfolio per trade."),
     max_positions: int = typer.Option(5, "--max-positions", help="Max concurrent positions (0 = unlimited)."),
     state_file: Path = typer.Option(
-        "/app/.cache/paper_portfolio.json", "--state",
-        help="Path to portfolio state file.",
+        None, "--state",
+        help="Path to portfolio state file. Defaults to /app/.cache/paper_portfolio.json (US) or /app/.cache/uk_portfolio.json (UK).",
     ),
     once: bool = typer.Option(False, "--once", help="Run one scan cycle and exit."),
     log_level: str = typer.Option("WARNING", help="Python log level."),
+    market: str = typer.Option("us", "--market", help="Market to trade: 'us' (NYSE/NASDAQ) or 'uk' (LSE)."),
 ) -> None:
     """Run a paper-trading simulation against live RSS signals."""
     logging.basicConfig(level=log_level.upper())
     from switching.paper_trader import run_loop
+
+    if market == "uk":
+        default_detectors = _UK_DEFAULT_DETECTORS
+        default_state = Path("/app/.cache/uk_portfolio.json")
+    else:
+        default_detectors = _DEFAULT_DETECTORS
+        default_state = Path("/app/.cache/paper_portfolio.json")
+
+    resolved_state = state_file if state_file is not None else default_state
+
     run_loop(
-        state_path=state_file,
+        state_path=resolved_state,
         seed_cash=seed_cash,
-        detectors=detectors or _DEFAULT_DETECTORS,
+        detectors=detectors or default_detectors,
         stop_loss=stop_loss,
         hold_days=hold_days,
         scan_interval_minutes=interval,
@@ -276,6 +295,45 @@ def paper_trade(
         max_position_pct=max_position_pct,
         max_positions=max_positions,
         once=once,
+        market=market,
+    )
+
+
+@app.command("paper-trade-uk")
+def paper_trade_uk(
+    seed_cash: float = typer.Option(20000.0, "--seed", help="Starting cash (GBP)."),
+    detectors: list[str] = typer.Option(
+        None, "--detector", "-d",
+        help="Detector(s) to trade. Omit for UK recommended set.",
+    ),
+    stop_loss: float = typer.Option(0.026, "--stop-loss", help="Stop-loss fraction (e.g. 0.026 = 2.6%)."),
+    hold_days: int = typer.Option(5, "--hold-days", help="Max hold window in trading days."),
+    interval: int = typer.Option(10, "--interval", help="Scan interval in minutes."),
+    min_severity: float = typer.Option(0.0, help="Minimum signal severity to trade."),
+    max_position_pct: float = typer.Option(0.01, "--max-position", help="Max % of portfolio per trade."),
+    max_positions: int = typer.Option(0, "--max-positions", help="Max concurrent positions (0 = unlimited)."),
+    state_file: Path = typer.Option(
+        "/app/.cache/uk_portfolio.json", "--state",
+        help="Path to portfolio state file.",
+    ),
+    once: bool = typer.Option(False, "--once", help="Run one scan cycle and exit."),
+    log_level: str = typer.Option("WARNING", help="Python log level."),
+) -> None:
+    """Run a paper-trading simulation against LSE signals (UK market shorthand)."""
+    logging.basicConfig(level=log_level.upper())
+    from switching.paper_trader import run_loop
+    run_loop(
+        state_path=state_file,
+        seed_cash=seed_cash,
+        detectors=detectors or _UK_DEFAULT_DETECTORS,
+        stop_loss=stop_loss,
+        hold_days=hold_days,
+        scan_interval_minutes=interval,
+        min_severity=min_severity,
+        max_position_pct=max_position_pct,
+        max_positions=max_positions,
+        once=once,
+        market="uk",
     )
 
 

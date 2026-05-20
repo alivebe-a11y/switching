@@ -26,7 +26,11 @@ log = logging.getLogger(__name__)
 _BEAT_RX = re.compile(
     r"(?i)(?:beats?\s+estimates|earnings?\s+beat|tops?\s+expectations"
     r"|exceeds?\s+expectations|blows?\s+past|crushes?\s+estimates"
-    r"|smashes?\s+estimates)"
+    r"|smashes?\s+estimates"
+    r"|(?:materially\s+)?ahead\s+of\s+(?:market\s+)?(?:expectations|consensus|estimates)"
+    r"|ahead\s+of\s+(?:board|management)\s+expectations"
+    r"|ahead\s+of\s+(?:full[\s\-]year|annual)\s+(?:guidance|expectations)"
+    r"|trading\s+has\s+been\s+(?:strong|ahead))"
 )
 _MISS_RX = re.compile(
     r"(?i)(?:earnings?\s+miss|misses?\s+estimates|falls?\s+short"

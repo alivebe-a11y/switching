@@ -34,6 +34,8 @@ _SPECIAL_DIV_RX = re.compile(
     r"|one[- ]time\s+dividend"
     r"|extraordinary\s+dividend"
     r"|supplemental\s+dividend"
+    r"|enhanced\s+capital\s+return"
+    r"|special\s+cash\s+distribution"
     r")"
 )
 

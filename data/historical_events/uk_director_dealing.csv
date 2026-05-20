@@ -1,0 +1,13 @@
+event_dt,ticker,company,headline,url,evidence,severity
+2023-06-15,BARC.L,Barclays,Barclays PLC (BARC) - Director/PDMR Shareholding,,Director purchased 50000 shares at 145p,0.65
+2023-09-22,LLOY.L,Lloyds,Lloyds Banking Group (LLOY) - Director Dealing,,Chief Executive Officer purchased 200000 shares,0.70
+2023-11-08,AZN.L,AstraZeneca,AstraZeneca PLC (AZN) - Notification of Director Dealing,,Non-Executive Director purchased 500 shares at 10200p,0.65
+2024-01-17,HSBA.L,HSBC,HSBC Holdings PLC (HSBA) - PDMR Shareholding Notification,,Group Chief Executive purchased 150000 shares at 620p,0.70
+2024-03-05,RIO.L,Rio Tinto,Rio Tinto PLC (RIO) - Director/PDMR Shareholding,,Chief Financial Officer purchased 2000 shares at 5400p,0.65
+2024-04-12,GSK.L,GSK,GSK PLC (GSK) - Director Dealing Notification,,Multiple directors purchased shares during open period,0.75
+2024-06-20,BP.L,BP,BP PLC (BP.) - Notification of PDMR Dealing,,Chief Executive Officer purchased 100000 shares at 470p,0.65
+2024-08-15,VOD.L,Vodafone,Vodafone Group PLC (VOD) - Director/PDMR Shareholding,,Several directors bought shares ahead of capital markets day,0.75
+2024-10-03,LGEN.L,Legal General,Legal & General Group PLC (LGEN) - Notification of Director Dealing,,CEO and CFO both purchased shares at 240p,0.75
+2024-11-21,NXT.L,Next,Next PLC (NXT) - Director Dealing,,Lord Wolfson purchased 1000 shares at 9800p,0.65
+2025-01-09,IMB.L,Imperial Brands,Imperial Brands PLC (IMB) - PDMR Shareholding Notification,,Chief Executive purchased 10000 shares at 2150p,0.65
+2025-02-14,ULVR.L,Unilever,Unilever PLC (ULVR) - Director/PDMR Dealing,,Non-Executive Director purchased 500 shares at 4000p,0.65

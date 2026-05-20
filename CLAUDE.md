@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `main`
-- **455 tests**, run with: `pytest tests/`
+- **497 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path: `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -27,7 +27,8 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Services (docker-compose.yml)
 | Service | Command | Notes |
 |---------|---------|-------|
-| paper-trade | `switching paper-trade --seed 1000 --interval 10 --stop-loss 0.026 --hold-days 5` | Main service, runs 24/7 |
+| paper-trade | `switching paper-trade --seed 20000 --interval 10 --stop-loss 0.026 --hold-days 5` | US paper trading, runs 24/7 |
+| paper-trade-uk | `switching paper-trade --market uk --seed 20000 --interval 10 --stop-loss 0.026 --hold-days 5 --state /app/.cache/uk_portfolio.json` | LSE paper trading, runs 24/7 |
 | dashboard | `switching web --port 8080` | Flask web UI on port 8080 |
 | trade | `switching trade ...` | Alpaca live trading (not yet active) |
 | switching | `switching list-detectors` | One-shot utility |
@@ -43,35 +44,45 @@ Seed CSVs MUST go in `src/switching/data/historical_events/` (NOT top-level `dat
 The `_find_data_root()` in `sources/historical.py` resolves relative to the package.
 The top-level `data/` directory is a mirror/legacy — always put seeds in both.
 
-## Detectors (13 registered)
-| Detector | Source | Exit Profile |
-|----------|--------|--------------|
-| earnings_surprise | RSS (earnings feeds) | first_green +2%, 3-day hold *(raised from +0.5%/2d — live data: SNEX left 14.6% on table)* |
-| ai_pivot | RSS (default feeds) | first_green +2% (>$30) or +0% (<$30), 3-5 day |
-| analyst_upgrade | RSS (default feeds) | first_green +1%, 3-day hold |
-| fda_decision | RSS (default + earnings) | first_green +3%, 3-day hold |
-| buyback | RSS (default + corporate) | NO first_green, 5-day hold |
-| index_inclusion | RSS (default + corporate) | default (first_green +0%, 5-day) |
-| spinoff | RSS (default + corporate) | default |
-| mna_target | RSS (default + corporate) | first_green +3%, 5-day hold; **acquirer-direction signals are skipped** (live data: 100% hit stop-loss) |
-| guidance_raise | RSS (default + earnings + corporate) | first_green +5%, 5-day hold *(raised from +2%/3d — CVS/GEN/TBLA all ran 10-38% post-exit)* |
-| dividend_surprise | RSS (default + earnings + corporate) | first_green +1%, 4-day hold, +1% wider stop *(MKTW/SII false stops — recovered 18%/14%)* |
-| contract_win | RSS (default + corporate) | first_green +2%, 5-day hold |
-| activist_13d | SEC EDGAR (13D filings) | default |
-| insider_cluster | SEC EDGAR (Form 4) | default |
-| stock_split | RSS (default + corporate) | first_green +1.5%, 4-day hold |
-| crypto_treasury | RSS (default + corporate) | first_green +3%, 3-day hold |
+## Detectors (16 registered)
+| Detector | Source | Exit Profile | Markets |
+|----------|--------|--------------|---------|
+| earnings_surprise | RSS (earnings feeds + UK_FEEDS) | first_green +2%, 3-day hold | US + UK |
+| ai_pivot | RSS (default feeds) | first_green +2% (>$30) or +0% (<$30), 3-5 day | US |
+| analyst_upgrade | RSS (default feeds) | first_green +1%, 3-day hold | US + UK |
+| fda_decision | RSS (default + earnings) | first_green +3%, 3-day hold | US |
+| buyback | RSS (default + corporate) | NO first_green, 5-day hold | US + UK |
+| index_inclusion | RSS (default + corporate) | default (first_green +0%, 5-day) | US + UK (FTSE) |
+| spinoff | RSS (default + corporate) | default | US + UK |
+| mna_target | RSS (default + corporate + UK_FEEDS) | first_green +3%, 5-day hold; **acquirer-direction signals are skipped** | US + UK |
+| guidance_raise | RSS (default + earnings + corporate + UK_FEEDS) | first_green +5%, 5-day hold | US + UK |
+| dividend_surprise | RSS (default + earnings + corporate) | first_green +1%, 4-day hold, +1% wider stop | US + UK |
+| contract_win | RSS (default + corporate) | first_green +2%, 5-day hold | US + UK |
+| activist_13d | SEC EDGAR (13D filings) | default | US only |
+| insider_cluster | SEC EDGAR (Form 4) | default | US only |
+| stock_split | RSS (default + corporate) | first_green +1.5%, 4-day hold | US + UK |
+| crypto_treasury | RSS (default + corporate) | first_green +3%, 3-day hold | US + UK |
+| uk_director_dealing | RSS (UK_FEEDS) | default (first_green +0%, 5-day) | UK only |
 
-## Stop-Loss Tiers
-- $30+ stocks: 2.6%
-- $5-$30 stocks: 3.6%
-- <$5 stocks: 4.6%
+## UK Service (_UK_DEFAULT_DETECTORS)
+The `paper-trade-uk` service (and `--market uk` flag) uses `_UK_DEFAULT_DETECTORS` in cli.py:
+`earnings_surprise, analyst_upgrade, mna_target, guidance_raise, dividend_surprise, buyback,
+index_inclusion, spinoff, contract_win, stock_split, crypto_treasury, uk_director_dealing`
+
+Excluded from UK: `activist_13d` and `insider_cluster` (SEC/EDGAR-based, US-only).
+Also excluded: `ai_pivot`, `fda_decision` (US regulatory signals, not applicable to LSE).
+
+## Stop-Loss Tiers (normalised price)
+Tiers apply to normalised price (GBP for UK = pence/100, USD for US):
+- £30+/\$30+ stocks: base stop
+- £5-30/\$5-30 stocks: base stop + 1%
+- <£5/<\$5 stocks: base stop + 2%
 
 ## Architecture
 ```
 src/switching/
-├── cli.py              — Typer CLI (scan, backtest, paper-trade, web, check-feeds)
-├── paper_trader.py     — Core trading loop, position/exit management
+├── cli.py              — Typer CLI (scan, backtest, paper-trade, paper-trade-uk, web, check-feeds)
+├── paper_trader.py     — Core trading loop, position/exit management (market-aware)
 ├── web.py              — Flask dashboard (reads cached prices from portfolio JSON, no live yfinance polling)
 ├── registry.py         — @register decorator, load_builtin_detectors()
 ├── signal.py           — Signal dataclass, PriceReaction, dedup_key
@@ -86,7 +97,7 @@ src/switching/
 ├── detectors/          — All detector modules (one per file)
 │   └── base.py         — Detector ABC
 ├── sources/
-│   ├── rss.py          — DEFAULT_FEEDS, EARNINGS_FEEDS, CORPORATE_FEEDS
+│   ├── rss.py          — DEFAULT_FEEDS, EARNINGS_FEEDS, CORPORATE_FEEDS, UK_FEEDS
 │   ├── historical.py   — Seed CSV loader + live EDGAR augmentation
 │   ├── sec_edgar.py    — EdgarClient (rate-limited, needs SWITCHING_EDGAR_UA)
 │   └── ticker_lookup.py — SEC company-name→ticker fallback for extract_ticker()

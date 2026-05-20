@@ -27,7 +27,7 @@ from switching.sources.sec_edgar import EdgarClient
 log = logging.getLogger(__name__)
 
 
-_INDEX_RX = re.compile(r"(?i)(S&P\s+(?:500|400|600)|Russell\s+(?:1000|2000))")
+_INDEX_RX = re.compile(r"(?i)(S&P\s+(?:500|400|600)|Russell\s+(?:1000|2000)|FTSE\s+(?:100|250|All[\s\-]Share))")
 _ACTION_RX = re.compile(
     r"(?i)(will\s+be\s+added|added\s+to|addition|includ(?:ed|ing)\s+in|join(?:ing)?\s+the"
     r"|will\s+replace|replac(?:es|ing)"
@@ -112,6 +112,12 @@ def _normalize_index(raw: str) -> str:
         return "Russell 1000"
     if "RUSSELL" in s and "2000" in raw.upper():
         return "Russell 2000"
+    if "FTSE" in s and "100" in raw.upper() and "250" not in raw.upper():
+        return "FTSE 100"
+    if "FTSE" in s and "250" in raw.upper():
+        return "FTSE 250"
+    if "FTSE" in s and ("ALL" in s or "ALL-SHARE" in s.replace(" ", "")):
+        return "FTSE All-Share"
     return s
 
 
@@ -122,6 +128,9 @@ def _base_severity_for_index(label: str) -> float:
         "S&P 600": 0.55,
         "Russell 1000": 0.60,
         "Russell 2000": 0.40,
+        "FTSE 100": 0.85,
+        "FTSE 250": 0.65,
+        "FTSE All-Share": 0.50,
     }.get(label, 0.50)
 
 

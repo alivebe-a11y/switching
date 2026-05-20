@@ -48,6 +48,7 @@ def load_builtin_detectors() -> None:
     from switching.detectors.mna_target import MnaTargetDetector
     from switching.detectors.spinoff import SpinoffDetector
     from switching.detectors.stock_split import StockSplitDetector
+    from switching.detectors.uk_director_dealing import UKDirectorDealingDetector
 
     _REGISTRY[AIPivotDetector.name] = AIPivotDetector
     _REGISTRY[AnalystUpgradeDetector.name] = AnalystUpgradeDetector
@@ -64,6 +65,7 @@ def load_builtin_detectors() -> None:
     _REGISTRY[MnaTargetDetector.name] = MnaTargetDetector
     _REGISTRY[SpinoffDetector.name] = SpinoffDetector
     _REGISTRY[StockSplitDetector.name] = StockSplitDetector
+    _REGISTRY[UKDirectorDealingDetector.name] = UKDirectorDealingDetector
 
 
 def reset() -> None:

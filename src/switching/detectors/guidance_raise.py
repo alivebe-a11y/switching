@@ -98,6 +98,14 @@ _NARROW_UPWARD_RX = re.compile(
 )
 
 # ---------------------------------------------------------------------------
+# UK trading update patterns (Investegate / RNS style)
+# ---------------------------------------------------------------------------
+
+_UK_POSITIVE_UPDATE_RX = re.compile(
+    r"(?i)(?:trading\s+(?:update|statement).*ahead\s+of|ahead\s+of\s+(?:board|full[\s\-]year|current\s+year)\s+(?:expectations|guidance))"
+)
+
+# ---------------------------------------------------------------------------
 # Modifiers for severity bonuses
 # ---------------------------------------------------------------------------
 
@@ -183,6 +191,7 @@ def classify(title: str, summary: str = "") -> dict | None:
     pa_miss_m = _PRE_ANNOUNCE_MISS_RX.search(text)
     pa_m = _PRE_ANNOUNCE_RX.search(text)
     narrow_m = _NARROW_UPWARD_RX.search(text)
+    uk_update_m = _UK_POSITIVE_UPDATE_RX.search(text)
 
     # Determine direction — priority ordering
     if pa_beat_m:
@@ -211,6 +220,11 @@ def classify(title: str, summary: str = "") -> dict | None:
         direction = "pre_announce_beat"
         base_severity = 0.65
         key_match = pa_m
+    elif uk_update_m:
+        # UK trading update: "trading update... ahead of expectations" (RNS pattern)
+        direction = "raise"
+        base_severity = 0.70
+        key_match = uk_update_m
     else:
         return None
 

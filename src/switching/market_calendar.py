@@ -1,4 +1,4 @@
-"""US equity market calendar utilities.
+"""US equity market calendar utilities (with LSE support).
 
 Provides trading-day counting and market-hours detection so that exit
 logic (hold_expiry, first_green) only fires on real trading sessions.
@@ -8,6 +8,10 @@ Without this, a position entered Thursday with hold_days=3 would
 Holiday list covers NYSE/NASDAQ observed holidays 2024–2027.
 Update ``_HOLIDAYS`` each year — or set the ``SWITCHING_EXTRA_HOLIDAYS``
 env var to a comma-separated list of ISO dates (e.g. ``2026-01-02``).
+
+LSE support: ``is_lse_hours()``, ``is_lse_trading_day()``, and
+``trading_days_since_lse()`` use the UK bank holiday calendar and
+London time (Europe/London, handles BST/GMT automatically).
 """
 
 from __future__ import annotations
@@ -164,3 +168,127 @@ def trading_days_since(dt_str: str) -> int:
         return 0
     today = datetime.now(tz=timezone.utc).date()
     return trading_days_between(entry.date(), today)
+
+
+# ---------------------------------------------------------------------------
+# LSE / London Stock Exchange calendar (UK bank holidays 2024–2027)
+# ---------------------------------------------------------------------------
+# Rules (same as NYSE observed rules):
+#   - If the holiday falls on Saturday → observed the preceding Friday
+#   - If the holiday falls on Sunday  → observed the following Monday
+# UK bank holidays that LSE observes:
+#   New Year's Day, Good Friday, Easter Monday, Early May Bank Holiday,
+#   Spring Bank Holiday, Summer Bank Holiday, Christmas Day, Boxing Day.
+# ---------------------------------------------------------------------------
+
+_LSE_HOLIDAYS: frozenset[date] = frozenset({
+    # ── 2024 ──────────────────────────────────────────────────────────────
+    date(2024,  1,  1),  # New Year's Day
+    date(2024,  3, 29),  # Good Friday
+    date(2024,  4,  1),  # Easter Monday
+    date(2024,  5,  6),  # Early May Bank Holiday
+    date(2024,  5, 27),  # Spring Bank Holiday
+    date(2024,  8, 26),  # Summer Bank Holiday
+    date(2024, 12, 25),  # Christmas Day
+    date(2024, 12, 26),  # Boxing Day
+    # ── 2025 ──────────────────────────────────────────────────────────────
+    date(2025,  1,  1),  # New Year's Day
+    date(2025,  4, 18),  # Good Friday
+    date(2025,  4, 21),  # Easter Monday
+    date(2025,  5,  5),  # Early May Bank Holiday
+    date(2025,  5, 26),  # Spring Bank Holiday
+    date(2025,  8, 25),  # Summer Bank Holiday
+    date(2025, 12, 25),  # Christmas Day
+    date(2025, 12, 26),  # Boxing Day
+    # ── 2026 ──────────────────────────────────────────────────────────────
+    date(2026,  1,  1),  # New Year's Day
+    date(2026,  4,  3),  # Good Friday
+    date(2026,  4,  6),  # Easter Monday
+    date(2026,  5,  4),  # Early May Bank Holiday
+    date(2026,  5, 25),  # Spring Bank Holiday
+    date(2026,  8, 31),  # Summer Bank Holiday
+    date(2026, 12, 25),  # Christmas Day
+    date(2026, 12, 28),  # Boxing Day observed (Dec 26 is Saturday → Dec 28 Monday)
+    # ── 2027 ──────────────────────────────────────────────────────────────
+    date(2027,  1,  1),  # New Year's Day
+    date(2027,  3, 26),  # Good Friday
+    date(2027,  3, 29),  # Easter Monday
+    date(2027,  5,  3),  # Early May Bank Holiday
+    date(2027,  5, 31),  # Spring Bank Holiday
+    date(2027,  8, 30),  # Summer Bank Holiday
+    date(2027, 12, 27),  # Christmas Day observed (Dec 25 is Saturday → Dec 27 Monday)
+    date(2027, 12, 28),  # Boxing Day observed (Dec 26 is Sunday → Dec 28 Tuesday)
+})
+
+
+def is_lse_trading_day(d: date | None = None) -> bool:
+    """Return True if *d* is an LSE trading day.
+
+    A trading day is any weekday (Mon–Fri) that is not a UK bank holiday.
+    Defaults to today in London time when *d* is ``None``.
+    """
+    if d is None:
+        try:
+            import zoneinfo
+            d = datetime.now(tz=zoneinfo.ZoneInfo("Europe/London")).date()
+        except Exception:
+            d = datetime.now(tz=timezone.utc).date()
+    if d.weekday() >= 5:          # Saturday=5, Sunday=6
+        return False
+    return d not in _LSE_HOLIDAYS
+
+
+def is_lse_hours(now: datetime | None = None) -> bool:
+    """Return True if the LSE is currently open.
+
+    Regular session: 08:00 – 16:30 London time (Europe/London), on LSE trading days.
+    zoneinfo handles BST/GMT transitions automatically.
+    """
+    now = now or datetime.now(tz=timezone.utc)
+    try:
+        import zoneinfo
+        lt = now.astimezone(zoneinfo.ZoneInfo("Europe/London"))
+    except Exception:
+        # Fall back to UTC+1 (approximation — does not handle BST perfectly)
+        lt = now.astimezone(timezone(timedelta(hours=1)))
+
+    if not is_lse_trading_day(lt.date()):
+        return False
+
+    h, m = lt.hour, lt.minute
+    after_open   = (h, m) >= (8,  0)
+    before_close = (h, m) <  (16, 30)
+    return after_open and before_close
+
+
+def _lse_trading_days_between(start: date, end: date) -> int:
+    """Count LSE trading days strictly after *start* up to and including *end*."""
+    if end <= start:
+        return 0
+    count = 0
+    d = start
+    while d < end:
+        d += timedelta(days=1)
+        if is_lse_trading_day(d):
+            count += 1
+    return count
+
+
+def trading_days_since_lse(dt_str: str) -> int:
+    """LSE trading days elapsed since the entry timestamp (ISO string) up to today.
+
+    Analogous to ``trading_days_since`` but uses the LSE holiday calendar
+    and London time for "today".  Returns 0 on parse error.
+    """
+    try:
+        entry = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        if entry.tzinfo is None:
+            entry = entry.replace(tzinfo=timezone.utc)
+    except (ValueError, AttributeError):
+        return 0
+    try:
+        import zoneinfo
+        today = datetime.now(tz=zoneinfo.ZoneInfo("Europe/London")).date()
+    except Exception:
+        today = datetime.now(tz=timezone.utc).date()
+    return _lse_trading_days_between(entry.date(), today)

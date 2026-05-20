@@ -28,7 +28,8 @@ _AUTHORIZE_RX = re.compile(
     r"(?i)(board|company|directors?)\s+(?:has\s+)?(?:approved|authoriz[a-z]*)"
 )
 _REPURCHASE_RX = re.compile(
-    r"(?i)(?:share\s+)?(?:repurchase|buyback)(?:\s+(?:program|plan|authorization))?"
+    r"(?i)(?:share\s+)?(?:repurchase|buyback)(?:\s+(?:program(?:me)?|plan|authorization))?"
+    r"|on[\s\-]market\s+(?:share\s+)?repurchase"
 )
 _AMOUNT_RX = re.compile(
     r"(?i)\$?([\d,]+(?:\.\d+)?)\s*(million|billion|mm|bn|m|b)\b"

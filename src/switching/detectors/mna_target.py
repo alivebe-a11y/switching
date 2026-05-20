@@ -30,6 +30,7 @@ log = logging.getLogger(__name__)
 
 # Target-side patterns: the subject company is the one being acquired.
 # Only include patterns where the ticker's company is the TARGET, not the buyer.
+# Includes UK M&A patterns (RNS/Investegate style: "recommended offer", "scheme of arrangement").
 _TARGET_RX = re.compile(
     r"(?i)"
     r"(?:"
@@ -42,6 +43,11 @@ _TARGET_RX = re.compile(
     r"|takeover\s+bid"
     r"|going[\s\-]private"
     r"|receives?\s+(?:acquisition|takeover|buyout)\s+(?:offer|bid|proposal)"
+    r"|recommended\s+(?:cash\s+)?(?:offer|bid)"
+    r"|scheme\s+of\s+arrangement"
+    r"|(?:firm|possible)\s+(?:cash\s+)?offer"
+    r"|(?:cash\s+)?offer\s+for\s+(?:the\s+)?(?:entire\s+)?(?:issued\s+)?(?:share\s+capital|shares)"
+    r"|subject\s+to\s+(?:a\s+)?(?:recommended|firm)\s+offer"
     r")"
 )
 
