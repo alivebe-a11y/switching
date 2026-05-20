@@ -381,8 +381,10 @@ def check_t212_cmd() -> None:
     console.print(f"\n[bold]Trading 212 connection check ({env})[/bold]")
 
     # Account summary
+    acct_ok = False
     try:
         acct = client.get_account()
+        acct_ok = True
         console.print(f"  [green]✓ Account data[/green]")
         console.print(f"    Free cash : ${acct.free:,.2f}")
         console.print(f"    Invested  : ${acct.invested:,.2f}")
@@ -392,8 +394,10 @@ def check_t212_cmd() -> None:
         console.print(f"  [red]✗ Account data failed: {exc}[/red]")
 
     # Positions
+    positions_ok = False
     try:
         positions = client.get_positions()
+        positions_ok = True
         console.print(f"  [green]✓ Portfolio ({len(positions)} open position(s))[/green]")
         if positions:
             t = Table(show_header=True, header_style="bold")
@@ -418,7 +422,12 @@ def check_t212_cmd() -> None:
     # Market hours
     open_str = "[green]OPEN[/green]" if client.is_market_open() else "[yellow]CLOSED[/yellow]"
     console.print(f"  [green]✓ Market hours[/green]: {open_str}")
-    console.print("\n[bold green]Connection OK[/bold green] — ready to start trade-t212 service.\n")
+
+    if acct_ok and positions_ok:
+        console.print("\n[bold green]✓ Connection OK[/bold green] — ready to start trade-t212 service.\n")
+    else:
+        console.print("\n[bold red]✗ Connection failed[/bold red] — fix the errors above before starting trade-t212.\n")
+        raise SystemExit(1)
 
 
 @app.command("paper-status")
