@@ -10,7 +10,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
-- **Branch**: `claude/add-ai-recommendations-ABZZX`
+- **Branch**: `main`
 - **453 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
