@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `main`
-- **453 tests**, run with: `pytest tests/`
+- **455 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path: `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -19,7 +19,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 - Docker build context pulls directly from GitHub — no local git clone on TrueNAS
 - Deploy command:
   ```bash
-  curl -sL "https://raw.githubusercontent.com/alivebe-a11y/switching/claude/add-ai-recommendations-ABZZX/docker-compose.yml" -o compose.yaml && docker compose build --no-cache paper-trade && docker compose down paper-trade && docker compose up paper-trade -d
+  curl -sL "https://raw.githubusercontent.com/alivebe-a11y/switching/main/docker-compose.yml" -o compose.yaml && docker builder prune -af && docker compose build paper-trade && docker compose up paper-trade -d
   ```
 - For dashboard too: `docker compose up dashboard -d`
 - Dashboard port: 8080
@@ -259,7 +259,7 @@ or disable. Update as live trades accumulate.
 
 ### Deploy new code to TrueNAS
 ```bash
-curl -sL "https://raw.githubusercontent.com/alivebe-a11y/switching/claude/add-ai-recommendations-ABZZX/docker-compose.yml" -o compose.yaml && docker compose build --no-cache paper-trade && docker compose down paper-trade && docker compose up paper-trade -d
+curl -sL "https://raw.githubusercontent.com/alivebe-a11y/switching/main/docker-compose.yml" -o compose.yaml && docker builder prune -af && docker compose build paper-trade && docker compose up paper-trade -d
 ```
 For dashboard: `docker compose up dashboard -d`
 For both: add `dashboard` to the up command.
