@@ -272,17 +272,20 @@ def open_position(
         log.info("insufficient cash ($%.2f), skipping %s", portfolio.cash, signal.ticker)
         return None
 
-    shares = alloc / price
-    cost = shares * price
+    # UK prices from yfinance are in pence (GBX). Normalise to GBP so that
+    # position sizing, cash deduction, and P&L are all in the same major unit.
+    effective_price = _normalise_price(price, market)
+    shares = alloc / effective_price
+    cost = shares * effective_price
     portfolio.cash -= cost
 
-    profile = _exit_profile(signal.detector, price)
-    actual_sl = _tiered_stop_loss(stop_loss, price, market) + profile.get("stop_loss_extra", 0.0)
+    profile = _exit_profile(signal.detector, effective_price)
+    actual_sl = _tiered_stop_loss(stop_loss, effective_price, market) + profile.get("stop_loss_extra", 0.0)
 
     pos = Position(
         ticker=signal.ticker,
         detector=signal.detector,
-        entry_price=price,
+        entry_price=effective_price,  # stored in GBP for UK, USD for US
         shares=shares,
         entry_dt=datetime.now(tz=timezone.utc).isoformat(),
         headline=signal.headline,
@@ -322,9 +325,12 @@ def check_exits(portfolio: Portfolio, market: str = "us") -> list[ClosedTrade]:
             remaining.append(pos)
             continue
 
-        price = data["close"]
+        # Normalise prices to major currency units (GBP for UK, USD for US).
+        # yfinance returns LSE tickers in pence (GBX); entry_price is stored
+        # in GBP, so exits must also be in GBP for correct return calculation.
+        price = _normalise_price(data["close"], market)
         ret = price / pos.entry_price - 1.0
-        ret_low = data["low"] / pos.entry_price - 1.0
+        ret_low = _normalise_price(data["low"], market) / pos.entry_price - 1.0
         reason = None
 
         # Trading days elapsed — weekends and bank holidays do NOT count.
@@ -598,7 +604,8 @@ def run_loop(
     while True:
         now = datetime.now(tz=timezone.utc)
         console.print(f"\n[bold]── Scan at {now.strftime('%Y-%m-%d %H:%M UTC')} ──[/bold]")
-        console.print(f"Cash: ${portfolio.cash:.2f} | Positions: {len(portfolio.positions)} | Total: ${portfolio.total_value:.2f}")
+        _sym = "£" if market == "uk" else "$"
+        console.print(f"Cash: {_sym}{portfolio.cash:.2f} | Positions: {len(portfolio.positions)} | Total: {_sym}{portfolio.total_value:.2f}")
 
         closed = check_exits(portfolio, market=market)
         for t in closed:
@@ -742,10 +749,12 @@ def run_loop(
             for p in portfolio.positions:
                 cur = get_current_price(p.ticker)
                 if cur:
+                    cur = _normalise_price(cur, market)
                     portfolio.cached_prices[p.ticker] = cur
                     ret = (cur / p.entry_price - 1.0) * 100
+                    sym = "£" if market == "uk" else "$"
                     color = "green" if ret >= 0 else "red"
-                    console.print(f"    {p.ticker}: entry ${p.entry_price:.2f} now ${cur:.2f} [{color}]{ret:+.1f}%[/{color}] day {p.days_held}/{p.hold_days}")
+                    console.print(f"    {p.ticker}: entry {sym}{p.entry_price:.2f} now {sym}{cur:.2f} [{color}]{ret:+.1f}%[/{color}] day {p.days_held}/{p.hold_days}")
                 else:
                     console.print(f"    {p.ticker}: entry ${p.entry_price:.2f} (price unavailable) day {p.days_held}/{p.hold_days}")
 

@@ -186,6 +186,71 @@ def create_app(state_path: Path | None = None) -> Flask:
             "last_scan_dt": t.last_scan_dt,
         })
 
+    @app.route("/api/uk")
+    def api_uk():
+        """UK (LSE) paper portfolio — reads uk_portfolio.json."""
+        uk_path = _STATE_PATH.parent / "uk_portfolio.json"
+        if not uk_path.exists():
+            return jsonify({"available": False, "message": "UK service not started yet."})
+
+        p = Portfolio.load(uk_path)
+
+        positions = []
+        for pos in p.positions:
+            # Prices stored in GBP (normalised from GBX at entry)
+            current = p.cached_prices.get(pos.ticker)
+            pct = (current / pos.entry_price - 1.0) if current else None
+            positions.append({
+                "ticker": pos.ticker,
+                "detector": pos.detector,
+                "entry_price": pos.entry_price,
+                "current_price": current,
+                "pct_change": round(pct, 4) if pct is not None else None,
+                "shares": pos.shares,
+                "cost_basis": pos.cost_basis,
+                "entry_dt": pos.entry_dt,
+                "days_held": pos.days_held,
+                "hold_days": pos.hold_days,
+                "headline": pos.headline,
+                "stop_loss": pos.stop_loss,
+            })
+
+        trades = []
+        for tr in reversed(p.trades):
+            trades.append({
+                "ticker": tr.ticker,
+                "detector": tr.detector,
+                "entry_price": tr.entry_price,
+                "exit_price": tr.exit_price,
+                "shares": tr.shares,
+                "entry_dt": tr.entry_dt,
+                "exit_dt": tr.exit_dt,
+                "pnl": tr.pnl,
+                "pct_return": tr.pct_return,
+                "exit_reason": tr.exit_reason,
+                "headline": tr.headline,
+            })
+
+        wins = sum(1 for tr in p.trades if tr.pnl > 0)
+        total_trades = len(p.trades)
+        total_pnl = sum(tr.pnl for tr in p.trades)
+        invested = sum(pos.cost_basis for pos in p.positions)
+
+        return jsonify({
+            "available": True,
+            "cash": p.cash,
+            "invested": invested,
+            "total": p.cash + invested,
+            "total_pnl": total_pnl,
+            "open_count": len(p.positions),
+            "trade_count": total_trades,
+            "wins": wins,
+            "win_rate": (wins / total_trades * 100) if total_trades else 0,
+            "positions": positions,
+            "trades": trades,
+            "last_scan_dt": p.last_scan_dt,
+        })
+
     @app.route("/api/equity-curve")
     def api_equity_curve():
         p = Portfolio.load(_STATE_PATH)
@@ -667,6 +732,7 @@ tr:hover { background: rgba(255,255,255,0.02); }
       <div class="tab" id="tab-btn-postexit" onclick="switchTab('postexit')">Post-Exit Tracker <span class="badge" id="tracker-tab-badge" style="margin-left:4px">0</span></div>
       <div class="tab" id="tab-btn-analytics" onclick="switchTab('analytics')">Analytics</div>
       <div class="tab" id="tab-btn-t212" onclick="switchTab('t212')">T212 Demo</div>
+      <div class="tab" id="tab-btn-uk" onclick="switchTab('uk')">🇬🇧 LSE</div>
     </div>
   </div>
 
@@ -905,6 +971,36 @@ tr:hover { background: rgba(255,255,255,0.02); }
   </div>
 
   </div><!-- /tab-t212 -->
+
+  <div id="tab-uk" style="display:none">
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>LSE Paper Trader (UK)</h2>
+      <span id="uk-stamp" style="font-size:0.7rem;color:var(--dim)"></span>
+    </div>
+    <div id="uk-unavailable" class="empty-state" style="display:none">UK service not started. Run: <code>docker compose up paper-trade-uk -d</code></div>
+    <div id="uk-kpis" style="display:flex;gap:2rem;flex-wrap:wrap;padding:1rem 1.2rem;border-bottom:1px solid var(--border)">
+      <div><div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">Cash</div><div id="uk-cash" style="font-size:1.4rem;font-weight:700">--</div></div>
+      <div><div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">Invested</div><div id="uk-invested" style="font-size:1.4rem;font-weight:700">--</div></div>
+      <div><div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">Total</div><div id="uk-total" style="font-size:1.4rem;font-weight:700">--</div></div>
+      <div><div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">Closed P&amp;L</div><div id="uk-pnl" style="font-size:1.4rem;font-weight:700">--</div></div>
+      <div><div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">Trades</div><div id="uk-trades" style="font-size:1.4rem;font-weight:700">--</div></div>
+      <div><div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">Win Rate</div><div id="uk-wr" style="font-size:1.4rem;font-weight:700">--</div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header"><h2>Open Positions</h2><span class="badge" id="uk-pos-count">0</span></div>
+    <div id="uk-positions-body"><div class="empty-state">No open positions — LSE signals will appear here after 08:00 London time</div></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header"><h2>Trade History</h2><span class="badge" id="uk-trade-count">0</span></div>
+    <div id="uk-trades-body"><div class="empty-state">No trades yet</div></div>
+  </div>
+
+  </div><!-- /tab-uk -->
 
 </div>
 
@@ -1498,7 +1594,7 @@ async function loadReview() {
 let _activeTab = 'overview';
 
 function switchTab(name) {
-  ['overview', 'postexit', 'analytics', 't212'].forEach(t => {
+  ['overview', 'postexit', 'analytics', 't212', 'uk'].forEach(t => {
     document.getElementById('tab-' + t).style.display = t === name ? 'block' : 'none';
     document.getElementById('tab-btn-' + t).classList.toggle('active', t === name);
   });
@@ -1511,6 +1607,8 @@ function switchTab(name) {
     loadExitTracker();
   } else if (name === 't212') {
     loadT212();
+  } else if (name === 'uk') {
+    loadUK();
   }
 }
 
@@ -1605,6 +1703,83 @@ async function loadT212() {
 
   } catch(e) {
     console.error('t212 load failed', e);
+  }
+}
+
+async function loadUK() {
+  try {
+    const r = await fetch('/api/uk');
+    const d = await r.json();
+
+    if (!d.available) {
+      $('#uk-unavailable').style.display = 'block';
+      $('#uk-kpis').style.display = 'none';
+      return;
+    }
+    $('#uk-unavailable').style.display = 'none';
+    $('#uk-kpis').style.display = 'flex';
+
+    const fmt = v => v == null ? '--' : '£' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    const pnlFmt = v => v == null ? '--' : (v >= 0 ? '+' : '') + '£' + Math.abs(v).toFixed(2);
+    const pnlCls = v => v == null ? '' : v >= 0 ? 'pos' : 'neg';
+    const priceFmt = v => v == null ? '--' : v < 10 ? '£' + v.toFixed(4) : '£' + v.toFixed(2);
+
+    $('#uk-cash').textContent = fmt(d.cash);
+    $('#uk-invested').textContent = fmt(d.invested);
+    $('#uk-total').textContent = fmt(d.total);
+    $('#uk-pnl').innerHTML = '<span class="' + pnlCls(d.total_pnl) + '">' + pnlFmt(d.total_pnl) + '</span>';
+    $('#uk-trades').textContent = d.trade_count;
+    $('#uk-wr').textContent = d.trade_count ? d.win_rate.toFixed(0) + '%' : '--';
+    $('#uk-trade-count').textContent = d.trade_count;
+    $('#uk-pos-count').textContent = d.open_count;
+    if (d.last_scan_dt) $('#uk-stamp').textContent = 'Last scan: ' + d.last_scan_dt.slice(0,16) + ' UTC';
+
+    // Positions
+    if (!d.positions || d.positions.length === 0) {
+      $('#uk-positions-body').innerHTML = '<div class="empty-state">No open positions — LSE signals will appear here after 08:00 London time</div>';
+    } else {
+      let html = '<table><thead><tr><th>Ticker</th><th>Detector</th><th>Entry</th><th>Current</th><th>Return</th><th>Day</th><th>Headline</th></tr></thead><tbody>';
+      d.positions.forEach(p => {
+        const retCls = p.pct_change == null ? '' : p.pct_change >= 0 ? 'pos' : 'neg';
+        const retStr = p.pct_change == null ? '--' : (p.pct_change * 100).toFixed(2) + '%';
+        html += '<tr>'
+          + '<td><strong>' + p.ticker.replace('.L','') + '</strong><span style="color:var(--dim);font-size:0.75rem">.L</span></td>'
+          + '<td><span class="badge">' + p.detector + '</span></td>'
+          + '<td>' + priceFmt(p.entry_price) + '</td>'
+          + '<td>' + (p.current_price ? priceFmt(p.current_price) : '--') + '</td>'
+          + '<td class="' + retCls + '">' + retStr + '</td>'
+          + '<td>' + p.days_held + '/' + p.hold_days + '</td>'
+          + '<td style="font-size:0.78rem;color:var(--dim);max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + p.headline + '">' + p.headline + '</td>'
+          + '</tr>';
+      });
+      html += '</tbody></table>';
+      $('#uk-positions-body').innerHTML = html;
+    }
+
+    // Trades
+    if (!d.trades || d.trades.length === 0) {
+      $('#uk-trades-body').innerHTML = '<div class="empty-state">No trades yet</div>';
+    } else {
+      let html = '<table><thead><tr><th>Ticker</th><th>Detector</th><th>Entry</th><th>Exit</th><th>Return</th><th>P&L</th><th>Reason</th><th>Date</th></tr></thead><tbody>';
+      d.trades.forEach(t => {
+        const cls = t.pct_return >= 0 ? 'pos' : 'neg';
+        html += '<tr>'
+          + '<td><strong>' + t.ticker.replace('.L','') + '</strong></td>'
+          + '<td><span class="badge">' + t.detector + '</span></td>'
+          + '<td>' + priceFmt(t.entry_price) + '</td>'
+          + '<td>' + priceFmt(t.exit_price) + '</td>'
+          + '<td class="' + cls + '">' + (t.pct_return * 100).toFixed(2) + '%</td>'
+          + '<td class="' + cls + '">' + pnlFmt(t.pnl) + '</td>'
+          + '<td><span class="badge">' + t.exit_reason + '</span></td>'
+          + '<td style="color:var(--dim);font-size:0.8rem">' + (t.exit_dt || '').slice(0,10) + '</td>'
+          + '</tr>';
+      });
+      html += '</tbody></table>';
+      $('#uk-trades-body').innerHTML = html;
+    }
+
+  } catch(e) {
+    console.error('uk load failed', e);
   }
 }
 
