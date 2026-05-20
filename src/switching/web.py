@@ -101,6 +101,91 @@ def create_app(state_path: Path | None = None) -> Flask:
             "scanned_at": p.last_scan_dt,
         })
 
+    @app.route("/api/t212")
+    def api_t212():
+        """T212 demo portfolio — same structure as /api/portfolio but from t212_portfolio.json."""
+        t212_path = _STATE_PATH.parent / "t212_portfolio.json"
+        if not t212_path.exists():
+            return jsonify({"available": False, "message": "T212 service not started yet."})
+
+        t = Portfolio.load(t212_path)
+        paper = Portfolio.load(_STATE_PATH)
+
+        # Build positions list
+        positions = []
+        for pos in t.positions:
+            positions.append({
+                "ticker": pos.ticker,
+                "detector": pos.detector,
+                "entry_price": pos.entry_price,
+                "shares": pos.shares,
+                "cost_basis": pos.cost_basis,
+                "entry_dt": pos.entry_dt,
+                "days_held": pos.days_held,
+                "hold_days": pos.hold_days,
+                "headline": pos.headline,
+                "stop_loss": pos.stop_loss,
+            })
+
+        # Trade history
+        trades = []
+        for tr in reversed(t.trades):
+            trades.append({
+                "ticker": tr.ticker,
+                "detector": tr.detector,
+                "entry_price": tr.entry_price,
+                "exit_price": tr.exit_price,
+                "shares": tr.shares,
+                "entry_dt": tr.entry_dt,
+                "exit_dt": tr.exit_dt,
+                "pnl": tr.pnl,
+                "pct_return": tr.pct_return,
+                "exit_reason": tr.exit_reason,
+                "headline": tr.headline,
+            })
+
+        # Comparison: find trades in both systems on same ticker+date
+        paper_by_key: dict[str, float] = {}
+        for tr in paper.trades:
+            key = f"{tr.ticker}:{tr.entry_dt[:10]}"
+            paper_by_key[key] = tr.pct_return
+
+        comparison = []
+        for tr in t.trades:
+            key = f"{tr.ticker}:{tr.entry_dt[:10]}"
+            if key in paper_by_key:
+                paper_ret = paper_by_key[key]
+                diff = tr.pct_return - paper_ret
+                comparison.append({
+                    "ticker": tr.ticker,
+                    "entry_dt": tr.entry_dt[:10],
+                    "t212_return": tr.pct_return,
+                    "paper_return": paper_ret,
+                    "slippage": round(diff, 4),
+                })
+
+        wins = sum(1 for tr in t.trades if tr.pnl > 0)
+        total_trades = len(t.trades)
+        total_pnl = sum(tr.pnl for tr in t.trades)
+        invested = sum(pos.cost_basis for pos in t.positions)
+
+        return jsonify({
+            "available": True,
+            "free_cash": t.cash,
+            "invested": invested,
+            "total": t.cash + invested,
+            "ppl": total_pnl,
+            "open_count": len(t.positions),
+            "trade_count": total_trades,
+            "wins": wins,
+            "win_rate": (wins / total_trades * 100) if total_trades else 0,
+            "total_pnl": total_pnl,
+            "positions": positions,
+            "trades": trades,
+            "comparison": comparison,
+            "last_scan_dt": t.last_scan_dt,
+        })
+
     @app.route("/api/equity-curve")
     def api_equity_curve():
         p = Portfolio.load(_STATE_PATH)
@@ -581,6 +666,7 @@ tr:hover { background: rgba(255,255,255,0.02); }
       <div class="tab active" id="tab-btn-overview" onclick="switchTab('overview')">Overview</div>
       <div class="tab" id="tab-btn-postexit" onclick="switchTab('postexit')">Post-Exit Tracker <span class="badge" id="tracker-tab-badge" style="margin-left:4px">0</span></div>
       <div class="tab" id="tab-btn-analytics" onclick="switchTab('analytics')">Analytics</div>
+      <div class="tab" id="tab-btn-t212" onclick="switchTab('t212')">T212 Demo</div>
     </div>
   </div>
 
@@ -781,6 +867,44 @@ tr:hover { background: rgba(255,255,255,0.02); }
   </div>
 
   </div><!-- /tab-analytics -->
+
+  <div id="tab-t212" style="display:none">
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>T212 Demo Account</h2>
+      <span id="t212-stamp" style="font-size:0.7rem;color:var(--dim)"></span>
+    </div>
+    <div id="t212-unavailable" class="empty-state" style="display:none">T212 service not started. Run: <code>docker compose up trade-t212 -d</code></div>
+    <div id="t212-kpis" style="display:flex;gap:2rem;flex-wrap:wrap;padding:1rem 1.2rem;border-bottom:1px solid var(--border)">
+      <div><div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">Free Cash</div><div id="t212-free" style="font-size:1.4rem;font-weight:700">--</div></div>
+      <div><div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">Invested</div><div id="t212-invested" style="font-size:1.4rem;font-weight:700">--</div></div>
+      <div><div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">Total</div><div id="t212-total" style="font-size:1.4rem;font-weight:700">--</div></div>
+      <div><div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">Closed P&amp;L</div><div id="t212-pnl" style="font-size:1.4rem;font-weight:700">--</div></div>
+      <div><div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">Trades</div><div id="t212-trades" style="font-size:1.4rem;font-weight:700">--</div></div>
+      <div><div style="font-size:0.7rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">Win Rate</div><div id="t212-wr" style="font-size:1.4rem;font-weight:700">--</div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header"><h2>Open Positions</h2><span class="badge" id="t212-pos-count">0</span></div>
+    <div id="t212-positions-body"><div class="empty-state">No open positions</div></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header"><h2>Trade History</h2><span class="badge" id="t212-trade-count">0</span></div>
+    <div id="t212-trades-body"><div class="empty-state">No trades yet</div></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>Slippage vs Paper Trader</h2>
+      <span style="font-size:0.75rem;color:var(--dim)">Same signals, different fills — T212 demo vs yfinance theoretical</span>
+    </div>
+    <div id="t212-comparison-body"><div class="empty-state">Comparison data will appear once both systems have traded the same signal.</div></div>
+  </div>
+
+  </div><!-- /tab-t212 -->
 
 </div>
 
@@ -1374,7 +1498,7 @@ async function loadReview() {
 let _activeTab = 'overview';
 
 function switchTab(name) {
-  ['overview', 'postexit', 'analytics'].forEach(t => {
+  ['overview', 'postexit', 'analytics', 't212'].forEach(t => {
     document.getElementById('tab-' + t).style.display = t === name ? 'block' : 'none';
     document.getElementById('tab-btn-' + t).classList.toggle('active', t === name);
   });
@@ -1385,6 +1509,102 @@ function switchTab(name) {
     loadSkippedSignals();
   } else if (name === 'postexit') {
     loadExitTracker();
+  } else if (name === 't212') {
+    loadT212();
+  }
+}
+
+async function loadT212() {
+  try {
+    const r = await fetch('/api/t212');
+    const d = await r.json();
+
+    if (!d.available) {
+      $('#t212-unavailable').style.display = 'block';
+      $('#t212-kpis').style.display = 'none';
+      return;
+    }
+    $('#t212-unavailable').style.display = 'none';
+    $('#t212-kpis').style.display = 'flex';
+
+    const fmt = v => v == null ? '--' : '$' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    const pnlFmt = v => v == null ? '--' : (v >= 0 ? '+' : '') + '$' + Math.abs(v).toFixed(2);
+    const pnlCls = v => v == null ? '' : v >= 0 ? 'pos' : 'neg';
+
+    $('#t212-free').textContent = fmt(d.free_cash);
+    $('#t212-invested').textContent = fmt(d.invested);
+    $('#t212-total').textContent = fmt(d.total);
+    $('#t212-pnl').innerHTML = '<span class="' + pnlCls(d.total_pnl) + '">' + pnlFmt(d.total_pnl) + '</span>';
+    $('#t212-trades').textContent = d.trade_count;
+    $('#t212-wr').textContent = d.trade_count ? d.win_rate.toFixed(0) + '%' : '--';
+    $('#t212-trade-count').textContent = d.trade_count;
+    $('#t212-pos-count').textContent = d.open_count;
+    if (d.last_scan_dt) $('#t212-stamp').textContent = 'Last scan: ' + d.last_scan_dt.slice(0,16) + ' UTC';
+
+    // Positions
+    if (!d.positions || d.positions.length === 0) {
+      $('#t212-positions-body').innerHTML = '<div class="empty-state">No open positions</div>';
+    } else {
+      let html = '<table><thead><tr><th>Ticker</th><th>Detector</th><th>Entry</th><th>Shares</th><th>Value</th><th>Day</th><th>Headline</th></tr></thead><tbody>';
+      d.positions.forEach(p => {
+        html += '<tr>'
+          + '<td><strong>' + p.ticker + '</strong></td>'
+          + '<td><span class="badge">' + p.detector + '</span></td>'
+          + '<td>$' + p.entry_price.toFixed(2) + '</td>'
+          + '<td>' + p.shares.toFixed(4) + '</td>'
+          + '<td>$' + p.cost_basis.toFixed(2) + '</td>'
+          + '<td>' + p.days_held + '/' + p.hold_days + '</td>'
+          + '<td style="font-size:0.78rem;color:var(--dim);max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + p.headline + '">' + p.headline + '</td>'
+          + '</tr>';
+      });
+      html += '</tbody></table>';
+      $('#t212-positions-body').innerHTML = html;
+    }
+
+    // Trades
+    if (!d.trades || d.trades.length === 0) {
+      $('#t212-trades-body').innerHTML = '<div class="empty-state">No trades yet</div>';
+    } else {
+      let html = '<table><thead><tr><th>Ticker</th><th>Detector</th><th>Entry</th><th>Exit</th><th>Return</th><th>P&L</th><th>Reason</th><th>Date</th></tr></thead><tbody>';
+      d.trades.forEach(t => {
+        const cls = t.pct_return >= 0 ? 'pos' : 'neg';
+        html += '<tr>'
+          + '<td><strong>' + t.ticker + '</strong></td>'
+          + '<td><span class="badge">' + t.detector + '</span></td>'
+          + '<td>$' + t.entry_price.toFixed(2) + '</td>'
+          + '<td>$' + t.exit_price.toFixed(2) + '</td>'
+          + '<td class="' + cls + '">' + (t.pct_return * 100).toFixed(2) + '%</td>'
+          + '<td class="' + cls + '">' + pnlFmt(t.pnl) + '</td>'
+          + '<td>' + t.exit_reason + '</td>'
+          + '<td style="font-size:0.78rem;color:var(--dim)">' + (t.exit_dt || '').slice(0,10) + '</td>'
+          + '</tr>';
+      });
+      html += '</tbody></table>';
+      $('#t212-trades-body').innerHTML = html;
+    }
+
+    // Slippage comparison
+    if (!d.comparison || d.comparison.length === 0) {
+      $('#t212-comparison-body').innerHTML = '<div class="empty-state">Comparison data will appear once both systems have traded the same signal.</div>';
+    } else {
+      let html = '<table><thead><tr><th>Ticker</th><th>Date</th><th>Paper Return</th><th>T212 Return</th><th>Slippage</th></tr></thead><tbody>';
+      d.comparison.forEach(c => {
+        const diff = c.slippage;
+        const cls = diff >= 0 ? 'pos' : 'neg';
+        html += '<tr>'
+          + '<td><strong>' + c.ticker + '</strong></td>'
+          + '<td style="font-size:0.78rem;color:var(--dim)">' + c.entry_dt + '</td>'
+          + '<td>' + (c.paper_return * 100).toFixed(2) + '%</td>'
+          + '<td>' + (c.t212_return * 100).toFixed(2) + '%</td>'
+          + '<td class="' + cls + '">' + (diff >= 0 ? '+' : '') + (diff * 100).toFixed(2) + '%</td>'
+          + '</tr>';
+      });
+      html += '</tbody></table>';
+      $('#t212-comparison-body').innerHTML = html;
+    }
+
+  } catch(e) {
+    console.error('t212 load failed', e);
   }
 }
 
