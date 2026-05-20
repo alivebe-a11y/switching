@@ -361,6 +361,66 @@ def trade_t212_cmd(
     )
 
 
+@app.command("check-t212")
+def check_t212_cmd() -> None:
+    """Diagnostic: verify Trading 212 API connectivity and show account snapshot.
+
+    Read-only — no orders are placed. Requires T212_API_KEY env var.
+    Set T212_DEMO=true (default) to test against the demo environment.
+    """
+    from switching.broker_trading212 import Trading212Client, T212AuthError
+    from rich.table import Table
+
+    try:
+        client = Trading212Client()
+    except T212AuthError as exc:
+        console.print(f"[red]✗ Auth error: {exc}[/red]")
+        raise SystemExit(1)
+
+    env = "[yellow]DEMO[/yellow]" if client.demo else "[red]LIVE[/red]"
+    console.print(f"\n[bold]Trading 212 connection check ({env})[/bold]")
+
+    # Account summary
+    try:
+        acct = client.get_account()
+        console.print(f"  [green]✓ Account data[/green]")
+        console.print(f"    Free cash : ${acct.free:,.2f}")
+        console.print(f"    Invested  : ${acct.invested:,.2f}")
+        console.print(f"    Total     : ${acct.total:,.2f}")
+        console.print(f"    P&L       : ${acct.ppl:+,.2f}")
+    except Exception as exc:
+        console.print(f"  [red]✗ Account data failed: {exc}[/red]")
+
+    # Positions
+    try:
+        positions = client.get_positions()
+        console.print(f"  [green]✓ Portfolio ({len(positions)} open position(s))[/green]")
+        if positions:
+            t = Table(show_header=True, header_style="bold")
+            t.add_column("Ticker")
+            t.add_column("Qty", justify="right")
+            t.add_column("Avg Price", justify="right")
+            t.add_column("Current", justify="right")
+            t.add_column("P&L", justify="right")
+            for p in positions:
+                color = "green" if p.unrealized_pnl_pct >= 0 else "red"
+                t.add_row(
+                    p.symbol,
+                    f"{p.quantity:.4f}",
+                    f"${p.avg_entry_price:.2f}",
+                    f"${p.current_price:.2f}",
+                    f"[{color}]{p.unrealized_pnl_pct*100:+.1f}%[/{color}]",
+                )
+            console.print(t)
+    except Exception as exc:
+        console.print(f"  [red]✗ Portfolio failed: {exc}[/red]")
+
+    # Market hours
+    open_str = "[green]OPEN[/green]" if client.is_market_open() else "[yellow]CLOSED[/yellow]"
+    console.print(f"  [green]✓ Market hours[/green]: {open_str}")
+    console.print("\n[bold green]Connection OK[/bold green] — ready to start trade-t212 service.\n")
+
+
 @app.command("paper-status")
 def paper_status(
     state_file: Path = typer.Option(
