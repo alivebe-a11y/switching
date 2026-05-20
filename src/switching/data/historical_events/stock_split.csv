@@ -1,0 +1,13 @@
+event_dt,ticker,company,headline,url,evidence,severity
+2020-07-30,AAPL,Apple,Apple Announces 4-for-1 Stock Split,,4-for-1 stock split effective August 28,0.85
+2020-08-11,TSLA,Tesla,Tesla Declares 5-for-1 Stock Split,,5-for-1 stock split effective August 28,0.85
+2021-05-21,NVDA,Nvidia,Nvidia Announces 4-for-1 Stock Split,,4-for-1 stock split approved by board,0.85
+2022-02-01,GOOGL,Alphabet,Alphabet Announces 20-for-1 Stock Split,,20-for-1 stock split effective July 15,0.90
+2022-03-09,AMZN,Amazon,Amazon Announces 20-for-1 Stock Split,,20-for-1 stock split effective June 3,0.90
+2022-04-11,SHOP,Shopify,Shopify Announces 10-for-1 Stock Split,,10-for-1 stock split effective June 28,0.85
+2022-08-05,TSLA,Tesla,Tesla Declares 3-for-1 Stock Split Effective August 25,,3-for-1 stock split record date August 17,0.85
+2023-05-26,PANW,Palo Alto Networks,Palo Alto Networks Board Approves 3-for-1 Stock Split,,board approves 3-for-1 stock split effective September 14,0.80
+2024-05-22,NVDA,Nvidia,Nvidia Announces 10-for-1 Stock Split,,10-for-1 forward stock split effective June 10,0.90
+2024-07-12,AVGO,Broadcom,Broadcom Announces 10-for-1 Stock Split,,board approves 10-for-1 forward stock split,0.90
+2021-07-19,SQ,Square,Square Announces 3-for-1 Stock Split,,3-for-1 stock split effective August 23,0.80
+2023-03-14,DKNG,DraftKings,DraftKings Declares 2-for-1 Stock Split,,2-for-1 forward stock split approved,0.70

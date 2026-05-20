@@ -1,0 +1,13 @@
+event_dt,ticker,company,headline,url,evidence,severity
+2020-08-11,MSTR,MicroStrategy,MicroStrategy Announces $250 Million Bitcoin Investment as Treasury Reserve,,bitcoin treasury reserve $250 million strategic investment,0.90
+2021-02-08,TSLA,Tesla,Tesla Announces $1.5 Billion Bitcoin Purchase as Treasury Reserve Asset,,purchases bitcoin $1.5 billion treasury reserve,0.90
+2021-03-12,MSTR,MicroStrategy,MicroStrategy Purchases Additional $1 Billion in Bitcoin,,acquires additional bitcoin $1 billion treasury,0.85
+2021-09-13,MSTR,MicroStrategy,MicroStrategy Acquires Additional 5050 Bitcoin for $242.9 Million,,purchases 5050 bitcoin $242.9 million treasury,0.80
+2024-05-28,SMLR,Semler Scientific,Semler Scientific Adopts Bitcoin as Primary Treasury Reserve Asset,,adopts bitcoin as primary treasury reserve asset,0.85
+2024-07-22,MSTR,MicroStrategy,MicroStrategy Purchases 12222 Bitcoin for $805.2 Million,,purchases 12222 bitcoin $805.2 million treasury,0.85
+2025-01-09,GME,GameStop,GameStop Board Approves Bitcoin Treasury Strategy,,board approves bitcoin treasury strategy reserve,0.85
+2024-09-20,MSTR,MicroStrategy,MicroStrategy Acquires 7420 Bitcoin for $458.2 Million,,acquires 7420 bitcoin $458.2 million treasury,0.80
+2024-12-09,MSTR,MicroStrategy,MicroStrategy Announces Plans to Purchase Additional Bitcoin for $2.1 Billion,,announces bitcoin purchase $2.1 billion treasury strategy,0.85
+2025-02-18,MSTR,Strategy,Strategy Purchases Additional 20356 Bitcoin for $2.0 Billion,,purchases 20356 bitcoin $2.0 billion treasury,0.90
+2024-10-31,MSTR,MicroStrategy,MicroStrategy Announces $42 Billion Bitcoin Acquisition Plan,,announces strategic bitcoin reserve $42 billion plan,0.90
+2024-04-12,MTPLF,Metaplanet,Metaplanet Announces Strategic Bitcoin Reserve Adoption,,announces strategic bitcoin reserve treasury adoption,0.85

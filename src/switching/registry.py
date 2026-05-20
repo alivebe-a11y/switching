@@ -38,6 +38,7 @@ def load_builtin_detectors() -> None:
     from switching.detectors.analyst_upgrade import AnalystUpgradeDetector
     from switching.detectors.buyback import BuybackDetector
     from switching.detectors.contract_win import ContractWinDetector
+    from switching.detectors.crypto_treasury import CryptoTreasuryDetector
     from switching.detectors.dividend_surprise import DividendSurpriseDetector
     from switching.detectors.earnings_surprise import EarningsSurpriseDetector
     from switching.detectors.fda_decision import FdaDecisionDetector
@@ -46,11 +47,13 @@ def load_builtin_detectors() -> None:
     from switching.detectors.insider_cluster import InsiderClusterDetector
     from switching.detectors.mna_target import MnaTargetDetector
     from switching.detectors.spinoff import SpinoffDetector
+    from switching.detectors.stock_split import StockSplitDetector
 
     _REGISTRY[AIPivotDetector.name] = AIPivotDetector
     _REGISTRY[AnalystUpgradeDetector.name] = AnalystUpgradeDetector
     _REGISTRY[BuybackDetector.name] = BuybackDetector
     _REGISTRY[ContractWinDetector.name] = ContractWinDetector
+    _REGISTRY[CryptoTreasuryDetector.name] = CryptoTreasuryDetector
     _REGISTRY[DividendSurpriseDetector.name] = DividendSurpriseDetector
     _REGISTRY[Activist13DDetector.name] = Activist13DDetector
     _REGISTRY[EarningsSurpriseDetector.name] = EarningsSurpriseDetector
@@ -60,6 +63,7 @@ def load_builtin_detectors() -> None:
     _REGISTRY[IndexInclusionDetector.name] = IndexInclusionDetector
     _REGISTRY[MnaTargetDetector.name] = MnaTargetDetector
     _REGISTRY[SpinoffDetector.name] = SpinoffDetector
+    _REGISTRY[StockSplitDetector.name] = StockSplitDetector
 
 
 def reset() -> None:

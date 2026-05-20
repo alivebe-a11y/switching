@@ -27,6 +27,14 @@ _PIVOT_TERMS = re.compile(
     r"|ai-?driven)"
 )
 
+# Strong pivot verbs required when company name already contains AI.
+# Generic verbs like "announces/launches" are too noisy for AI-native companies.
+_STRONG_PIVOT_TERMS = re.compile(
+    r"(?i)(pivot|relaunch|rebrand|transform|reposition|"
+    r"shift[s]?\s+(?:focus|strategy)|enter[s]?\s+the\s+ai|"
+    r"new\s+(?:strategy|direction|chapter)|ai-?first|ai-?native)"
+)
+
 # Amplifiers — boost severity.
 _GUIDANCE_TERMS = re.compile(
     r"(?i)(raises?\s+guidance|updates?\s+outlook|restructur|layoff|cost\s+cut)"
@@ -86,12 +94,19 @@ def classify(title: str, summary: str = "") -> dict | None:
     pivot_in_title = _PIVOT_TERMS.search(title)
     if not (ai_in_title and pivot_in_title):
         return None
+
+    # If "AI" appears in the company name (first 45 chars before the pivot verb),
+    # the company is likely AI-native — require a strong pivot verb, not just
+    # generic "announces/launches" which every AI company does constantly.
+    company_part = title[:45]
+    if _AI_TERMS.search(company_part) and not _STRONG_PIVOT_TERMS.search(title):
+        return None
     severity = 0.70  # base: both cues present in title
     if _GUIDANCE_TERMS.search(text):
         severity += 0.15
     if _AI_TERMS.search(summary):
         severity += 0.10
-    severity = min(severity, 1.0)
+    severity = min(severity, 0.95)
     return {
         "evidence": _evidence_snippet(text, ai_in_title, pivot_in_title),
         "severity": round(severity, 3),
