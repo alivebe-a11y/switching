@@ -16,6 +16,7 @@ from switching.paper_trader import (
     _calendar_days_since,
     _exit_profile,
     _make_edgar_client,
+    _signal_key,
     _tiered_stop_loss,
     check_exits,
     open_position,
@@ -381,3 +382,64 @@ class TestScanForSignals:
             mock_cls.return_value.scan.return_value = iter([])
             scan_for_signals(["ai_pivot"], datetime.now(tz=timezone.utc))
             mock_cls.assert_called_once_with()
+
+
+class TestSignalKey:
+    """_signal_key must produce stable, content-based identifiers."""
+
+    def _make_signal(self, **overrides):
+        from switching.signal import Signal
+        defaults = dict(
+            detector="analyst_upgrade",
+            ticker="NVDA",
+            company="Nvidia",
+            event_dt=datetime.now(tz=timezone.utc),
+            headline="Analyst upgrades NVDA to Buy",
+            url="https://example.com/nvda-upgrade",
+            evidence="upgrades NVDA",
+            severity=0.75,
+        )
+        defaults.update(overrides)
+        return Signal(**defaults)
+
+    def test_url_based_key_is_stable_across_dates(self):
+        """Same URL → same key, even if event_dt shifts to a new day."""
+        sig_day1 = self._make_signal(
+            event_dt=datetime(2026, 5, 20, 10, 0, tzinfo=timezone.utc),
+        )
+        sig_day2 = self._make_signal(
+            event_dt=datetime(2026, 5, 21, 10, 0, tzinfo=timezone.utc),
+        )
+        assert _signal_key(sig_day1) == _signal_key(sig_day2)
+
+    def test_different_urls_give_different_keys(self):
+        sig1 = self._make_signal(url="https://example.com/article1")
+        sig2 = self._make_signal(url="https://example.com/article2")
+        assert _signal_key(sig1) != _signal_key(sig2)
+
+    def test_different_detectors_give_different_keys(self):
+        sig1 = self._make_signal(detector="analyst_upgrade")
+        sig2 = self._make_signal(detector="earnings_surprise")
+        assert _signal_key(sig1) != _signal_key(sig2)
+
+    def test_different_tickers_give_different_keys(self):
+        sig1 = self._make_signal(ticker="NVDA")
+        sig2 = self._make_signal(ticker="AAPL")
+        assert _signal_key(sig1) != _signal_key(sig2)
+
+    def test_no_url_falls_back_to_headline_hash(self):
+        """When URL is empty, key is derived from headline (not from shifting date)."""
+        sig_day1 = self._make_signal(
+            url="",
+            event_dt=datetime(2026, 5, 20, 10, 0, tzinfo=timezone.utc),
+        )
+        sig_day2 = self._make_signal(
+            url="",
+            event_dt=datetime(2026, 5, 21, 10, 0, tzinfo=timezone.utc),
+        )
+        assert _signal_key(sig_day1) == _signal_key(sig_day2)
+
+    def test_no_url_different_headline_different_key(self):
+        sig1 = self._make_signal(url="", headline="Analyst upgrades NVDA to Buy")
+        sig2 = self._make_signal(url="", headline="Analyst upgrades NVDA to Strong Buy")
+        assert _signal_key(sig1) != _signal_key(sig2)

@@ -8,6 +8,7 @@ without losing history."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -154,7 +155,21 @@ def get_intraday_data(ticker: str) -> dict | None:
 
 
 def _signal_key(sig: Signal) -> str:
-    return f"{sig.detector}:{sig.ticker}:{sig.event_dt.date().isoformat()}"
+    """Stable per-article dedup key for the ``seen_signals`` list.
+
+    Uses the article URL when available — it is a stable identifier that
+    doesn't change between scan cycles even when the RSS feed item has no
+    ``published_parsed`` date (which would otherwise cause ``datetime.now()``
+    to produce a new date each scan and bypass the dedup check).
+
+    Falls back to a 16-char MD5 hex of the normalised headline when there
+    is no URL (e.g. EDGAR-sourced signals).
+    """
+    if sig.url:
+        article_id = sig.url[:120]
+    else:
+        article_id = hashlib.md5(sig.headline.lower().encode()).hexdigest()[:16]
+    return f"{sig.detector}:{sig.ticker}:{article_id}"
 
 
 def _normalise_price(price: float, market: str) -> float:
@@ -1077,6 +1092,34 @@ def run_loop_t212(
 
         # Positions we track locally (for detector/profile metadata)
         local_map = {p.ticker: p for p in portfolio.positions}
+
+        # Reconcile: T212 positions that have no local tracker (can happen after
+        # a container restart that lost the state file, or if the position was
+        # opened before this service started).  Create a synthetic tracker so
+        # the exit logic has a stable reference and doesn't sell immediately.
+        for sym, tp in t212_map.items():
+            if sym not in local_map:
+                log.info(
+                    "T212 orphan position %s — creating synthetic tracker "
+                    "(entry_price=%.4f, qty=%.4f)",
+                    sym, tp.avg_entry_price, tp.quantity,
+                )
+                synthetic = Position(
+                    ticker=sym,
+                    detector="t212_orphan",
+                    entry_price=tp.avg_entry_price,
+                    shares=tp.quantity,
+                    entry_dt=now.isoformat(),
+                    headline="[position pre-existed — no local record]",
+                    severity=0.0,
+                    stop_loss=_tiered_stop_loss(stop_loss, tp.avg_entry_price),
+                    hold_days=hold_days,
+                    first_green=True,
+                    first_green_pct=0.0,
+                )
+                portfolio.positions.append(synthetic)
+                local_map[sym] = synthetic
+                console.print(f"  [yellow]SYNC {sym}: orphan T212 position adopted[/yellow]")
 
         for sym, tp in list(t212_map.items()):
             ret = tp.unrealized_pnl_pct
