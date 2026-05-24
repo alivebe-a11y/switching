@@ -14,7 +14,8 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 - **547 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
-- Stack path: `/Pool_1/Configs/dockge2/Stacks/stocks`
+- Stack path (Dockge UI): `/Pool_1/Configs/dockge2/Stacks/stocks`
+  Host path over SSH (what scripts use): `/mnt/Pool_1/Configs/dockge2/Stacks/stocks`
 - **Dockge uses `compose.yaml`** (NOT `docker-compose.yml`)
 - Docker build context pulls directly from GitHub — no local git clone on TrueNAS
 - **All services share ONE image tag** (`ghcr.io/alivebe-a11y/switching:latest`) and the
@@ -22,19 +23,35 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
   on the new image — a running container keeps its old image until recreated.
 - Active services that run the shared code: `paper-trade`, `paper-trade-uk`, `trade-t212`
   (all use `paper_trader.py`) and `dashboard` (uses `web.py` + `weekly_report.py`).
-- **Deploy (easiest)** — from the Dockge stack dir, one command does everything
-  (fetch compose, prune cache, build once, recreate all four, verify):
-  ```bash
-  curl -sL https://raw.githubusercontent.com/alivebe-a11y/switching/main/scripts/deploy.sh | bash
-  ```
-  Deploy specific services only: `... | bash -s -- dashboard trade-t212`
-- **Deploy (manual one-liner)** — equivalent, if you don't want to use the script:
-  ```bash
-  curl -sL "https://raw.githubusercontent.com/alivebe-a11y/switching/main/docker-compose.yml" -o compose.yaml && docker builder prune -af && docker compose build paper-trade && docker compose up -d paper-trade paper-trade-uk trade-t212 dashboard
-  ```
+
+### Deploy — one-click from Windows (preferred)
+From the `switch` folder on Windows:
+```powershell
+.\deploy.ps1
+```
+It pushes committed code to GitHub, SSHes into TrueNAS, runs `scripts/deploy.sh` (build
+once + recreate all four services), then tails logs. No Dockge shell needed. Flags:
+`-Services dashboard` (subset), `-SkipPush`, `-Force`, `-NoLogs`. Requires one-time
+`ssh-copy-id root@<truenas-ip>`. The launcher lives at `switch\deploy.ps1`; an identical
+version-controlled copy is in the repo at `scripts/deploy.ps1`.
+
+### Deploy — on TrueNAS directly (fallback)
+From the Dockge stack dir:
+```bash
+curl -sL https://raw.githubusercontent.com/alivebe-a11y/switching/main/scripts/deploy.sh | bash
+```
+Subset: `... | bash -s -- dashboard trade-t212`
+
+### Deploy — manual one-liner (last resort)
+```bash
+curl -sL "https://raw.githubusercontent.com/alivebe-a11y/switching/main/docker-compose.yml" -o compose.yaml && docker builder prune -af && docker compose build paper-trade && docker compose up -d paper-trade paper-trade-uk trade-t212 dashboard
+```
 - Dashboard port: 8080
 - ⚠️ Do NOT deploy only `paper-trade` when a change touches `paper_trader.py` — that file
   is shared by `paper-trade-uk` and `trade-t212` too, and they'd run stale code.
+- ⚠️ The old scp-based `deploy.ps1` (synced source + built `switching:local`) is retired —
+  it diverged from GitHub and only restarted 2 services. The new `deploy.ps1` is a thin
+  GitHub trigger so both paths build the same image.
 
 ## Services (docker-compose.yml)
 | Service | Command | Notes |
