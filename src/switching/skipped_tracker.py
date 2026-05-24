@@ -212,22 +212,15 @@ class SkippedTracker:
     def completed_count(self) -> int:
         return sum(1 for s in self.skipped if s.tracking_complete)
 
-    def save(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data = {
-            "skipped": [s.to_dict() for s in self.skipped],
-            "summary": self._build_summary(),
-        }
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    def save(self, path: Path, service: str = "us") -> None:
+        from switching import storage
+        items = [asdict(s) for s in self.skipped]
+        storage.save_tracker(path, service, "skipped", items)
 
     @classmethod
-    def load(cls, path: Path) -> SkippedTracker:
-        if not path.exists():
-            return cls()
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return cls()
+    def load(cls, path: Path, service: str = "us") -> SkippedTracker:
+        from switching import storage
+        rows = storage.load_tracker(path, service, "skipped")
         tracker = cls()
         constructor_fields = {
             "ticker", "detector", "severity", "headline", "skip_reason",
@@ -237,7 +230,7 @@ class SkippedTracker:
             "simulated_exit_price", "simulated_exit_reason",
             "simulated_pct_return", "simulated_exit_dt",
         }
-        for item in data.get("skipped", []):
+        for item in rows:
             filtered = {k: v for k, v in item.items() if k in constructor_fields}
             tracker.skipped.append(SkippedSignal(**filtered))
         return tracker

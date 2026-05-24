@@ -213,29 +213,22 @@ class ExitTracker:
     def active_count(self) -> int:
         return sum(1 for t in self.tracked if not t.tracking_complete)
 
-    def save(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data = {
-            "tracked": [t.to_dict() for t in self.tracked],
-            "summary": self._build_summary(),
-        }
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    def save(self, path: Path, service: str = "us") -> None:
+        from switching import storage
+        items = [asdict(t) for t in self.tracked]
+        storage.save_tracker(path, service, "exit", items)
 
     @classmethod
-    def load(cls, path: Path) -> ExitTracker:
-        if not path.exists():
-            return cls()
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return cls()
+    def load(cls, path: Path, service: str = "us") -> ExitTracker:
+        from switching import storage
+        rows = storage.load_tracker(path, service, "exit")
         tracker = cls()
-        for item in data.get("tracked", []):
-            constructor_fields = {
-                "ticker", "detector", "entry_price", "exit_price",
-                "exit_dt", "exit_reason", "pct_return", "headline",
-                "peak_price", "snapshots", "tracking_complete",
-            }
+        constructor_fields = {
+            "ticker", "detector", "entry_price", "exit_price",
+            "exit_dt", "exit_reason", "pct_return", "headline",
+            "peak_price", "snapshots", "tracking_complete",
+        }
+        for item in rows:
             filtered = {k: v for k, v in item.items() if k in constructor_fields}
             tracker.tracked.append(TrackedExit(**filtered))
         return tracker

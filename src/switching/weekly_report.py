@@ -43,16 +43,6 @@ _STOP_LOSS_CONCERN_PCT = 0.40  # if >40% of trades hit stop-loss, something's wr
 # ---------------------------------------------------------------------------
 
 
-def _load_json(path: Path) -> dict | None:
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        log.warning("weekly_report: failed to load %s: %s", path, exc)
-        return None
-
-
 def _week_start() -> datetime:
     """Return the most recent Saturday 00:00 UTC (the start of the reporting week)."""
     now = datetime.now(tz=timezone.utc)
@@ -361,16 +351,32 @@ def generate_report(state_dir: Path) -> tuple[list[str], dict]:
     week_start = _week_start()
     week_label = week_start.strftime("%d %b %Y")
 
-    # Load all state files
-    paper_data = _load_json(state_dir / "paper_portfolio.json") or {}
-    t212_data  = _load_json(state_dir / "t212_portfolio.json") or {}
-    uk_data    = _load_json(state_dir / "uk_portfolio.json") or {}
-    skipped_data = _load_json(state_dir / "skipped_signals.json") or {"signals": []}
+    # Load all state from SQLite (per service), shaped as dicts so the rest of
+    # this function is unchanged. Reading via Portfolio.load keeps US/UK/T212
+    # cleanly separated and never reads the now-frozen legacy JSON backups.
+    from dataclasses import asdict
+    from switching.paper_trader import Portfolio
+    from switching.skipped_tracker import SkippedTracker
 
-    paper_trades_all: list[dict] = paper_data.get("trades", [])
-    t212_trades_all: list[dict]  = t212_data.get("trades", [])
-    uk_trades_all: list[dict]    = uk_data.get("trades", [])
-    skipped_signals: list[dict]  = skipped_data.get("signals", [])
+    def _pf(filename: str) -> dict:
+        p = Portfolio.load(state_dir / filename)
+        return {
+            "cash": p.cash,
+            "positions": [asdict(x) for x in p.positions],
+            "trades": [asdict(t) for t in p.trades],
+        }
+
+    paper_data = _pf("paper_portfolio.json")
+    t212_data  = _pf("t212_portfolio.json")
+    uk_data    = _pf("uk_portfolio.json")
+    skipped_signals: list[dict] = [
+        s.to_dict()
+        for s in SkippedTracker.load(state_dir / "skipped_signals.json", "us").skipped
+    ]
+
+    paper_trades_all: list[dict] = paper_data["trades"]
+    t212_trades_all: list[dict]  = t212_data["trades"]
+    uk_trades_all: list[dict]    = uk_data["trades"]
 
     # Split into this-week vs historical
     def _this_week(trades: list[dict]) -> list[dict]:

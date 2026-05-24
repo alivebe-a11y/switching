@@ -93,8 +93,8 @@ class Portfolio:
         return self.cash + sum(p.cost_basis for p in self.positions)
 
     def save(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data = {
+        from switching import storage
+        state = {
             "cash": self.cash,
             "positions": [asdict(p) for p in self.positions],
             "trades": [asdict(t) for t in self.trades],
@@ -108,26 +108,27 @@ class Portfolio:
             "last_weekly_report_dt": self.last_weekly_report_dt,
             "recently_sold": self.recently_sold,
         }
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        storage.save_portfolio_state(path, state)
 
     @classmethod
     def load(cls, path: Path) -> Portfolio:
-        if not path.exists():
+        from switching import storage
+        state = storage.load_portfolio_state(path)
+        if state is None:
             return cls()
-        data = json.loads(path.read_text(encoding="utf-8"))
         return cls(
-            cash=data["cash"],
-            positions=[Position(**p) for p in data.get("positions", [])],
-            trades=[ClosedTrade(**t) for t in data.get("trades", [])],
-            seen_signals=data.get("seen_signals", []),
-            last_signals=data.get("last_signals", []),
-            last_scan_dt=data.get("last_scan_dt", ""),
-            max_position_pct=data.get("max_position_pct", 0.20),
-            max_positions=data.get("max_positions", 5),
-            cached_prices=data.get("cached_prices", {}),
-            last_review_sent_dt=data.get("last_review_sent_dt", ""),
-            last_weekly_report_dt=data.get("last_weekly_report_dt", ""),
-            recently_sold=data.get("recently_sold", {}),
+            cash=state["cash"],
+            positions=[Position(**p) for p in state.get("positions", [])],
+            trades=[ClosedTrade(**t) for t in state.get("trades", [])],
+            seen_signals=state.get("seen_signals", []),
+            last_signals=state.get("last_signals", []),
+            last_scan_dt=state.get("last_scan_dt", ""),
+            max_position_pct=state.get("max_position_pct", 0.20),
+            max_positions=state.get("max_positions", 5),
+            cached_prices=state.get("cached_prices", {}),
+            last_review_sent_dt=state.get("last_review_sent_dt", ""),
+            last_weekly_report_dt=state.get("last_weekly_report_dt", ""),
+            recently_sold=state.get("recently_sold", {}),
         )
 
 
@@ -215,6 +216,31 @@ def _prune_recently_sold(recently_sold: dict[str, str], now: datetime) -> None:
     ]
     for sym in stale:
         del recently_sold[sym]
+
+
+def _record_t212_skip(skipped_tracker, sig, reason: str, base_stop: float, price: float | None = None) -> None:
+    """Record a skipped T212 signal for would-have-been P&L analysis.
+
+    Mirrors the internal paper trader's skipped-signal tracking so T212's
+    opportunity cost (max-positions / low-cash skips) is measured too.
+    """
+    if price is None:
+        price = get_current_price(sig.ticker)
+    if not price or price <= 0:
+        return
+    profile = _exit_profile(sig.detector, price)
+    skipped_tracker.add(
+        ticker=sig.ticker,
+        detector=sig.detector,
+        severity=sig.severity,
+        headline=sig.headline,
+        skip_reason=reason,
+        price=price,
+        hold_days=profile["hold_days"],
+        first_green=profile.get("first_green", True),
+        first_green_pct=profile.get("first_green_pct", 0.0),
+        stop_loss_pct=_tiered_stop_loss(base_stop, price) + profile.get("stop_loss_extra", 0.0),
+    )
 
 
 def _normalise_price(price: float, market: str) -> float:
@@ -571,7 +597,8 @@ def _poll_peak_positions(
             )
             exit_tracker.add_trade(t)
         if closed:
-            exit_tracker.save(tracker_path)
+            from switching import storage
+            exit_tracker.save(tracker_path, storage.service_from_path(state_path))
             portfolio.save(state_path)
 
 
@@ -638,16 +665,18 @@ def run_loop(
     portfolio.max_positions = max_positions
 
     from rich.console import Console
-    from switching import notifications
+    from switching import notifications, storage
     from switching.exit_tracker import ExitTracker
     from switching.skipped_tracker import SkippedTracker
     console = Console()
 
+    service = storage.service_from_path(state_path)
+
     tracker_path = state_path.parent / "exit_tracker.json"
-    exit_tracker = ExitTracker.load(tracker_path)
+    exit_tracker = ExitTracker.load(tracker_path, service)
 
     skipped_path = state_path.parent / "skipped_signals.json"
-    skipped_tracker = SkippedTracker.load(skipped_path)
+    skipped_tracker = SkippedTracker.load(skipped_path, service)
 
     if notifications.is_configured():
         notifications.notify_startup(
@@ -702,12 +731,12 @@ def run_loop(
         tracked = exit_tracker.update(get_intraday_data)
         if tracked:
             console.print(f"  [dim]Post-exit tracker: updated {tracked} price(s), {exit_tracker.active_count} active[/dim]")
-        exit_tracker.save(tracker_path)
+        exit_tracker.save(tracker_path, service)
 
         skipped_updated = skipped_tracker.update(get_intraday_data)
         if skipped_updated:
             console.print(f"  [dim]Skipped-signal tracker: updated {skipped_updated} price(s), {skipped_tracker.active_count} active, {skipped_tracker.completed_count} completed[/dim]")
-        skipped_tracker.save(skipped_path)
+        skipped_tracker.save(skipped_path, service)
 
         since = now - timedelta(hours=24)
         feeds_override = None
@@ -721,9 +750,9 @@ def run_loop(
 
         memory_path = state_path.parent / "trade_memory.json"
         if portfolio.trades:
-            memory = update_memory(portfolio.trades, memory_path)
+            memory = update_memory(portfolio.trades, memory_path, service)
         else:
-            memory = load_memory(memory_path)
+            memory = load_memory(memory_path, service)
 
         if signals:
             signals = score_signals(signals, memory=memory)
@@ -1111,6 +1140,20 @@ def run_loop_t212(
     portfolio.max_position_pct = max_position_pct
     portfolio.max_positions = max_positions
 
+    # Full analytics, same as the paper traders — service-scoped to 't212' so
+    # this data is separate from US/UK but collected identically. This gives
+    # post-exit / skipped / memory analysis on REAL broker fills.
+    from switching import storage
+    from switching.exit_tracker import ExitTracker
+    from switching.skipped_tracker import SkippedTracker
+    from switching.trade_memory import update_memory
+    service = storage.service_from_path(state_path)            # "t212"
+    tracker_path = state_path.parent / "exit_tracker.json"
+    skipped_path = state_path.parent / "skipped_signals.json"
+    memory_path = state_path.parent / "trade_memory.json"
+    exit_tracker = ExitTracker.load(tracker_path, service)
+    skipped_tracker = SkippedTracker.load(skipped_path, service)
+
     # Exits are polled every _T212_EXIT_POLL_SECONDS (default 60s) for tight
     # price tracking and fast stop-loss / first-green execution.  New-signal
     # scanning runs only every scan_interval_minutes to avoid hammering feeds.
@@ -1249,7 +1292,7 @@ def run_loop_t212(
                         f"  [{color}]SELL {sym} ({reason}): "
                         f"{ret*100:+.1f}% ${pnl:+.2f} — order {order.status}[/{color}]"
                     )
-                    portfolio.trades.append(ClosedTrade(
+                    closed = ClosedTrade(
                         ticker=sym,
                         detector=tracker.detector if tracker else "unknown",
                         entry_price=tp.avg_entry_price,
@@ -1262,7 +1305,9 @@ def run_loop_t212(
                         exit_reason=reason,
                         headline=tracker.headline if tracker else "",
                         severity=tracker.severity if tracker else 0.0,
-                    ))
+                    )
+                    portfolio.trades.append(closed)
+                    exit_tracker.add_trade(closed)   # begin 20-day post-exit tracking
                     portfolio.positions = [p for p in portfolio.positions if p.ticker != sym]
                     # Mark as recently sold so the next poll doesn't re-adopt the
                     # still-settling position and re-sell it (double-sell guard),
@@ -1320,6 +1365,7 @@ def run_loop_t212(
 
             if max_positions > 0 and active_count >= max_positions:
                 console.print(f"  [dim]SKIP {sig.ticker}: max positions ({max_positions})[/dim]")
+                _record_t212_skip(skipped_tracker, sig, "max_positions", stop_loss)
                 continue
 
             # Get price to calculate quantity
@@ -1332,6 +1378,7 @@ def run_loop_t212(
             alloc = min(alloc, acct.free)
             if alloc < 1.0:
                 console.print(f"  [yellow]SKIP {sig.ticker}: insufficient buying power (${acct.free:.2f})[/yellow]")
+                _record_t212_skip(skipped_tracker, sig, "insufficient_cash", stop_loss, price=price)
                 continue
 
             quantity = alloc / price
@@ -1380,6 +1427,23 @@ def run_loop_t212(
                     first_green=profile.get("first_green", True),
                     first_green_pct=profile.get("first_green_pct", 0.0),
                 ))
+
+        # ----------------------------------------------------------------
+        # Analytics — post-exit tracking, skipped-signal sim, trade memory
+        # (service-scoped to 't212'; daily-deduped internally so cheap at 60s)
+        # ----------------------------------------------------------------
+        tracked = exit_tracker.update(get_intraday_data)
+        if tracked:
+            console.print(f"  [dim]Post-exit tracker: updated {tracked} price(s), {exit_tracker.active_count} active[/dim]")
+        exit_tracker.save(tracker_path, service)
+
+        skipped_updated = skipped_tracker.update(get_intraday_data)
+        if skipped_updated:
+            console.print(f"  [dim]Skipped tracker: updated {skipped_updated}, {skipped_tracker.completed_count} completed[/dim]")
+        skipped_tracker.save(skipped_path, service)
+
+        if portfolio.trades:
+            update_memory(portfolio.trades, memory_path, service)
 
         # ----------------------------------------------------------------
         # Summary

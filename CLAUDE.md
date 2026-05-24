@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `main`
-- **559 tests**, run with: `pytest tests/`
+- **571 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path (Dockge UI): `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -52,6 +52,9 @@ curl -sL "https://raw.githubusercontent.com/alivebe-a11y/switching/main/docker-c
 - ⚠️ The old scp-based `deploy.ps1` (synced source + built `switching:local`) is retired —
   it diverged from GitHub and only restarted 2 services. The new `deploy.ps1` is a thin
   GitHub trigger so both paths build the same image.
+- ℹ️ First deploy on the SQLite build auto-migrates the JSON state on startup (no manual
+  step). To confirm nothing was lost, exec into any service and run
+  `python scripts/migrate_to_sqlite.py /app/.cache` — expect "VALIDATION PASSED".
 
 ## Services (docker-compose.yml)
 | Service | Command | Notes |
@@ -72,6 +75,30 @@ curl -sL "https://raw.githubusercontent.com/alivebe-a11y/switching/main/docker-c
 Seed CSVs MUST go in `src/switching/data/historical_events/` (NOT top-level `data/`).
 The `_find_data_root()` in `sources/historical.py` resolves relative to the package.
 The top-level `data/` directory is a mirror/legacy — always put seeds in both.
+
+## Storage: SQLite (`switching.db`), service-scoped
+All runtime state + analytics live in ONE SQLite DB (`<cache>/switching.db`, WAL mode),
+NOT in per-service JSON files. Every row carries a `service` column (`us` / `uk` / `t212`),
+so the three services share one file without colliding and can be compared with one query.
+- `src/switching/storage.py` is the engine. Tables: `closed_trades` (append-only),
+  `positions`, `exit_tracks`, `skipped_signals` (each relational + `service`), and
+  `service_state` (key/value per service for cash/scalars + JSON blobs: seen_signals,
+  last_signals, cached_prices, recently_sold, trade_memory). OHLC snapshots ride as a
+  JSON column on their row.
+- `Portfolio`, `ExitTracker`, `SkippedTracker`, `trade_memory` keep their dataclass APIs;
+  only persistence changed. Trackers/memory take an explicit `service` arg (default `"us"`);
+  `Portfolio` derives service from the state-file name via `storage.service_from_path`.
+- **Auto-migration**: first time a service loads with an empty DB, it imports the legacy
+  JSON sitting next to it — zero data-loss, no manual step. The old SHARED trackers
+  (`exit_tracker.json` / `skipped_signals.json` / `trade_memory.json`) import only for
+  `us` (who owned them); `uk`/`t212` start clean.
+- **Validate the migration**: `python scripts/migrate_to_sqlite.py [CACHE_DIR]` — imports
+  (idempotent) and prints a json-vs-db count table; exit 0 = no rows lost.
+- Why: the old JSON files were SHARED between US and UK (same filenames in one dir),
+  so the two services clobbered each other's exit/skipped/memory data, and T212 collected
+  none of it. SQLite + service column fixes all three, and WAL gives atomic, concurrent-safe
+  writes (no more half-written-file reads by the dashboard).
+- Legacy JSON files are kept as read-only backups (gitignored, never re-read after migration).
 
 ## Detectors (16 registered)
 | Detector | Source | Exit Profile | Markets |
@@ -168,11 +195,13 @@ so the digest is up-to-date. With unlimited positions this prevents Telegram spa
 per scan cycle would otherwise produce 10-20 separate messages).
 
 ## Dashboard Data Flow
-The Flask dashboard (`src/switching/web.py`) reads everything from the portfolio JSON
-state file — it never calls yfinance. The paper trader's scan loop populates
-`portfolio.cached_prices[ticker] = current_price` for every held position each cycle, then
-saves. Dashboard refreshes show prices stamped with `last_scan_dt`. Stale by at most one
-scan interval (default 10 min). Stale tickers (no longer held) are pruned each cycle.
+The Flask dashboard (`src/switching/web.py`) reads everything from `switching.db` (via the
+same `Portfolio`/`ExitTracker`/`SkippedTracker` loaders, service-scoped) — it never calls
+yfinance. The paper trader's scan loop populates `portfolio.cached_prices[ticker]` for every
+held position each cycle, then saves. Dashboard refreshes show prices stamped with
+`last_scan_dt`. Stale by at most one scan interval (default 10 min). Stale tickers (no longer
+held) are pruned each cycle. The `/api/exit-tracker`, `/api/review`, `/api/skipped-signals`
+endpoints are US-scoped; `/api/uk` and `/api/t212` read their own services.
 
 ## Known Issues / Gotchas
 - yfinance blocked in CI/sandbox — backtests show 0 trades but events load fine

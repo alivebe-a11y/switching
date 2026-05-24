@@ -276,8 +276,9 @@ def create_app(state_path: Path | None = None) -> Flask:
 
     @app.route("/api/exit-tracker")
     def api_exit_tracker():
+        from switching import storage
         tracker_path = _STATE_PATH.parent / "exit_tracker.json"
-        tracker = ExitTracker.load(tracker_path)
+        tracker = ExitTracker.load(tracker_path, storage.service_from_path(_STATE_PATH))
         completed = [t for t in tracker.tracked if t.tracking_complete]
         active = [t for t in tracker.tracked if not t.tracking_complete]
         return jsonify({
@@ -292,9 +293,10 @@ def create_app(state_path: Path | None = None) -> Flask:
     def api_review():
         from switching.paper_trader import Portfolio, _build_review_insights
         from switching.exit_tracker import ExitTracker
+        from switching import storage
         p = Portfolio.load(_STATE_PATH)
         tracker_path = _STATE_PATH.parent / "exit_tracker.json"
-        exit_tracker = ExitTracker.load(tracker_path)
+        exit_tracker = ExitTracker.load(tracker_path, storage.service_from_path(_STATE_PATH))
         insights = _build_review_insights(p, exit_tracker)
         by_detector: dict[str, dict] = {}
         for t in p.trades:
@@ -522,8 +524,9 @@ def create_app(state_path: Path | None = None) -> Flask:
 
     @app.route("/api/skipped-signals")
     def api_skipped_signals():
+        from switching import storage
         path = _STATE_PATH.parent / "skipped_signals.json"
-        tracker = SkippedTracker.load(path)
+        tracker = SkippedTracker.load(path, storage.service_from_path(_STATE_PATH))
         recent_active = sorted(
             (s for s in tracker.skipped if not s.tracking_complete),
             key=lambda s: s.skipped_at, reverse=True,

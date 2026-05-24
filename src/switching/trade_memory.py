@@ -142,17 +142,16 @@ def build_memory(trades: Sequence[Any]) -> dict[str, Any]:
     }
 
 
-def update_memory(trades: Sequence[Any], path: Path) -> dict[str, Any]:
-    """Build memory from trades and write to disk."""
+def update_memory(trades: Sequence[Any], path: Path, service: str = "us") -> dict[str, Any]:
+    """Build memory from trades and persist it (per service) to SQLite."""
+    from switching import storage
     memory = build_memory(trades)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(memory, indent=2), encoding="utf-8")
+    storage.save_trade_memory(path, service, memory)
     log.info("trade memory updated: %d trades, %d patterns", memory["total_trades"], len(memory.get("patterns", [])))
     return memory
 
 
-def load_memory(path: Path) -> dict[str, Any]:
-    """Load existing memory file, or return empty dict."""
-    if not path.exists():
-        return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+def load_memory(path: Path, service: str = "us") -> dict[str, Any]:
+    """Load existing memory (per service) from SQLite, or return empty dict."""
+    from switching import storage
+    return storage.load_trade_memory(path, service)

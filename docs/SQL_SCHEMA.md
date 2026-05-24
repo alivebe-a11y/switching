@@ -1,20 +1,55 @@
-# Future SQL Schema Mapping
+# SQL Schema (IMPLEMENTED)
 
-Forward-looking schema design. The system currently persists state in JSON
-files (`paper_portfolio.json`, `exit_tracker.json`, `trade_memory.json`) which
-works fine at the current scale (<500 trades). When trade volume grows or we
-need cross-detector queries, we migrate to SQLite. This doc maps the JSON
-shape onto target tables so the migration is mechanical, not architectural.
+**Status: migrated to SQLite (`switching.db`).** The trigger fired — concurrent
+writers appeared: the US and UK paper-trade services shared the same JSON files
+(`exit_tracker.json` / `skipped_signals.json` / `trade_memory.json`) and clobbered
+each other, while T212 collected none of that analytics. The fix was a single
+SQLite database with a `service` column (`us` / `uk` / `t212`).
 
-## Migration trigger
+Implementation lives in `src/switching/storage.py`. The dataclasses
+(`Portfolio`, `ExitTracker`, `SkippedTracker`, trade_memory) kept their APIs;
+only persistence moved to SQLite. See `## Implemented schema` below for what was
+actually built (it differs from the original forward-plan in two ways: a
+`service` column on every table, and a pragmatic hybrid where bounded nested
+state — OHLC snapshots, seen_signals, cached_prices, trade_memory — is stored as
+JSON rather than fully normalised).
+
+## Original migration trigger (now met)
 
 Migrate when **any** of:
 - Closed trades exceed 1,000
 - A query needs joins across detectors / time windows / price tiers
-- Concurrent writers appear (e.g. live trader + paper trader on shared state)
+- Concurrent writers appear (e.g. live trader + paper trader on shared state) ← **this fired**
 - JSON load time exceeds 500ms on the dashboard
 
-Until then, JSON wins on simplicity, hand-editability, and `git diff`-ability.
+## Implemented schema (`src/switching/storage.py`)
+
+One DB at `<cache>/switching.db`, WAL mode, `busy_timeout=30s`. Every table has a
+`service TEXT` column. Relational tables for the queryable entities:
+
+- **`closed_trades`** — append-only history (the analytics core). Indexed on
+  `(service)`, `(service, detector)`, `(service, exit_dt)`.
+- **`positions`** — open positions, replaced per service each save. `snapshots`
+  is a JSON column.
+- **`exit_tracks`** — post-exit 20-day tracking. `snapshots` JSON column.
+- **`skipped_signals`** — would-have-been P&L sims. `snapshots` JSON column.
+- **`service_state`** — `(service, key)` key/value for cash + scalars and bounded
+  JSON blobs (`seen_signals`, `last_signals`, `cached_prices`, `recently_sold`,
+  `trade_memory`).
+
+**Deviation from the original plan**: snapshots are NOT a separate
+`exit_tracker_snapshots` table — they ride as a JSON column on their parent row.
+The Python summary code already aggregates snapshots in-memory, so normalising
+them bought nothing but migration risk. Revisit if we ever need SQL across
+individual snapshot days.
+
+**Auto-migration**: on first load with an empty DB, each service imports the
+legacy JSON next to it. Shared legacy trackers import only for `us`.
+`scripts/migrate_to_sqlite.py` does the same explicitly and validates counts.
+
+---
+
+## Original forward-plan tables (for reference)
 
 ## Target: SQLite (single file at `/app/.cache/switching.db`)
 
@@ -147,21 +182,19 @@ Singleton key-value store. Replaces top-level fields in
 | `max_positions` | `max_positions` |
 | `seed_cash` | (CLI arg, persisted on first run) |
 
-## Migration plan (when triggered)
+## Migration plan (DONE)
 
-1. Add `src/switching/storage.py` with a `Storage` ABC and two impls:
-   `JsonStorage` (current) and `SqliteStorage` (new).
-2. `Portfolio.load()` / `Portfolio.save()` becomes a thin wrapper that
-   delegates. Behaviour identical.
-3. Write a one-shot migration script `scripts/migrate_to_sqlite.py` that
-   reads the JSON files and inserts into the SQLite tables.
-4. Flip a config flag to switch storage backends. Keep JSON read-path for
-   one release as a safety net.
-5. Drop JSON support after a week of clean SQLite operation.
+1. ✅ `src/switching/storage.py` added (SQLite engine; dict-based API so the
+   dataclasses stay decoupled — simpler than the ABC originally sketched).
+2. ✅ `Portfolio.load()/save()` (and the trackers + trade_memory) delegate to it.
+   Behaviour identical; trackers/memory gained an explicit `service` arg.
+3. ✅ `scripts/migrate_to_sqlite.py` imports the JSON and validates counts.
+4. ✅ Auto-migration on first load is the safety net (no flag/flag-flip needed).
+5. Legacy JSON kept as read-only backups (gitignored), never re-read post-migration.
 
 ## What this is NOT
 
-- Not a justification to migrate now. JSON is fine.
+- ~~Not a justification to migrate now. JSON is fine.~~ (Migrated — see top.)
 - Not a Postgres-vs-SQLite debate. SQLite first; revisit if needed.
 - Not a normalised academic schema. `headline` is duplicated across
   `signals`, `positions`, `closed_trades` on purpose — it's

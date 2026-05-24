@@ -9,11 +9,22 @@ venv/
 .ruff_cache/
 dist/
 build/
-*.sqlite
 .cache/
+data/cache/
 .env
 .env.*
 *.key
 *.pem
+# Runtime state — SQLite store (+ WAL/SHM sidecars) and legacy JSON backups
+*.sqlite
+*.db
+*.db-wal
+*.db-shm
+switching.db
 paper_portfolio.json
+uk_portfolio.json
+t212_portfolio.json
+alpaca_state.json
+exit_tracker.json
+skipped_signals.json
 trade_memory.json
