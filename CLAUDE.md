@@ -22,7 +22,13 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
   on the new image — a running container keeps its old image until recreated.
 - Active services that run the shared code: `paper-trade`, `paper-trade-uk`, `trade-t212`
   (all use `paper_trader.py`) and `dashboard` (uses `web.py` + `weekly_report.py`).
-- Deploy command (rebuilds image once, recreates all four):
+- **Deploy (easiest)** — from the Dockge stack dir, one command does everything
+  (fetch compose, prune cache, build once, recreate all four, verify):
+  ```bash
+  curl -sL https://raw.githubusercontent.com/alivebe-a11y/switching/main/scripts/deploy.sh | bash
+  ```
+  Deploy specific services only: `... | bash -s -- dashboard trade-t212`
+- **Deploy (manual one-liner)** — equivalent, if you don't want to use the script:
   ```bash
   curl -sL "https://raw.githubusercontent.com/alivebe-a11y/switching/main/docker-compose.yml" -o compose.yaml && docker builder prune -af && docker compose build paper-trade && docker compose up -d paper-trade paper-trade-uk trade-t212 dashboard
   ```
@@ -292,7 +298,16 @@ or disable. Update as live trades accumulate.
 ## Runbook
 
 ### Deploy new code to TrueNAS
-Build the shared image once, then recreate every active service so none run stale code:
+From the Dockge stack dir, run the deploy script — it fetches compose.yaml, prunes the
+build cache, builds the shared image once, recreates all four active services, and prints
+a verification summary:
+```bash
+curl -sL https://raw.githubusercontent.com/alivebe-a11y/switching/main/scripts/deploy.sh | bash
+```
+Deploy a subset: `curl -sL .../scripts/deploy.sh | bash -s -- dashboard`
+Deploy from a branch: `BRANCH=my-branch curl -sL .../scripts/deploy.sh | bash`
+
+Manual equivalent (if not using the script):
 ```bash
 curl -sL "https://raw.githubusercontent.com/alivebe-a11y/switching/main/docker-compose.yml" -o compose.yaml && docker builder prune -af && docker compose build paper-trade && docker compose up -d paper-trade paper-trade-uk trade-t212 dashboard
 ```
