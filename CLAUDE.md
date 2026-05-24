@@ -17,12 +17,18 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 - Stack path: `/Pool_1/Configs/dockge2/Stacks/stocks`
 - **Dockge uses `compose.yaml`** (NOT `docker-compose.yml`)
 - Docker build context pulls directly from GitHub — no local git clone on TrueNAS
-- Deploy command:
+- **All services share ONE image tag** (`ghcr.io/alivebe-a11y/switching:latest`) and the
+  same build context. So you BUILD once, but must `up -d` EVERY active service to put it
+  on the new image — a running container keeps its old image until recreated.
+- Active services that run the shared code: `paper-trade`, `paper-trade-uk`, `trade-t212`
+  (all use `paper_trader.py`) and `dashboard` (uses `web.py` + `weekly_report.py`).
+- Deploy command (rebuilds image once, recreates all four):
   ```bash
-  curl -sL "https://raw.githubusercontent.com/alivebe-a11y/switching/main/docker-compose.yml" -o compose.yaml && docker builder prune -af && docker compose build paper-trade && docker compose up paper-trade -d
+  curl -sL "https://raw.githubusercontent.com/alivebe-a11y/switching/main/docker-compose.yml" -o compose.yaml && docker builder prune -af && docker compose build paper-trade && docker compose up -d paper-trade paper-trade-uk trade-t212 dashboard
   ```
-- For dashboard too: `docker compose up dashboard -d`
 - Dashboard port: 8080
+- ⚠️ Do NOT deploy only `paper-trade` when a change touches `paper_trader.py` — that file
+  is shared by `paper-trade-uk` and `trade-t212` too, and they'd run stale code.
 
 ## Services (docker-compose.yml)
 | Service | Command | Notes |
@@ -286,11 +292,22 @@ or disable. Update as live trades accumulate.
 ## Runbook
 
 ### Deploy new code to TrueNAS
+Build the shared image once, then recreate every active service so none run stale code:
 ```bash
-curl -sL "https://raw.githubusercontent.com/alivebe-a11y/switching/main/docker-compose.yml" -o compose.yaml && docker builder prune -af && docker compose build paper-trade && docker compose up paper-trade -d
+curl -sL "https://raw.githubusercontent.com/alivebe-a11y/switching/main/docker-compose.yml" -o compose.yaml && docker builder prune -af && docker compose build paper-trade && docker compose up -d paper-trade paper-trade-uk trade-t212 dashboard
 ```
-For dashboard: `docker compose up dashboard -d`
-For both: add `dashboard` to the up command.
+Why all four: `paper_trader.py` is shared by `paper-trade`, `paper-trade-uk`, and
+`trade-t212`; `dashboard` runs `web.py` + `weekly_report.py`. Building only `paper-trade`
+and restarting only it leaves the other three on the old image.
+
+**Verify after deploy** — confirm every service is on the new image and freshly started:
+```bash
+docker compose ps                              # all Up, recent "Created" times
+docker compose images                          # all show the SAME image ID
+docker compose logs trade-t212 --tail 20       # expect "Poll at ..." + 60s exit polling
+docker compose logs paper-trade-uk --tail 20   # expect LSE scan activity
+```
+If a service still shows an old "Created" time, it wasn't recreated — re-run its `up -d`.
 
 ### Rollback a broken deploy
 ```bash
