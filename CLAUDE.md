@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `main`
-- **497 tests**, run with: `pytest tests/`
+- **529 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path: `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -92,8 +92,9 @@ src/switching/
 ├── trade_memory.py     — Per-detector/per-price-tier stats from closed trades
 ├── exit_tracker.py     — Post-exit price tracker (20 days) for detector refinement
 ├── skipped_tracker.py  — Tracks signals skipped due to max-positions / insufficient cash; runs same exit logic for "would-have-been" P&L
+├── weekly_report.py    — Saturday weekly report: detector rankings, T212 vs paper, suggestions, Telegram delivery
 ├── ai_filter.py        — Claude Haiku scoring (0-1), log-only mode
-├── notifications.py    — Telegram push (buys batched 2h, sells/stops immediate, daily summary at close)
+├── notifications.py    — Telegram push (buys batched 2h, sells/stops immediate, daily summary at close, weekly report Saturdays)
 ├── detectors/          — All detector modules (one per file)
 │   └── base.py         — Detector ABC
 ├── sources/
@@ -590,4 +591,7 @@ rate on US dividends (15% vs 30% default withholding). Do this at account openin
 - [x] stock_split detector — forward split announcements, +1.5% first-green, 4-day hold
 - [x] crypto_treasury detector — Bitcoin treasury adoption (MicroStrategy-style), +3% first-green, 3-day hold
 - [x] Analytics tab in dashboard — Exit Profile Tuning, Signal Severity correlation, Peak Trailing summary
+- [x] Weekly Saturday report (`weekly_report.py`) — auto-fires every Saturday at 09:00 UTC; covers detector rankings, T212 vs paper slippage, skipped-signal opportunity cost, data-driven improvement suggestions. Manual trigger: `switching weekly-report`
+- [x] Signal dedup bug fixed — `_signal_key` now URL-based (not date-based), so undated RSS articles can't re-fire daily
+- [x] T212 orphan position fix — positions in T212 with no local tracker get a synthetic record on reconciliation (no longer auto-sold on first profitable cycle)
 - [x] `severity` stored on `ClosedTrade` — enables signal quality ↔ outcome correlation analysis

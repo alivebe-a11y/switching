@@ -82,6 +82,7 @@ class Portfolio:
     max_positions: int = 5
     cached_prices: dict[str, float] = field(default_factory=dict)
     last_review_sent_dt: str = ""
+    last_weekly_report_dt: str = ""   # ISO timestamp of last Saturday report
 
     @property
     def total_value(self) -> float:
@@ -100,6 +101,7 @@ class Portfolio:
             "max_positions": self.max_positions,
             "cached_prices": self.cached_prices,
             "last_review_sent_dt": self.last_review_sent_dt,
+            "last_weekly_report_dt": self.last_weekly_report_dt,
         }
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -119,6 +121,7 @@ class Portfolio:
             max_positions=data.get("max_positions", 5),
             cached_prices=data.get("cached_prices", {}),
             last_review_sent_dt=data.get("last_review_sent_dt", ""),
+            last_weekly_report_dt=data.get("last_weekly_report_dt", ""),
         )
 
 
@@ -812,6 +815,27 @@ def run_loop(
                 total_wins=wins,
                 total_pnl=total_pnl,
             )
+
+        # Weekly report — every Saturday morning (UTC) after market open
+        # Fires once per week; the last-sent timestamp prevents duplicates.
+        if now.weekday() == 5 and now.hour >= 9:   # Saturday, 09:00+ UTC
+            last_wr = portfolio.last_weekly_report_dt
+            already_sent_this_week = False
+            if last_wr:
+                try:
+                    last_wr_dt = datetime.fromisoformat(last_wr)
+                    already_sent_this_week = (now - last_wr_dt).days < 6
+                except ValueError:
+                    pass
+            if not already_sent_this_week:
+                from switching.weekly_report import generate_and_send
+                console.print("  [cyan]Generating weekly report...[/cyan]")
+                ok = generate_and_send(state_path.parent)
+                if ok:
+                    portfolio.last_weekly_report_dt = now.isoformat()
+                    console.print("  [cyan]Weekly report sent via Telegram.[/cyan]")
+                else:
+                    console.print("  [yellow]Weekly report send failed — will retry next cycle.[/yellow]")
 
         portfolio.save(state_path)
 

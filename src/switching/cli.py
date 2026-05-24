@@ -705,6 +705,41 @@ def options_compare(
     )
 
 
+@app.command("weekly-report")
+def weekly_report_cmd(
+    state_file: Path = typer.Option(
+        "/app/.cache/paper_portfolio.json", "--state",
+        help="Path to portfolio state file (used to locate the .cache directory).",
+    ),
+    log_level: str = typer.Option("WARNING", help="Python log level."),
+) -> None:
+    """Generate and send the weekly performance report via Telegram immediately.
+
+    Reads paper_portfolio.json, t212_portfolio.json, uk_portfolio.json and
+    skipped_signals.json from the same directory as --state. Useful for
+    testing the report or triggering it manually outside of Saturday.
+    """
+    logging.basicConfig(level=log_level.upper())
+    from switching.weekly_report import generate_and_send, generate_report
+    state_dir = state_file.parent
+    console.print(f"[bold]Generating weekly report from {state_dir}...[/bold]")
+
+    messages = generate_report(state_dir)
+    for i, msg in enumerate(messages, 1):
+        console.print(f"\n[dim]── Message {i}/{len(messages)} ──[/dim]")
+        # Strip HTML tags for console display
+        import re
+        plain = re.sub(r"<[^>]+>", "", msg)
+        console.print(plain)
+
+    ok = generate_and_send(state_dir)
+    if ok:
+        console.print("\n[green]✓ Report sent via Telegram.[/green]")
+    else:
+        console.print("\n[yellow]⚠ Telegram send failed (check TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID).[/yellow]")
+        console.print("[dim]Report printed above — copy-paste if needed.[/dim]")
+
+
 @app.command("web")
 def web_cmd(
     host: str = typer.Option("0.0.0.0", help="Bind address."),
