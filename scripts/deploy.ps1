@@ -1,16 +1,20 @@
 #!/usr/bin/env pwsh
-# deploy.ps1 — one-click deploy from Windows.
+# deploy.ps1 - one-click deploy from Windows.
 #
 # Pushes your committed code to GitHub, then SSHes into TrueNAS and runs the
 # canonical scripts/deploy.sh there (build the shared image once, recreate ALL
 # active services, print a verification summary). Same GitHub image as a manual
-# TrueNAS deploy — no divergent local image, and no logging into the Dockge shell.
+# TrueNAS deploy - no divergent local image, and no logging into the Dockge shell.
 #
 # This is the version-controlled copy. The active launcher usually lives one
 # level up (e.g. C:\Users\...\switch\deploy.ps1); the repo-detection below works
 # from either location, so the two copies can be byte-identical.
 #
-# First-time setup (so SSH doesn't prompt for a password):
+# NOTE: keep this file pure ASCII. Windows PowerShell 5.1 reads .ps1 files as the
+# system ANSI codepage, so a UTF-8 em-dash or smart-quote will be mis-decoded and
+# break parsing. Use plain - and straight quotes only.
+#
+# First-time setup (so SSH does not prompt for a password):
 #   ssh-copy-id root@<truenas-ip>
 #   (or paste ~/.ssh/id_rsa.pub into TrueNAS UI > Credentials > SSH Keys)
 #
@@ -24,7 +28,7 @@
 param(
     [string]   $Remote    = "root@192.168.0.81",                      # <-- your TrueNAS
     [string]   $StackPath = "/mnt/Pool_1/Configs/dockge2/Stacks/stocks",
-    [string[]] $Services  = @(),        # empty = deploy.sh's default four
+    [string[]] $Services  = @(),        # empty = deploy.sh default four
     [string]   $Branch    = "main",
     [string]   $RepoDir   = "",         # auto-detected if empty
     [switch]   $SkipPush,
@@ -72,7 +76,7 @@ if ($SkipPush) {
     if ($dirty -and -not $Force) {
         Write-Host "Uncommitted changes detected:" -ForegroundColor Yellow
         git -C $RepoDir status --short
-        throw "Commit your changes first — a GitHub deploy only ships PUSHED commits. Re-run with -Force to deploy the last pushed commit anyway."
+        throw "Commit your changes first - a GitHub deploy only ships PUSHED commits. Re-run with -Force to deploy the last pushed commit anyway."
     }
     if ($dirty -and $Force) {
         Write-Host "  -Force: the uncommitted changes above will NOT ship; deploying last commit." -ForegroundColor Yellow
