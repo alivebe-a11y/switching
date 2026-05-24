@@ -11,8 +11,10 @@ import requests
 from switching.broker_trading212 import (
     T212AuthError,
     T212OrderError,
+    T212RateLimitError,
     Trading212Client,
     _from_t212_ticker,
+    _retry_after_seconds,
     _safe_float,
     _to_t212_ticker,
 )
@@ -382,3 +384,115 @@ def test_market_closed_after_hours(monkeypatch, client):
         mock_dt.now.return_value = fixed
         mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
         assert client.is_market_open() is False
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting: Retry-After parsing
+# ---------------------------------------------------------------------------
+
+
+def _resp(json_data=None, status_code=200, headers=None):
+    resp = MagicMock(spec=requests.Response)
+    resp.status_code = status_code
+    resp.json.return_value = json_data if json_data is not None else {}
+    resp.text = str(json_data)
+    resp.headers = headers if headers is not None else {}
+    resp.raise_for_status = MagicMock()
+    return resp
+
+
+def test_retry_after_numeric():
+    assert _retry_after_seconds(_resp(headers={"Retry-After": "3"})) == 3.0
+
+
+def test_retry_after_absent_returns_none():
+    assert _retry_after_seconds(_resp(headers={})) is None
+
+
+def test_retry_after_garbage_returns_none():
+    # HTTP-date form (not delta-seconds) — we don't parse it, fall back to backoff
+    assert _retry_after_seconds(_resp(headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"})) is None
+
+
+def test_retry_after_clamped_to_max():
+    assert _retry_after_seconds(_resp(headers={"Retry-After": "99999"})) == 120.0
+
+
+def test_retry_after_negative_clamped_to_zero():
+    assert _retry_after_seconds(_resp(headers={"Retry-After": "-5"})) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting: per-endpoint throttle (stagger)
+# ---------------------------------------------------------------------------
+
+
+def test_throttle_first_call_no_sleep(client):
+    with patch("switching.broker_trading212.time.sleep") as msleep:
+        client._throttle("/equity/positions")
+    msleep.assert_not_called()
+
+
+def test_throttle_staggers_same_endpoint(client):
+    # Two rapid calls to the same endpoint: the second must sleep ~min_interval (5s).
+    with patch("switching.broker_trading212.time.monotonic", side_effect=[100.0, 100.0, 105.0]), \
+         patch("switching.broker_trading212.time.sleep") as msleep:
+        client._throttle("/equity/positions")   # first — sets timestamp, no sleep
+        client._throttle("/equity/positions")   # second — must wait
+    msleep.assert_called_once()
+    waited = msleep.call_args[0][0]
+    assert 4.9 <= waited <= 5.1
+
+
+def test_throttle_per_endpoint_independent(client):
+    # Different endpoints don't block each other.
+    with patch("switching.broker_trading212.time.monotonic", side_effect=[100.0, 100.0]), \
+         patch("switching.broker_trading212.time.sleep") as msleep:
+        client._throttle("/equity/positions")
+        client._throttle("/equity/account/summary")
+    msleep.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting: 429 retry / backoff
+# ---------------------------------------------------------------------------
+
+
+def test_429_retries_then_succeeds(client):
+    r429 = _resp(status_code=429, headers={"Retry-After": "1"})
+    rok = _resp({"totalValue": 5.0}, status_code=200)
+    client._session.get.side_effect = [r429, rok]
+    with patch("switching.broker_trading212.time.sleep") as msleep:
+        data = client._get("/equity/account/summary")
+    assert data == {"totalValue": 5.0}
+    assert client._session.get.call_count == 2
+    msleep.assert_called()   # backed off at least once
+
+
+def test_429_exhausts_retries_raises(client):
+    client._session.get.return_value = _resp(status_code=429, headers={"Retry-After": "1"})
+    with patch("switching.broker_trading212.time.sleep"):
+        with pytest.raises(T212RateLimitError):
+            client._get("/equity/positions")
+    # initial attempt + _MAX_RETRIES_429 retries
+    from switching.broker_trading212 import _MAX_RETRIES_429
+    assert client._session.get.call_count == _MAX_RETRIES_429 + 1
+
+
+def test_429_uses_escalating_backoff_without_header(client):
+    """No Retry-After header → escalating default backoff (5s, 10s, ...)."""
+    client._session.get.side_effect = [
+        _resp(status_code=429),                 # no headers
+        _resp({"ok": True}, status_code=200),
+    ]
+    with patch("switching.broker_trading212.time.sleep") as msleep, \
+         patch("switching.broker_trading212.time.monotonic", return_value=0.0):
+        client._get("/equity/positions")
+    # The backoff sleep (5s) should appear among the sleep calls
+    waited_values = [c.args[0] for c in msleep.call_args_list]
+    assert any(w >= 5.0 for w in waited_values)
+
+
+def test_rate_limit_error_is_order_error_subclass():
+    """Existing 'except T212OrderError' handlers must still catch rate-limit errors."""
+    assert issubclass(T212RateLimitError, T212OrderError)

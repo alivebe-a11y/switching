@@ -1292,6 +1292,7 @@ def run_loop_t212(
 
         held_symbols = set(t212_map.keys()) | {p.ticker for p in portfolio.positions}
         active_count = len(t212_map)
+        pending_buys: list[tuple] = []   # (signal, fallback_price, fallback_qty)
 
         if new_signals:
             console.print(f"  Found {len(new_signals)} new signal(s)")
@@ -1342,21 +1343,35 @@ def run_loop_t212(
                     f"— order {order.status} "
                     f"— {sig.detector}: {sig.headline[:55]}[/cyan]"
                 )
-                # Fetch actual T212 fill price after order
-                actual_price = price
-                t212_pos = client.get_position(sig.ticker)
-                if t212_pos:
-                    actual_price = t212_pos.avg_entry_price
-                    quantity = t212_pos.quantity
+                # Defer the fill-price lookup — collect now, fetch positions ONCE
+                # after all orders so we don't fire a /equity/positions call per buy.
+                pending_buys.append((sig, price, quantity))
+                held_symbols.add(sig.ticker)
+                active_count += 1
+            except (T212OrderError, Exception) as exc:
+                console.print(f"  [red]BUY FAILED {sig.ticker}: {exc}[/red]")
 
+        # Resolve actual fills with a SINGLE positions fetch (staggered/throttled
+        # by the client), then record local trackers. Orders that haven't settled
+        # yet simply fall back to the yfinance estimate — same as before, but with
+        # one API call instead of one per buy.
+        if pending_buys:
+            try:
+                fills = {p.symbol: p for p in client.get_positions()}
+            except Exception as exc:
+                console.print(f"  [yellow]Fill lookup failed ({exc}); using estimates[/yellow]")
+                fills = {}
+            for sig, fb_price, fb_qty in pending_buys:
+                tp = fills.get(sig.ticker)
+                actual_price = tp.avg_entry_price if tp else fb_price
+                qty = tp.quantity if tp else fb_qty
                 profile = _exit_profile(sig.detector, actual_price)
                 actual_sl = _tiered_stop_loss(stop_loss, actual_price) + profile.get("stop_loss_extra", 0.0)
-
                 portfolio.positions.append(Position(
                     ticker=sig.ticker,
                     detector=sig.detector,
                     entry_price=actual_price,
-                    shares=quantity,
+                    shares=qty,
                     entry_dt=now.isoformat(),
                     headline=sig.headline,
                     severity=sig.severity,
@@ -1365,10 +1380,6 @@ def run_loop_t212(
                     first_green=profile.get("first_green", True),
                     first_green_pct=profile.get("first_green_pct", 0.0),
                 ))
-                held_symbols.add(sig.ticker)
-                active_count += 1
-            except (T212OrderError, Exception) as exc:
-                console.print(f"  [red]BUY FAILED {sig.ticker}: {exc}[/red]")
 
         # ----------------------------------------------------------------
         # Summary

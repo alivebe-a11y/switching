@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `main`
-- **547 tests**, run with: `pytest tests/`
+- **559 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path (Dockge UI): `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -261,6 +261,20 @@ internal paper trader, acquirer filter applied. Compare P&L after 50+ trades.
   ticker just exited (the same story arrives via PRNewswire/BusinessWire/GlobeNewswire
   with different URLs → different signal keys → would otherwise re-buy).
 - `recently_sold` persists in the portfolio JSON and is pruned past the cooldown.
+
+**T212 client rate limiting (`broker_trading212.py`)**:
+- T212's API is rate-limited PER ENDPOINT (not a flat req/s). The client throttles
+  each endpoint to a conservative min interval (`_ENDPOINT_MIN_INTERVAL`: positions 5s,
+  account 2s, orders 2s) via `_throttle()` — bursts get staggered automatically, so the
+  loop doesn't have to manage spacing.
+- HTTP 429 is retried with `Retry-After` (or escalating 5/10/15/20s backoff), up to
+  `_MAX_RETRIES_429 = 4`, then raises `T212RateLimitError` (a `T212OrderError` subclass,
+  so existing handlers still catch it). Previously a 429 silently dropped that cycle's
+  exit checks.
+- Buy loop fetches `/equity/positions` ONCE after placing all orders (was one call per
+  buy) to resolve fill prices — big reduction in burst calls on busy cycles.
+- Practical poll floor: ~10s (positions endpoint is 1/5s and the loop makes 2 calls/poll).
+  `_T212_EXIT_POLL_SECONDS = 60` has huge headroom; 15–30s is safe if tighter exits wanted.
 
 ### ADR-006: IBKR as broker (not Alpaca)
 **Decision**: Interactive Brokers (IBKR) for live and paper trading. Alpaca removed from roadmap.

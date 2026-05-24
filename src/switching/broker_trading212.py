@@ -15,10 +15,12 @@ Both key and secret are required for every request.
 Ticker format: Trading 212 uses "AAPL_US_EQ" internally.
 This client accepts plain symbols ("AAPL") and converts automatically.
 
-Rate limits (T212 docs):
-  - 10 req/s general
-  - 1 req/s for POST /session
-  - 1 per 100ms for order creation
+Rate limits (T212 docs — PER ENDPOINT, stricter than a flat req/s):
+  - /equity/positions is the tightest we hit (~1 request / 5s)
+  - /equity/account/summary and order placement ~1 / 2s
+This client throttles each endpoint to a conservative minimum interval
+(_ENDPOINT_MIN_INTERVAL) and retries HTTP 429 with Retry-After/backoff,
+so callers don't have to manage spacing themselves.
 
 Reference: https://docs.trading212.com/api
 """
@@ -27,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from datetime import time as dt_time
@@ -37,6 +40,26 @@ log = logging.getLogger(__name__)
 
 _DEMO_BASE = "https://demo.trading212.com/api/v0"
 _LIVE_BASE = "https://live.trading212.com/api/v0"
+
+# ---------------------------------------------------------------------------
+# Client-side rate limiting
+# ---------------------------------------------------------------------------
+# T212's public API is rate-limited PER ENDPOINT and is much stricter than a
+# flat "10 req/s". We throttle each endpoint to a conservative minimum interval
+# so bursts (e.g. several position lookups in one buy cycle) get staggered
+# instead of fired at once. Verify the live numbers at docs.trading212.com —
+# these are deliberately conservative.
+_ENDPOINT_MIN_INTERVAL: dict[str, float] = {
+    "/equity/account/summary": 2.0,
+    "/equity/positions": 5.0,
+    "/equity/orders/market": 2.0,
+}
+_DEFAULT_MIN_INTERVAL = 1.0      # any endpoint not listed above
+
+# 429 (Too Many Requests) handling: respect Retry-After when present, else use
+# an escalating backoff. After this many retries we give up and raise.
+_MAX_RETRIES_429 = 4
+_DEFAULT_BACKOFF_SECONDS = 5.0
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +109,11 @@ class T212OrderError(RuntimeError):
     """Raised when an order is rejected by Trading 212."""
 
 
+class T212RateLimitError(T212OrderError):
+    """Raised when 429 retries are exhausted (subclass so existing
+    broad ``except T212OrderError`` handlers still catch it)."""
+
+
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
@@ -119,6 +147,8 @@ class Trading212Client:
         # T212 uses HTTP Basic Auth: base64(API_KEY:API_SECRET)
         self._session.auth = (api_key, api_secret)
         self._session.headers.update({"Content-Type": "application/json"})
+        # Per-endpoint last-call timestamps (monotonic) for client-side throttling
+        self._last_call: dict[str, float] = {}
         # Never log the key itself — only mode and base URL
         mode = "DEMO" if self.demo else "LIVE"
         log.info("Trading212Client initialised (%s) base=%s", mode, self._base)
@@ -259,17 +289,60 @@ class Trading212Client:
     # Internal HTTP helpers
     # ------------------------------------------------------------------
 
-    def _get(self, path: str) -> dict | list:
+    def _throttle(self, path: str) -> None:
+        """Sleep just enough to keep *path* under its per-endpoint min interval.
+
+        Staggers bursts (e.g. repeated /equity/positions calls in one cycle) so
+        they don't all hit at once. Per-endpoint, so calls to different endpoints
+        don't block each other.
+        """
+        min_interval = _ENDPOINT_MIN_INTERVAL.get(path, _DEFAULT_MIN_INTERVAL)
+        last = self._last_call.get(path)
+        if last is not None:
+            wait = min_interval - (time.monotonic() - last)
+            if wait > 0:
+                log.debug("T212 throttle %s: sleeping %.2fs", path, wait)
+                time.sleep(wait)
+        self._last_call[path] = time.monotonic()
+
+    def _request(self, method: str, path: str, *, json_body: dict | None = None) -> dict | list:
+        """Issue a throttled request, retrying on HTTP 429 with backoff."""
         url = self._base + path
-        resp = self._session.get(url, timeout=15)
-        _check_response(resp, path)
-        return resp.json()
+        for attempt in range(_MAX_RETRIES_429 + 1):
+            self._throttle(path)
+            if method == "GET":
+                resp = self._session.get(url, timeout=15)
+            else:
+                resp = self._session.post(url, json=json_body, timeout=15)
+
+            if resp.status_code == 429:
+                if attempt >= _MAX_RETRIES_429:
+                    raise T212RateLimitError(
+                        f"T212 rate limit on {path}: exhausted {_MAX_RETRIES_429} retries"
+                    )
+                backoff = _retry_after_seconds(resp)
+                if backoff is None:
+                    backoff = _DEFAULT_BACKOFF_SECONDS * (attempt + 1)  # 5s,10s,15s,20s
+                log.warning(
+                    "T212 429 on %s — backing off %.1fs (retry %d/%d)",
+                    path, backoff, attempt + 1, _MAX_RETRIES_429,
+                )
+                # Treat the forced wait as the endpoint's last call so the next
+                # _throttle() doesn't pile an extra sleep on top.
+                time.sleep(backoff)
+                self._last_call[path] = time.monotonic()
+                continue
+
+            _check_response(resp, path)
+            return resp.json()
+        # Loop always returns or raises above; this is unreachable.
+        raise T212RateLimitError(f"T212 rate limit on {path}")  # pragma: no cover
+
+    def _get(self, path: str) -> dict | list:
+        return self._request("GET", path)
 
     def _post(self, path: str, payload: dict) -> dict:
-        url = self._base + path
-        resp = self._session.post(url, json=payload, timeout=15)
-        _check_response(resp, path)
-        return resp.json()
+        return self._request("POST", path, json_body=payload)
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +368,23 @@ def _check_response(resp: requests.Response, path: str) -> None:
         raise T212OrderError(
             f"T212 HTTP error [{path}] {resp.status_code}: {body}"
         ) from exc
+
+
+def _retry_after_seconds(resp: requests.Response) -> float | None:
+    """Parse the Retry-After header (delta-seconds form) into a float.
+
+    Returns None when the header is absent or in HTTP-date form (we fall back to
+    escalating backoff in that case rather than parsing dates).
+    """
+    val = resp.headers.get("Retry-After")
+    if not val:
+        return None
+    try:
+        secs = float(val)
+    except (TypeError, ValueError):
+        return None
+    # Clamp to something sane so a hostile/huge header can't stall the loop.
+    return max(0.0, min(secs, 120.0))
 
 
 def _sanitise_error_body(text: str, max_len: int = 200) -> str:
