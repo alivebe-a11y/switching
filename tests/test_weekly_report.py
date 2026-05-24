@@ -17,6 +17,8 @@ from switching.weekly_report import (
     _skipped_opportunity,
     _t212_vs_paper,
     generate_report,
+    load_all_reports,
+    save_report,
 )
 
 
@@ -280,20 +282,28 @@ class TestGenerateSuggestions:
 
 
 class TestGenerateReport:
-    def test_returns_list_of_strings(self, tmp_path: Path):
+    def test_returns_tuple_of_messages_and_data(self, tmp_path: Path):
         _paper_portfolio(tmp_path, [])
-        messages = generate_report(tmp_path)
+        messages, data = generate_report(tmp_path)
         assert isinstance(messages, list)
         assert all(isinstance(m, str) for m in messages)
+        assert isinstance(data, dict)
+
+    def test_data_has_required_keys(self, tmp_path: Path):
+        _paper_portfolio(tmp_path, [])
+        _, data = generate_report(tmp_path)
+        for key in ("generated_at", "week_start", "week_label", "paper",
+                    "detector_rankings", "suggestions", "messages"):
+            assert key in data, f"missing key: {key}"
 
     def test_at_least_one_message(self, tmp_path: Path):
         _paper_portfolio(tmp_path, [])
-        messages = generate_report(tmp_path)
+        messages, _ = generate_report(tmp_path)
         assert len(messages) >= 1
 
     def test_message_contains_header(self, tmp_path: Path):
         _paper_portfolio(tmp_path, [])
-        messages = generate_report(tmp_path)
+        messages, _ = generate_report(tmp_path)
         combined = "\n".join(messages)
         assert "Weekly Report" in combined
 
@@ -304,7 +314,7 @@ class TestGenerateReport:
             for i in range(30)
         ]
         _paper_portfolio(tmp_path, trades)
-        messages = generate_report(tmp_path)
+        messages, _ = generate_report(tmp_path)
         for msg in messages:
             assert len(msg) <= 4096
 
@@ -315,7 +325,7 @@ class TestGenerateReport:
             _trade(detector="buyback", pnl=-10.0, pct_return=-0.01),
         ]
         _paper_portfolio(tmp_path, trades)
-        messages = generate_report(tmp_path)
+        messages, _ = generate_report(tmp_path)
         combined = "\n".join(messages)
         assert "earnings_surprise" in combined
         assert "buyback" in combined
@@ -323,11 +333,59 @@ class TestGenerateReport:
     def test_handles_missing_t212_file(self, tmp_path: Path):
         """Should not crash if t212_portfolio.json doesn't exist."""
         _paper_portfolio(tmp_path, [_trade(pnl=10.0)])
-        messages = generate_report(tmp_path)
+        messages, _ = generate_report(tmp_path)
         assert len(messages) >= 1
 
     def test_handles_all_missing_files(self, tmp_path: Path):
         """Empty directory should produce a valid (empty-data) report."""
-        messages = generate_report(tmp_path)
+        messages, _ = generate_report(tmp_path)
         assert len(messages) >= 1
         assert "Weekly Report" in "\n".join(messages)
+
+    def test_data_messages_match_return(self, tmp_path: Path):
+        """The 'messages' key in data must equal the returned message list."""
+        _paper_portfolio(tmp_path, [])
+        messages, data = generate_report(tmp_path)
+        assert data["messages"] == messages
+
+
+class TestArchive:
+    def test_save_and_load(self, tmp_path: Path):
+        data = {
+            "generated_at": "2026-05-24T09:00:00+00:00",
+            "week_start": "2026-05-24",
+            "week_label": "24 May 2026",
+            "messages": ["hello"],
+        }
+        path = save_report(tmp_path, data)
+        assert path.exists()
+        assert path.name == "2026-05-24.json"
+
+    def test_load_all_returns_newest_first(self, tmp_path: Path):
+        for date in ("2026-05-10", "2026-05-17", "2026-05-24"):
+            save_report(tmp_path, {"week_start": date, "week_label": date, "messages": []})
+        reports = load_all_reports(tmp_path)
+        assert len(reports) == 3
+        assert reports[0]["week_start"] == "2026-05-24"
+        assert reports[-1]["week_start"] == "2026-05-10"
+
+    def test_load_empty_dir(self, tmp_path: Path):
+        assert load_all_reports(tmp_path) == []
+
+    def test_overwrite_same_week(self, tmp_path: Path):
+        """Running report twice on same Saturday should overwrite, not duplicate."""
+        save_report(tmp_path, {"week_start": "2026-05-24", "messages": ["v1"]})
+        save_report(tmp_path, {"week_start": "2026-05-24", "messages": ["v2"]})
+        reports = load_all_reports(tmp_path)
+        assert len(reports) == 1
+        assert reports[0]["messages"] == ["v2"]
+
+    def test_generate_and_send_saves_archive(self, tmp_path: Path):
+        """generate_and_send always saves to disk even when Telegram fails."""
+        from unittest.mock import patch
+        _paper_portfolio(tmp_path, [_trade(pnl=20.0)])
+        with patch("switching.notifications._send", return_value=False):
+            from switching.weekly_report import generate_and_send
+            generate_and_send(tmp_path)
+        saved = list((tmp_path / "weekly_reports").glob("*.json"))
+        assert len(saved) == 1

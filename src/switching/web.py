@@ -251,6 +251,16 @@ def create_app(state_path: Path | None = None) -> Flask:
             "last_scan_dt": p.last_scan_dt,
         })
 
+    @app.route("/api/weekly-reports")
+    def api_weekly_reports():
+        """Return all saved weekly reports, newest first."""
+        from switching.weekly_report import load_all_reports
+        reports = load_all_reports(_STATE_PATH.parent)
+        return jsonify({
+            "count": len(reports),
+            "reports": reports,
+        })
+
     @app.route("/api/equity-curve")
     def api_equity_curve():
         p = Portfolio.load(_STATE_PATH)
@@ -733,6 +743,7 @@ tr:hover { background: rgba(255,255,255,0.02); }
       <div class="tab" id="tab-btn-analytics" onclick="switchTab('analytics')">Analytics</div>
       <div class="tab" id="tab-btn-t212" onclick="switchTab('t212')">T212 Demo</div>
       <div class="tab" id="tab-btn-uk" onclick="switchTab('uk')">🇬🇧 LSE</div>
+      <div class="tab" id="tab-btn-reports" onclick="switchTab('reports')">📋 Reports</div>
     </div>
   </div>
 
@@ -1001,6 +1012,29 @@ tr:hover { background: rgba(255,255,255,0.02); }
   </div>
 
   </div><!-- /tab-uk -->
+
+  <div id="tab-reports" style="display:none">
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>Weekly Performance Reports</h2>
+      <span class="badge" id="reports-count">0</span>
+    </div>
+    <div style="font-size:0.78rem;color:var(--dim);padding:0.5rem 1.2rem 0">
+      Auto-generated every Saturday at 09:00 UTC. Run <code>switching weekly-report</code> to generate on demand.
+    </div>
+    <div id="reports-list"><div class="empty-state">No reports yet — first one sends Saturday morning.</div></div>
+  </div>
+
+  <div class="panel" id="report-detail" style="display:none">
+    <div class="panel-header">
+      <h2 id="report-detail-title">Report Detail</h2>
+      <button onclick="$('#report-detail').style.display='none'" style="background:none;border:1px solid var(--border);color:var(--fg);padding:2px 10px;border-radius:4px;cursor:pointer;font-size:0.8rem">✕ Close</button>
+    </div>
+    <div id="report-detail-body"></div>
+  </div>
+
+  </div><!-- /tab-reports -->
 
 </div>
 
@@ -1594,7 +1628,7 @@ async function loadReview() {
 let _activeTab = 'overview';
 
 function switchTab(name) {
-  ['overview', 'postexit', 'analytics', 't212', 'uk'].forEach(t => {
+  ['overview', 'postexit', 'analytics', 't212', 'uk', 'reports'].forEach(t => {
     document.getElementById('tab-' + t).style.display = t === name ? 'block' : 'none';
     document.getElementById('tab-btn-' + t).classList.toggle('active', t === name);
   });
@@ -1609,6 +1643,8 @@ function switchTab(name) {
     loadT212();
   } else if (name === 'uk') {
     loadUK();
+  } else if (name === 'reports') {
+    loadReports();
   }
 }
 
@@ -1781,6 +1817,150 @@ async function loadUK() {
   } catch(e) {
     console.error('uk load failed', e);
   }
+}
+
+async function loadReports() {
+  try {
+    const r = await fetch('/api/weekly-reports');
+    const d = await r.json();
+    $('#reports-count').textContent = d.count;
+
+    if (!d.reports || d.reports.length === 0) {
+      $('#reports-list').innerHTML = '<div class="empty-state">No reports yet — first one sends Saturday morning. Run <code>switching weekly-report</code> to generate now.</div>';
+      return;
+    }
+
+    // Summary cards — one per report, clickable to expand detail
+    let html = '<div style="display:flex;flex-direction:column;gap:0.75rem;padding:1rem 1.2rem">';
+    d.reports.forEach((rep, idx) => {
+      const p = rep.paper || {};
+      const allTime = p.all_time || {};
+      const week = p.this_week || {};
+      const wr = allTime.win_rate != null ? (allTime.win_rate * 100).toFixed(0) + '%' : '--';
+      const weekWR = week.win_rate != null ? (week.win_rate * 100).toFixed(0) + '%' : '--';
+      const pnlCls = (allTime.total_pnl || 0) >= 0 ? 'pos' : 'neg';
+      const weekPnlCls = (week.total_pnl || 0) >= 0 ? 'pos' : 'neg';
+      const best = rep.paper && rep.paper.best_trade && rep.paper.best_trade.ticker
+        ? rep.paper.best_trade : null;
+      html += `<div style="border:1px solid var(--border);border-radius:6px;padding:0.9rem 1rem;cursor:pointer;transition:background 0.15s" onmouseover="this.style.background='var(--panel-bg)'" onmouseout="this.style.background=''" onclick="showReport(${idx})">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem">
+          <div>
+            <span style="font-weight:700;font-size:1rem">Week of ${rep.week_label || rep.week_start}</span>
+            <span style="font-size:0.72rem;color:var(--dim);margin-left:0.6rem">${(rep.generated_at || '').slice(0,10)}</span>
+          </div>
+          <div style="display:flex;gap:1.5rem;font-size:0.85rem">
+            <span>This week: <b>${rep.paper && rep.paper.this_week_count != null ? rep.paper.this_week_count : '–'} trades</b>
+              <span class="${weekPnlCls}"> ${ (week.total_pnl||0) >= 0 ? '+' : '' }${ (week.total_pnl||0).toFixed(2) }</span>
+              @ <b>${weekWR}</b> WR</span>
+            <span>All-time: <b>${allTime.count || 0}</b> trades
+              <span class="${pnlCls}"> ${ (allTime.total_pnl||0) >= 0 ? '+' : '' }${ (allTime.total_pnl||0).toFixed(2) }</span>
+              @ <b>${wr}</b> WR</span>
+          </div>
+        </div>
+        ${ best ? `<div style="font-size:0.75rem;color:var(--dim);margin-top:0.3rem">Best: ${best.ticker} ${(best.pct_return*100).toFixed(1)}% (${best.detector})</div>` : '' }
+        ${ rep.suggestions && rep.suggestions.length ? `<div style="font-size:0.73rem;color:var(--dim);margin-top:0.25rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${rep.suggestions[0].replace(/<[^>]+>/g,'')}</div>` : '' }
+      </div>`;
+    });
+    html += '</div>';
+    $('#reports-list').innerHTML = html;
+
+    // Store reports globally for detail view
+    window._weeklyReports = d.reports;
+  } catch(e) {
+    console.error('reports load failed', e);
+  }
+}
+
+function showReport(idx) {
+  const rep = (window._weeklyReports || [])[idx];
+  if (!rep) return;
+  const p = rep.paper || {};
+  const allTime = p.all_time || {};
+  const week = p.this_week || {};
+  const t212 = rep.t212 || {};
+  const uk = rep.uk || {};
+
+  let html = `<div style="padding:1rem 1.2rem">`;
+
+  // KPI row
+  html += `<div style="display:flex;gap:2rem;flex-wrap:wrap;border-bottom:1px solid var(--border);padding-bottom:1rem;margin-bottom:1rem">
+    <div><div class="kpi-label">Week</div><div class="kpi-val">${rep.week_label}</div></div>
+    <div><div class="kpi-label">This Week Trades</div><div class="kpi-val">${p.this_week_count ?? '–'}</div></div>
+    <div><div class="kpi-label">Week P&L</div><div class="kpi-val ${(week.total_pnl||0)>=0?'pos':'neg'}">${(week.total_pnl||0)>=0?'+':''}$${(week.total_pnl||0).toFixed(2)}</div></div>
+    <div><div class="kpi-label">All-Time WR</div><div class="kpi-val">${allTime.win_rate!=null?(allTime.win_rate*100).toFixed(0)+'%':'–'}</div></div>
+    <div><div class="kpi-label">All-Time P&L</div><div class="kpi-val ${(allTime.total_pnl||0)>=0?'pos':'neg'}">${(allTime.total_pnl||0)>=0?'+':''}$${(allTime.total_pnl||0).toFixed(2)}</div></div>
+    <div><div class="kpi-label">Portfolio Value</div><div class="kpi-val">$${(p.total_value||0).toFixed(2)}</div></div>
+  </div>`;
+
+  // Detector rankings table
+  const rows = (rep.detector_rankings || []).filter(r => r.count > 0);
+  if (rows.length) {
+    html += `<h3 style="margin:0 0 0.5rem">Detector Rankings</h3>
+    <div style="overflow-x:auto;margin-bottom:1.2rem"><table><thead><tr>
+      <th>Detector</th><th>Trades</th><th>Win Rate</th><th>Avg Return</th><th>P&amp;L</th>
+    </tr></thead><tbody>`;
+    rows.forEach(r => {
+      const wr = r.win_rate * 100;
+      const wrCls = wr >= 65 ? 'pos' : wr < 55 ? 'neg' : '';
+      html += `<tr>
+        <td><b>${r.detector}</b></td>
+        <td>${r.count}</td>
+        <td class="${wrCls}">${wr.toFixed(0)}%</td>
+        <td class="${r.avg_return>=0?'pos':'neg'}">${(r.avg_return*100).toFixed(2)}%</td>
+        <td class="${r.total_pnl>=0?'pos':'neg'}">${r.total_pnl>=0?'+':''}$${r.total_pnl.toFixed(0)}</td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+  }
+
+  // Suggestions
+  const sugs = (rep.suggestions || []);
+  if (sugs.length) {
+    html += `<h3 style="margin:0 0 0.5rem">Suggestions</h3><ul style="margin:0 0 1.2rem;padding-left:1.2rem;font-size:0.85rem">`;
+    sugs.forEach(s => { html += `<li style="margin-bottom:0.3rem">${s.replace(/<[^>]+>/g,'')}</li>`; });
+    html += '</ul>';
+  }
+
+  // T212 slippage
+  const slip = rep.t212_slippage || {};
+  if (slip.matched_count > 0) {
+    html += `<h3 style="margin:0 0 0.5rem">T212 vs Paper Slippage</h3>
+    <p style="font-size:0.85rem;margin:0 0 0.5rem">
+      ${slip.matched_count} matched trades &nbsp;|&nbsp;
+      Avg slippage: <b class="${(slip.avg_slippage||0)>=0?'pos':'neg'}">${((slip.avg_slippage||0)*100).toFixed(3)}%</b> &nbsp;|&nbsp;
+      T212 better: ${slip.t212_better_count}/${slip.matched_count}
+    </p>`;
+    if (slip.top_examples && slip.top_examples.length) {
+      html += `<div style="overflow-x:auto;margin-bottom:1.2rem"><table><thead><tr>
+        <th>Ticker</th><th>Date</th><th>T212</th><th>Paper</th><th>Slippage</th>
+      </tr></thead><tbody>`;
+      slip.top_examples.slice(0,5).forEach(m => {
+        const sCls = m.slippage >= 0 ? 'pos' : 'neg';
+        html += `<tr>
+          <td>${m.ticker}</td><td>${m.entry_dt}</td>
+          <td>${(m.t212_return*100).toFixed(2)}%</td>
+          <td>${(m.paper_return*100).toFixed(2)}%</td>
+          <td class="${sCls}">${m.slippage>=0?'+':''}${(m.slippage*100).toFixed(3)}%</td>
+        </tr>`;
+      });
+      html += '</tbody></table></div>';
+    }
+  }
+
+  // T212 + UK summary
+  if (t212.all_time && t212.all_time.count > 0) {
+    html += `<p style="font-size:0.82rem;color:var(--dim)">T212: ${t212.all_time.count} trades all-time, ${(t212.all_time.win_rate*100).toFixed(0)}% WR, $${t212.all_time.total_pnl.toFixed(2)} P&L</p>`;
+  }
+  if (uk.all_time && uk.all_time.count > 0) {
+    html += `<p style="font-size:0.82rem;color:var(--dim)">LSE: ${uk.all_time.count} trades all-time, ${(uk.all_time.win_rate*100).toFixed(0)}% WR, £${uk.all_time.total_pnl.toFixed(2)} P&L</p>`;
+  }
+
+  html += '</div>';
+
+  $('#report-detail-title').textContent = 'Week of ' + (rep.week_label || rep.week_start);
+  $('#report-detail-body').innerHTML = html;
+  $('#report-detail').style.display = 'block';
+  $('#report-detail').scrollIntoView({ behavior: 'smooth' });
 }
 
 async function loadAnalytics() {

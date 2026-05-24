@@ -15,6 +15,10 @@ Generated every Saturday and sent via Telegram. Covers:
 Call ``generate_and_send(state_dir)`` from the paper-trade loop on
 Saturday mornings. The report is split into multiple Telegram messages
 if it would exceed the 4 096-char API limit.
+
+Every report is also saved to ``<state_dir>/weekly_reports/YYYY-MM-DD.json``
+for permanent archiving and dashboard display. Use ``load_all_reports()``
+to retrieve the full history in reverse-chronological order.
 """
 
 from __future__ import annotations
@@ -299,12 +303,56 @@ def _generate_suggestions(
 
 
 # ---------------------------------------------------------------------------
+# Archive helpers
+# ---------------------------------------------------------------------------
+
+_REPORTS_DIR = "weekly_reports"
+
+
+def save_report(state_dir: Path, report_data: dict) -> Path:
+    """Persist a report dict to ``<state_dir>/weekly_reports/YYYY-MM-DD.json``.
+
+    The filename is based on the week-start date so re-running the report on
+    the same Saturday overwrites rather than duplicates.  Returns the saved path.
+    """
+    reports_dir = state_dir / _REPORTS_DIR
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    week_start = report_data.get("week_start", datetime.now(tz=timezone.utc).strftime("%Y-%m-%d"))
+    out = reports_dir / f"{week_start}.json"
+    out.write_text(json.dumps(report_data, indent=2), encoding="utf-8")
+    log.info("weekly report saved to %s", out)
+    return out
+
+
+def load_all_reports(state_dir: Path) -> list[dict]:
+    """Return all saved weekly reports, newest first.
+
+    Each entry is the full structured dict saved by ``save_report()``.
+    Returns an empty list if no reports have been saved yet.
+    """
+    reports_dir = state_dir / _REPORTS_DIR
+    if not reports_dir.exists():
+        return []
+    reports = []
+    for p in sorted(reports_dir.glob("*.json"), reverse=True):
+        try:
+            reports.append(json.loads(p.read_text(encoding="utf-8")))
+        except Exception as exc:
+            log.warning("weekly_report: failed to load %s: %s", p, exc)
+    return reports
+
+
+# ---------------------------------------------------------------------------
 # Report assembly
 # ---------------------------------------------------------------------------
 
 
-def generate_report(state_dir: Path) -> list[str]:
-    """Return a list of Telegram-ready HTML strings (one per message).
+def generate_report(state_dir: Path) -> tuple[list[str], dict]:
+    """Generate the weekly report.
+
+    Returns a 2-tuple:
+      - ``messages``: list of Telegram-ready HTML strings (one per message)
+      - ``data``: structured dict with all underlying stats (saved to disk)
 
     Multiple messages are used because Telegram's 4 096-char limit is easily
     hit with a full weekly digest.
@@ -547,7 +595,63 @@ def generate_report(state_dir: Path) -> list[str]:
                 stripped = stripped[:3990] + "\n…(truncated)"
             messages.append(stripped)
 
-    return messages
+    # -----------------------------------------------------------------------
+    # Structured data for archiving and dashboard display
+    # -----------------------------------------------------------------------
+    t212_slippage_avg = (
+        sum(m["slippage"] for m in matched) / len(matched) if matched else None
+    )
+    structured_data: dict = {
+        "generated_at": now.isoformat(),
+        "week_start": week_start.strftime("%Y-%m-%d"),
+        "week_label": week_label,
+        "paper": {
+            "cash": cash,
+            "invested": invested,
+            "total_value": total_val,
+            "all_time": paper_all_stats,
+            "this_week": paper_week_stats,
+            "this_week_count": len(paper_week),
+            "best_trade": {
+                "ticker": best_this_week.get("ticker") if best_this_week else None,
+                "pct_return": best_this_week.get("pct_return") if best_this_week else None,
+                "pnl": best_this_week.get("pnl") if best_this_week else None,
+                "detector": best_this_week.get("detector") if best_this_week else None,
+            },
+            "worst_trade": {
+                "ticker": worst_this_week.get("ticker") if worst_this_week and worst_this_week is not best_this_week else None,
+                "pct_return": worst_this_week.get("pct_return") if worst_this_week and worst_this_week is not best_this_week else None,
+                "pnl": worst_this_week.get("pnl") if worst_this_week and worst_this_week is not best_this_week else None,
+                "detector": worst_this_week.get("detector") if worst_this_week and worst_this_week is not best_this_week else None,
+            },
+        },
+        "t212": {
+            "all_time": t212_all_stats,
+            "this_week": t212_week_stats,
+            "this_week_count": len(t212_week),
+            "open_count": len(t212_data.get("positions", [])),
+        },
+        "uk": {
+            "all_time": uk_all_stats,
+            "this_week_count": len(uk_week),
+            "cash": uk_data.get("cash", 0.0),
+            "open_count": len(uk_data.get("positions", [])),
+        },
+        "detector_rankings": det_rows,
+        "exit_breakdown": exit_brkdn,
+        "severity_analysis": sev_data,
+        "t212_slippage": {
+            "matched_count": len(matched),
+            "avg_slippage": t212_slippage_avg,
+            "t212_better_count": sum(1 for m in matched if m["slippage"] > 0),
+            "top_examples": sorted(matched, key=lambda m: abs(m["slippage"]), reverse=True)[:10],
+        },
+        "skipped_opportunities": skipped_opps,
+        "suggestions": suggestions,
+        "messages": messages,
+    }
+
+    return messages, structured_data
 
 
 # ---------------------------------------------------------------------------
@@ -556,10 +660,24 @@ def generate_report(state_dir: Path) -> list[str]:
 
 
 def generate_and_send(state_dir: Path) -> bool:
-    """Generate the weekly report and send via Telegram. Returns True on success."""
+    """Generate the weekly report, save it to disk, and send via Telegram.
+
+    The structured data is always saved to
+    ``<state_dir>/weekly_reports/YYYY-MM-DD.json`` regardless of whether
+    the Telegram send succeeds, so the archive is never lost.
+
+    Returns True if the Telegram send succeeded.
+    """
     from switching.notifications import _send
     try:
-        messages = generate_report(state_dir)
+        messages, data = generate_report(state_dir)
+
+        # Always archive — even if Telegram fails
+        try:
+            save_report(state_dir, data)
+        except Exception as exc:
+            log.warning("weekly report: archive save failed: %s", exc)
+
         ok = True
         for msg in messages:
             if not _send(msg):

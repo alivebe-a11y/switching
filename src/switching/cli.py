@@ -724,7 +724,7 @@ def weekly_report_cmd(
     state_dir = state_file.parent
     console.print(f"[bold]Generating weekly report from {state_dir}...[/bold]")
 
-    messages = generate_report(state_dir)
+    messages, _ = generate_report(state_dir)
     for i, msg in enumerate(messages, 1):
         console.print(f"\n[dim]── Message {i}/{len(messages)} ──[/dim]")
         # Strip HTML tags for console display
