@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `main`
-- **529 tests**, run with: `pytest tests/`
+- **547 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path: `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -216,6 +216,22 @@ execution slippage before committing real capital.
 **Architecture**: Separate state file (`t212_portfolio.json`), same exit profiles as
 internal paper trader, acquirer filter applied. Compare P&L after 50+ trades.
 **When to go live**: Flip `T212_DEMO=false` in Dockge .env — no code changes needed.
+
+**T212 loop cadence & settlement (added after live demo bugs)**:
+- **Exits poll every 60s** (`_T212_EXIT_POLL_SECONDS`), not every scan interval —
+  T212's REST API has NO arbitrary quote endpoint, but `/equity/positions` returns
+  live `currentPrice`/`unrealized_pnl_pct` for HELD positions. Polling that every
+  60s gives tight price tracking and fast stop-loss / first-green execution.
+  New-signal scanning still runs every `scan_interval_minutes` to avoid hammering feeds.
+- **Buys still use yfinance** for the quote (T212 can't price a ticker you don't hold).
+- **Settlement guard** (`_T212_SETTLE_MINUTES = 15`): after a sell, the position is
+  removed locally but T212 may still report it briefly while the order settles.
+  `recently_sold[symbol]` records the sell time; orphan-reconciliation skips symbols
+  sold within the settle window so we don't issue a SECOND sell + duplicate trade.
+- **Re-buy cooldown** (`_T212_REBUY_COOLDOWN_HOURS = 4`): don't churn back into a
+  ticker just exited (the same story arrives via PRNewswire/BusinessWire/GlobeNewswire
+  with different URLs → different signal keys → would otherwise re-buy).
+- `recently_sold` persists in the portfolio JSON and is pruned past the cooldown.
 
 ### ADR-006: IBKR as broker (not Alpaca)
 **Decision**: Interactive Brokers (IBKR) for live and paper trading. Alpaca removed from roadmap.

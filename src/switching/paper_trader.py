@@ -83,6 +83,10 @@ class Portfolio:
     cached_prices: dict[str, float] = field(default_factory=dict)
     last_review_sent_dt: str = ""
     last_weekly_report_dt: str = ""   # ISO timestamp of last Saturday report
+    # T212-only: symbol -> ISO timestamp of last sell. Used to (a) ignore a
+    # just-sold position while the broker settles the order (prevents double
+    # sells) and (b) apply a short re-buy cooldown (prevents same-story churn).
+    recently_sold: dict[str, str] = field(default_factory=dict)
 
     @property
     def total_value(self) -> float:
@@ -102,6 +106,7 @@ class Portfolio:
             "cached_prices": self.cached_prices,
             "last_review_sent_dt": self.last_review_sent_dt,
             "last_weekly_report_dt": self.last_weekly_report_dt,
+            "recently_sold": self.recently_sold,
         }
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -122,6 +127,7 @@ class Portfolio:
             cached_prices=data.get("cached_prices", {}),
             last_review_sent_dt=data.get("last_review_sent_dt", ""),
             last_weekly_report_dt=data.get("last_weekly_report_dt", ""),
+            recently_sold=data.get("recently_sold", {}),
         )
 
 
@@ -173,6 +179,42 @@ def _signal_key(sig: Signal) -> str:
     else:
         article_id = hashlib.md5(sig.headline.lower().encode()).hexdigest()[:16]
     return f"{sig.detector}:{sig.ticker}:{article_id}"
+
+
+# --- T212 settlement / churn guards ---------------------------------------
+# After a sell, T212 takes time to settle the order. During this window the
+# position can still appear in get_positions() with no local tracker. We must
+# NOT re-adopt and re-sell it (double sell), so we ignore symbols sold within
+# the settlement window. A longer cooldown also prevents same-day re-buys of a
+# ticker we just exited (curbs churn when the same story arrives via multiple
+# wire services with different URLs).
+_T212_SETTLE_MINUTES = 15
+_T212_REBUY_COOLDOWN_HOURS = 4
+_T212_EXIT_POLL_SECONDS = 60   # how often to re-check live exits between scans
+
+
+def _minutes_since(iso_ts: str, now: datetime) -> float | None:
+    """Minutes elapsed since an ISO timestamp, or None if unparseable."""
+    if not iso_ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso_ts.rstrip("Z"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (now - dt).total_seconds() / 60.0
+
+
+def _prune_recently_sold(recently_sold: dict[str, str], now: datetime) -> None:
+    """Drop recently-sold entries older than the re-buy cooldown (in place)."""
+    cutoff_min = _T212_REBUY_COOLDOWN_HOURS * 60
+    stale = [
+        sym for sym, ts in recently_sold.items()
+        if (m := _minutes_since(ts, now)) is None or m > cutoff_min
+    ]
+    for sym in stale:
+        del recently_sold[sym]
 
 
 def _normalise_price(price: float, market: str) -> float:
@@ -1069,9 +1111,15 @@ def run_loop_t212(
     portfolio.max_position_pct = max_position_pct
     portfolio.max_positions = max_positions
 
+    # Exits are polled every _T212_EXIT_POLL_SECONDS (default 60s) for tight
+    # price tracking and fast stop-loss / first-green execution.  New-signal
+    # scanning runs only every scan_interval_minutes to avoid hammering feeds.
+    last_signal_scan = 0.0   # epoch seconds; 0 forces a scan on first iteration
+
     while True:
         now = datetime.now(tz=timezone.utc)
-        console.print(f"\n[bold]── {mode} Scan at {now.strftime('%Y-%m-%d %H:%M UTC')} ──[/bold]")
+        _prune_recently_sold(portfolio.recently_sold, now)
+        console.print(f"\n[bold]── {mode} Poll at {now.strftime('%Y-%m-%d %H:%M UTC')} ──[/bold]")
 
         try:
             acct = client.get_account()
@@ -1079,7 +1127,7 @@ def run_loop_t212(
             console.print(f"[red]T212 account fetch failed: {exc}[/red]")
             if once:
                 break
-            time.sleep(scan_interval_minutes * 60)
+            time.sleep(_T212_EXIT_POLL_SECONDS)
             continue
 
         console.print(
@@ -1121,8 +1169,21 @@ def run_loop_t212(
         # a container restart that lost the state file, or if the position was
         # opened before this service started).  Create a synthetic tracker so
         # the exit logic has a stable reference and doesn't sell immediately.
+        #
+        # CRITICAL: skip symbols we sold within the settlement window. After a
+        # sell the position is removed locally but T212 may still report it for
+        # a short time while the order settles. Re-adopting it here would issue
+        # a SECOND sell and record a duplicate trade.
+        settling: set[str] = set()
         for sym, tp in t212_map.items():
             if sym not in local_map:
+                mins = _minutes_since(portfolio.recently_sold.get(sym, ""), now)
+                if mins is not None and mins < _T212_SETTLE_MINUTES:
+                    settling.add(sym)
+                    console.print(
+                        f"  [dim]{sym}: sell settling ({mins:.0f}m ago) — skipping[/dim]"
+                    )
+                    continue
                 log.info(
                     "T212 orphan position %s — creating synthetic tracker "
                     "(entry_price=%.4f, qty=%.4f)",
@@ -1146,6 +1207,8 @@ def run_loop_t212(
                 console.print(f"  [yellow]SYNC {sym}: orphan T212 position adopted[/yellow]")
 
         for sym, tp in list(t212_map.items()):
+            if sym in settling:
+                continue   # order still settling — don't touch
             ret = tp.unrealized_pnl_pct
             color = "green" if ret >= 0 else "red"
             tracker = local_map.get(sym)
@@ -1201,6 +1264,10 @@ def run_loop_t212(
                         severity=tracker.severity if tracker else 0.0,
                     ))
                     portfolio.positions = [p for p in portfolio.positions if p.ticker != sym]
+                    # Mark as recently sold so the next poll doesn't re-adopt the
+                    # still-settling position and re-sell it (double-sell guard),
+                    # and so we don't immediately re-buy the same ticker (churn).
+                    portfolio.recently_sold[sym] = now.isoformat()
                 except (T212OrderError, Exception) as exc:
                     console.print(f"  [red]SELL FAILED {sym}: {exc}[/red]")
             else:
@@ -1212,11 +1279,16 @@ def run_loop_t212(
                 )
 
         # ----------------------------------------------------------------
-        # Signal scan — buy new positions
+        # Signal scan — buy new positions (only every scan_interval_minutes;
+        # exit polling above runs every cycle for tight price tracking)
         # ----------------------------------------------------------------
-        since = now - timedelta(hours=24)
-        signals = scan_for_signals(detectors, since, min_severity=min_severity)
-        new_signals = [s for s in signals if _signal_key(s) not in portfolio.seen_signals]
+        do_signal_scan = (time.time() - last_signal_scan) >= (scan_interval_minutes * 60)
+        new_signals: list[Signal] = []
+        if do_signal_scan:
+            last_signal_scan = time.time()
+            since = now - timedelta(hours=24)
+            signals = scan_for_signals(detectors, since, min_severity=min_severity)
+            new_signals = [s for s in signals if _signal_key(s) not in portfolio.seen_signals]
 
         held_symbols = set(t212_map.keys()) | {p.ticker for p in portfolio.positions}
         active_count = len(t212_map)
@@ -1234,6 +1306,15 @@ def run_loop_t212(
 
             if sig.ticker in held_symbols:
                 console.print(f"  [dim]SKIP {sig.ticker}: already holding[/dim]")
+                continue
+
+            # Re-buy cooldown — don't churn back into a ticker we just exited
+            sold_mins = _minutes_since(portfolio.recently_sold.get(sig.ticker, ""), now)
+            if sold_mins is not None and sold_mins < _T212_REBUY_COOLDOWN_HOURS * 60:
+                console.print(
+                    f"  [dim]SKIP {sig.ticker}: sold {sold_mins/60:.1f}h ago "
+                    f"(cooldown {_T212_REBUY_COOLDOWN_HOURS}h)[/dim]"
+                )
                 continue
 
             if max_positions > 0 and active_count >= max_positions:
@@ -1307,5 +1388,9 @@ def run_loop_t212(
         if once:
             break
 
-        console.print(f"  [dim]Next scan in {scan_interval_minutes}m...[/dim]")
-        time.sleep(scan_interval_minutes * 60)
+        next_scan_in = max(0, (scan_interval_minutes * 60) - (time.time() - last_signal_scan))
+        console.print(
+            f"  [dim]Exit poll in {_T212_EXIT_POLL_SECONDS}s · "
+            f"next signal scan in {next_scan_in/60:.0f}m...[/dim]"
+        )
+        time.sleep(_T212_EXIT_POLL_SECONDS)

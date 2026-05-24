@@ -13,9 +13,13 @@ from switching.paper_trader import (
     Portfolio,
     Position,
     _EDGAR_DETECTORS,
+    _T212_REBUY_COOLDOWN_HOURS,
+    _T212_SETTLE_MINUTES,
     _calendar_days_since,
     _exit_profile,
     _make_edgar_client,
+    _minutes_since,
+    _prune_recently_sold,
     _signal_key,
     _tiered_stop_loss,
     check_exits,
@@ -443,3 +447,78 @@ class TestSignalKey:
         sig1 = self._make_signal(url="", headline="Analyst upgrades NVDA to Buy")
         sig2 = self._make_signal(url="", headline="Analyst upgrades NVDA to Strong Buy")
         assert _signal_key(sig1) != _signal_key(sig2)
+
+
+class TestMinutesSince:
+    def test_none_for_empty(self):
+        now = datetime.now(tz=timezone.utc)
+        assert _minutes_since("", now) is None
+
+    def test_none_for_garbage(self):
+        now = datetime.now(tz=timezone.utc)
+        assert _minutes_since("not-a-date", now) is None
+
+    def test_computes_minutes(self):
+        now = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
+        ten_min_ago = datetime(2026, 5, 24, 11, 50, tzinfo=timezone.utc)
+        assert abs(_minutes_since(ten_min_ago.isoformat(), now) - 10.0) < 0.01
+
+    def test_handles_naive_timestamp_as_utc(self):
+        now = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
+        naive = datetime(2026, 5, 24, 11, 0)  # no tzinfo
+        assert abs(_minutes_since(naive.isoformat(), now) - 60.0) < 0.01
+
+    def test_handles_z_suffix(self):
+        now = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
+        z_ts = "2026-05-24T11:30:00Z"
+        assert abs(_minutes_since(z_ts, now) - 30.0) < 0.01
+
+
+class TestPruneRecentlySold:
+    def test_removes_stale_entries(self):
+        now = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
+        old = (now - timedelta(hours=_T212_REBUY_COOLDOWN_HOURS + 1)).isoformat()
+        fresh = (now - timedelta(minutes=5)).isoformat()
+        rs = {"OLD": old, "FRESH": fresh}
+        _prune_recently_sold(rs, now)
+        assert "OLD" not in rs
+        assert "FRESH" in rs
+
+    def test_removes_unparseable(self):
+        now = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
+        rs = {"BAD": "garbage", "GOOD": now.isoformat()}
+        _prune_recently_sold(rs, now)
+        assert "BAD" not in rs
+        assert "GOOD" in rs
+
+    def test_keeps_all_when_fresh(self):
+        now = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
+        rs = {
+            "A": (now - timedelta(minutes=1)).isoformat(),
+            "B": (now - timedelta(hours=1)).isoformat(),
+        }
+        _prune_recently_sold(rs, now)
+        assert len(rs) == 2
+
+    def test_settle_window_shorter_than_cooldown(self):
+        """Sanity: the settlement window must be shorter than the re-buy cooldown."""
+        assert _T212_SETTLE_MINUTES < _T212_REBUY_COOLDOWN_HOURS * 60
+
+
+class TestPortfolioRecentlySoldPersistence:
+    def test_round_trips_through_save_load(self, tmp_path):
+        from pathlib import Path
+        p = Portfolio(cash=1000.0)
+        p.recently_sold = {"NVDA": "2026-05-24T12:00:00+00:00"}
+        path = tmp_path / "t212_portfolio.json"
+        p.save(path)
+        loaded = Portfolio.load(path)
+        assert loaded.recently_sold == {"NVDA": "2026-05-24T12:00:00+00:00"}
+
+    def test_defaults_empty_when_absent(self, tmp_path):
+        import json
+        path = tmp_path / "old_portfolio.json"
+        # Simulate an older state file with no recently_sold key
+        path.write_text(json.dumps({"cash": 500.0}), encoding="utf-8")
+        loaded = Portfolio.load(path)
+        assert loaded.recently_sold == {}
