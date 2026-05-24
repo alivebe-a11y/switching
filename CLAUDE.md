@@ -56,6 +56,17 @@ curl -sL "https://raw.githubusercontent.com/alivebe-a11y/switching/main/docker-c
   step). To confirm nothing was lost, exec into any service and run
   `python scripts/migrate_to_sqlite.py /app/.cache` — expect "VALIDATION PASSED".
 
+### Backup (run before every deploy)
+From the `switch` folder on Windows:
+```powershell
+.\backup.ps1                          # tar cache on NAS + pull copy to .\backups
+.\backup.ps1 -Dataset Pool_1/Configs  # also take a ZFS snapshot (gold standard)
+```
+Backs up `data/cache` (portfolio JSON + `switching.db` + trackers) to a timestamped
+tar.gz on the NAS, prunes to the last `-Keep` (default 10), and downloads an off-box
+copy. Secrets (`.env`) are deliberately excluded. Version-controlled copy at
+`scripts/backup.ps1`.
+
 ## Services (docker-compose.yml)
 | Service | Command | Notes |
 |---------|---------|-------|

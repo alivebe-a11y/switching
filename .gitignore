@@ -28,3 +28,6 @@ alpaca_state.json
 exit_tracker.json
 skipped_signals.json
 trade_memory.json
+# Backup artifacts produced by scripts/backup.ps1
+backups/
+*.tar.gz
