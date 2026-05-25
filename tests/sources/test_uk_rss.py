@@ -169,3 +169,69 @@ def test_fetch_default_market_is_us():
 
     assert len(items) == 1
     assert items[0].market == "us"
+
+
+# ---------------------------------------------------------------------------
+# UK source orchestration: Investegate primary + Google fallback + dedup
+# ---------------------------------------------------------------------------
+
+def _item(title, url, source="x"):
+    return FeedItem(title=title, summary="", url=url,
+                    published=datetime(2026, 5, 22, tzinfo=timezone.utc),
+                    source=source, market="uk")
+
+
+def test_uk_fetch_merges_and_dedupes():
+    inv = [_item("Trading Statement (SGE)", "inv://sge")]
+    gn = [_item("Trading Statement (SGE)", "gn://sge"),     # dup title -> dropped
+          _item("Vodafone guidance (VOD)", "gn://vod")]     # unique -> kept
+    from switching.sources import rss
+    with patch("switching.sources.investegate.scrape", return_value=inv), \
+         patch("switching.sources.rss._fetch_feedparser", return_value=gn):
+        items = rss._fetch_uk(["g"], None)
+    titles = [i.title for i in items]
+    assert titles.count("Trading Statement (SGE)") == 1   # deduped
+    assert "Vodafone guidance (VOD)" in titles            # supplemented
+    assert items[0].url == "inv://sge"                     # Investegate wins
+
+
+def test_uk_fetch_falls_back_to_google_on_scrape_error():
+    from switching.sources import rss
+    alerts = []
+    with patch("switching.sources.investegate.scrape", side_effect=RuntimeError("boom")), \
+         patch("switching.sources.rss._fetch_feedparser", return_value=[_item("X (VOD)", "gn://x")]), \
+         patch("switching.sources.rss._alert_uk_failover", side_effect=lambda r: alerts.append(r)):
+        items = rss._fetch_uk(["g"], None)
+    assert [i.url for i in items] == ["gn://x"]
+    assert len(alerts) == 1
+
+
+def test_uk_fetch_alerts_when_investegate_returns_zero():
+    from switching.sources import rss
+    alerts = []
+    with patch("switching.sources.investegate.scrape", return_value=[]), \
+         patch("switching.sources.rss._fetch_feedparser", return_value=[_item("X (VOD)", "gn://x")]), \
+         patch("switching.sources.rss._alert_uk_failover", side_effect=lambda r: alerts.append(r)):
+        items = rss._fetch_uk(["g"], None)
+    assert [i.url for i in items] == ["gn://x"]
+    assert len(alerts) == 1
+
+
+def test_fetch_market_uk_routes_through_orchestration():
+    from switching.sources import rss
+    with patch("switching.sources.rss._fetch_uk", return_value=[_item("a", "u")]) as m:
+        items = fetch(["g"], market="uk")
+    m.assert_called_once()
+    assert len(items) == 1
+
+
+def test_uk_failover_alert_is_cooldowned():
+    """Repeated failures within the cooldown window send at most one alert."""
+    from switching.sources import rss
+    rss._last_uk_failover_alert = 0.0
+    sent = []
+    with patch("switching.notifications.notify_text", side_effect=lambda t: sent.append(t)):
+        rss._alert_uk_failover("first")
+        rss._alert_uk_failover("second")   # within cooldown -> suppressed
+    assert len(sent) == 1
+    rss._last_uk_failover_alert = 0.0

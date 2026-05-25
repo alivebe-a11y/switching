@@ -140,14 +140,7 @@ def _coerce_dt(entry: feedparser.FeedParserDict) -> datetime:
     return datetime.now(tz=timezone.utc)
 
 
-def fetch(
-    urls: Iterable[str] = DEFAULT_FEEDS,
-    since: datetime | None = None,
-    market: str | None = None,
-) -> list[FeedItem]:
-    # Fall back to the per-process default market when the caller doesn't pass
-    # one (most detectors don't — see _DEFAULT_MARKET).
-    mkt = market if market is not None else _DEFAULT_MARKET
+def _fetch_feedparser(urls: Iterable[str], since: datetime | None, mkt: str) -> list[FeedItem]:
     items: list[FeedItem] = []
     for url in urls:
         try:
@@ -170,3 +163,84 @@ def fetch(
                 )
             )
     return items
+
+
+# --- UK source orchestration: Investegate (primary) + Google News (fallback) ---
+
+_last_uk_failover_alert = 0.0
+_UK_FAILOVER_COOLDOWN = 1800.0   # 30 min — don't spam the per-detector calls
+
+
+def _norm_title(t: str) -> str:
+    return " ".join(t.lower().split())
+
+
+def _alert_uk_failover(reason: str) -> None:
+    """Telegram alert when Investegate fails, cooldowned (fetch is called once
+    per UK detector per cycle, so without this it would fire ~13x)."""
+    global _last_uk_failover_alert
+    import time as _time
+    now = _time.time()
+    if now - _last_uk_failover_alert < _UK_FAILOVER_COOLDOWN:
+        return
+    _last_uk_failover_alert = now
+    log.warning("UK RSS failover: %s", reason)
+    try:
+        from switching import notifications
+        notifications.notify_text(f"⚠️ UK RNS source failed ({reason}) — falling back to Google News.")
+    except Exception:  # pragma: no cover — notifications optional
+        pass
+
+
+def _fetch_uk(google_urls: Iterable[str], since: datetime | None) -> list[FeedItem]:
+    """Investegate is primary; Google News runs in parallel as a fallback/supplement.
+
+    - Both succeed: merge, deduping Google items whose (normalised) headline a
+      Investegate item already covers. Investegate wins.
+    - Investegate fails / returns nothing: use Google News only + Telegram alert.
+    """
+    from switching.sources import investegate
+
+    inv_items: list[FeedItem] = []
+    inv_ok = False
+    try:
+        inv_items = investegate.scrape(since=since)
+        inv_ok = len(inv_items) > 0
+    except Exception as exc:
+        _alert_uk_failover(f"scrape error: {type(exc).__name__}")
+    else:
+        if not inv_ok:
+            _alert_uk_failover("0 items parsed")
+
+    gn_items = _fetch_feedparser(google_urls, since, "uk")
+
+    if not inv_ok:
+        return gn_items
+
+    # Merge: Investegate first, then Google items not already covered by title.
+    seen = {_norm_title(it.title) for it in inv_items}
+    merged = list(inv_items)
+    added = 0
+    for it in gn_items:
+        if _norm_title(it.title) not in seen:
+            merged.append(it)
+            seen.add(_norm_title(it.title))
+            added += 1
+    log.info(
+        "UK sources: investegate=%d, google=%d (+%d new after dedup) -> %d",
+        len(inv_items), len(gn_items), added, len(merged),
+    )
+    return merged
+
+
+def fetch(
+    urls: Iterable[str] = DEFAULT_FEEDS,
+    since: datetime | None = None,
+    market: str | None = None,
+) -> list[FeedItem]:
+    # Fall back to the per-process default market when the caller doesn't pass
+    # one (most detectors don't — see _DEFAULT_MARKET).
+    mkt = market if market is not None else _DEFAULT_MARKET
+    if mkt == "uk":
+        return _fetch_uk(urls, since)
+    return _fetch_feedparser(urls, since, mkt)

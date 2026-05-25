@@ -16,6 +16,7 @@ dependencies = [
     "yfinance>=0.2.40",
     "pandas>=2.0",
     "flask>=3.0",
+    "requests>=2.31",
 ]
 
 [project.optional-dependencies]

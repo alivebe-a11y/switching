@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `main`
-- **593 tests**, run with: `pytest tests/`
+- **612 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path (Dockge UI): `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -168,6 +168,29 @@ on the base `max_position_pct`:
   (was deploying only ~£6k of £20k). Applied in both `open_position` (paper) and
   the T212 buy loop.
 
+## UK news sources (Investegate primary + Google News fallback)
+The old UK RSS feeds all died. UK ingestion now (`rss._fetch_uk`, triggered when
+`market=="uk"`):
+- **Investegate** (`sources/investegate.py`) is the **primary** source — HTML scrape
+  of the RNS table (server-rendered, every row carries the EPIC), TTL-cached 240s so
+  the ~13 UK detectors don't re-scrape per cycle. Near-primary RNS, far more complete
+  than Google News. EPIC parsed from the announcement URL slug (`---glv/`) so it
+  doesn't depend on exact table markup; **fails loud** (0 items ⇒ failover).
+- **Google News RSS** (`UK_FEEDS`) runs in **parallel** as fallback/supplement;
+  merged with Investegate, deduping Google items whose normalised title Investegate
+  already covers (Investegate wins).
+- **Failover**: if Investegate errors or parses 0 items, use Google News only and
+  send a Telegram alert (`_alert_uk_failover`, 30-min cooldown so the per-detector
+  calls don't spam). The proper low-latency fix is the roadmap "primary-source
+  ingestion" item (LSE RNS API direct + a UK ticker resolver).
+- Caveat: Investegate scraping is more fragile than RSS (breaks on a site redesign) —
+  the loud failover + Google fallback is the safety net.
+
+## Telegram notification market tags
+Every message is prefixed with a per-process market label (`notifications.set_market`,
+called once at loop start): `🇺🇸 US` / `🇬🇧 LSE` / `🇺🇸 T212`, so the three services'
+alerts are distinguishable in one chat. Default is no prefix (unconfigured/tests).
+
 ## Architecture
 ```
 src/switching/
@@ -188,7 +211,8 @@ src/switching/
 ├── detectors/          — All detector modules (one per file)
 │   └── base.py         — Detector ABC
 ├── sources/
-│   ├── rss.py          — DEFAULT_FEEDS, EARNINGS_FEEDS, CORPORATE_FEEDS, UK_FEEDS
+│   ├── rss.py          — DEFAULT_FEEDS, EARNINGS_FEEDS, CORPORATE_FEEDS, UK_FEEDS; UK source orchestration (_fetch_uk)
+│   ├── investegate.py  — Investegate RNS HTML scraper (primary UK source), TTL-cached
 │   ├── historical.py   — Seed CSV loader + live EDGAR augmentation
 │   ├── sec_edgar.py    — EdgarClient (rate-limited, needs SWITCHING_EDGAR_UA)
 │   └── ticker_lookup.py — SEC company-name→ticker fallback for extract_ticker()

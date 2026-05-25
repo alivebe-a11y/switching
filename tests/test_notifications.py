@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import patch, MagicMock
 
+import switching.notifications as _notif
 from switching.notifications import (
     _send,
     flush_buy_queue,
@@ -13,8 +14,54 @@ from switching.notifications import (
     notify_skip,
     notify_daily_summary,
     notify_startup,
+    notify_text,
     pending_buy_count,
+    set_market,
 )
+
+
+class TestMarketPrefix:
+    def teardown_method(self):
+        _notif._MARKET_PREFIX = ""   # don't leak market state across tests
+
+    def _capture(self):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        return mock_resp
+
+    def test_no_prefix_by_default(self):
+        with patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "1"}), \
+             patch("urllib.request.urlopen", return_value=self._capture()) as mo:
+            _send("hello")
+        assert b"[" not in mo.call_args[0][0].data.split(b"hello")[0][-3:]
+
+    def test_uk_prefix_applied(self):
+        set_market("uk")
+        with patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "1"}), \
+             patch("urllib.request.urlopen", return_value=self._capture()) as mo:
+            notify_text("hello")
+        data = mo.call_args[0][0].data.decode("utf-8")
+        assert "LSE" in data and "hello" in data
+
+    def test_us_and_uk_prefixes_differ(self):
+        set_market("us")
+        with patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "1"}), \
+             patch("urllib.request.urlopen", return_value=self._capture()) as mo:
+            notify_text("x")
+        us = mo.call_args[0][0].data.decode("utf-8")
+        set_market("uk")
+        with patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "1"}), \
+             patch("urllib.request.urlopen", return_value=self._capture()) as mo:
+            notify_text("x")
+        uk = mo.call_args[0][0].data.decode("utf-8")
+        assert us != uk
+        assert "US" in us and "LSE" in uk
+
+    def test_t212_label(self):
+        set_market("t212")
+        assert "T212" in _notif._MARKET_PREFIX
 
 
 class TestIsConfigured:

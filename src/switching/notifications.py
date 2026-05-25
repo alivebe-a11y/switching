@@ -28,6 +28,23 @@ log = logging.getLogger(__name__)
 _API_BASE = "https://api.telegram.org/bot{token}"
 _BATCH_INTERVAL_SECONDS = 2 * 60 * 60  # 2 hours
 
+# Per-process market label prepended to every message so UK/US/T212 alerts are
+# visually distinct in the same Telegram chat. Set once at loop start via
+# set_market(). Empty by default (no prefix) so unconfigured callers/tests are
+# unaffected.
+_MARKET_PREFIX = ""
+_MARKET_LABELS = {
+    "us": "🇺🇸 US",
+    "uk": "🇬🇧 LSE",
+    "t212": "🇺🇸 T212",
+}
+
+
+def set_market(market: str) -> None:
+    """Set the market tag prepended to every notification (per process)."""
+    global _MARKET_PREFIX
+    _MARKET_PREFIX = _MARKET_LABELS.get(market, market.upper())
+
 
 def _config() -> tuple[str, str] | None:
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -42,6 +59,8 @@ def _send(text: str, parse_mode: str = "HTML") -> bool:
     if cfg is None:
         return False
     token, chat_id = cfg
+    if _MARKET_PREFIX:
+        text = f"<b>[{_MARKET_PREFIX}]</b>\n{text}"
     url = f"{_API_BASE.format(token=token)}/sendMessage"
     payload = json.dumps({
         "chat_id": chat_id,
@@ -61,6 +80,11 @@ def _send(text: str, parse_mode: str = "HTML") -> bool:
     except Exception as exc:
         log.warning("Telegram send failed: %s", exc)
         return False
+
+
+def notify_text(text: str) -> None:
+    """Send an ad-hoc one-off alert (gets the market prefix like everything else)."""
+    _send(text)
 
 
 # ---------------------------------------------------------------------------

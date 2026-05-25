@@ -766,6 +766,8 @@ def run_loop(
     console = Console()
 
     service = storage.service_from_path(state_path)
+    # Tag every Telegram message with the market so UK/US alerts are distinct.
+    notifications.set_market(service)
 
     tracker_path = state_path.parent / "exit_tracker.json"
     exit_tracker = ExitTracker.load(tracker_path, service)
@@ -1247,6 +1249,7 @@ def run_loop_t212(
     from switching.trade_memory import update_memory
     from switching import notifications
     service = storage.service_from_path(state_path)            # "t212"
+    notifications.set_market(service)   # tag Telegram messages as T212
     tracker_path = state_path.parent / "exit_tracker.json"
     skipped_path = state_path.parent / "skipped_signals.json"
     memory_path = state_path.parent / "trade_memory.json"
