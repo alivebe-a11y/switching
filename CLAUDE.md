@@ -292,6 +292,13 @@ endpoints are US-scoped; `/api/uk` and `/api/t212` read their own services.
 - Terminal hyperlinks can mangle Python module names in Dockge console
 - EDGAR rate limit: 8 req/s (conservative vs SEC's 10 req/s limit)
 - SEC ticker map caches to `/tmp/sec_company_tickers.json` (override via `SWITCHING_CACHE_DIR`)
+- **Optimistic stop fills**: `check_exits` snaps a stop-loss exit to `entry × (1 − stop_loss)`.
+  Real fills gap *through* the stop in a fast drop, so paper-trade understates crash losses —
+  T212's real fills are the truth. Biggest divergence is during sharp sell-offs. (See
+  pre-live safety gate item #4.)
+- **No market-regime / drawdown halt yet** — the bot trades each signal independently and
+  has no "risk-off, stop buying" switch. Fine for demo; a hard blocker before real money
+  (pre-live gate #1).
 
 ---
 
@@ -682,6 +689,28 @@ event_dt,ticker,company,headline,url,evidence,severity
 - [ ] Improve buyback detector (36% win rate — needs work or disable)
 - [ ] Build Form 4 XML parser for insider_cluster (currently stub)
 
+### ⛔ Pre-live safety gate (BLOCKERS — must ship before ANY real money)
+Do **not** flip `T212_DEMO=false` / fund a live account until ALL of these exist.
+These are crash/failure protections; the demo can run without them, real money cannot.
+
+- [ ] **1. Market kill-switch / drawdown halt (MIN).** Auto-pause *opening new positions*
+  when (a) daily/portfolio P&L drops below a threshold, or (b) a risk-off regime is
+  detected (e.g. VIX or index % move). Exits ALWAYS remain enabled — you must always be
+  able to get out. Without this the bot can churn capital into a falling market.
+- [ ] **2. Per-detector / per-feed circuit breaker (MIN).** Trip a detector/feed/API after
+  N consecutive empty-or-failed scans → stop calling it, fire ONE Telegram alert, retry
+  after a cooldown (half-open), auto-recover + alert on success. Catches dead feeds loudly
+  (the UK feeds were silently dead for a week). Closes the Release It! gap (see "Stability
+  rules"). Already half-noted as "disable detector after N empty scans" under Infrastructure.
+- [ ] **3. Manual Telegram STOP command (MIN).** Operator kill-switch: send `/stop` (and
+  `/resume`) to the bot to halt new buys immediately — for "RSS failing AND market tanking"
+  moments. Requires the bot to *read* Telegram (it currently only sends): poll `getUpdates`
+  (or a flag file the dashboard/Telegram writes), loops check a `trading_enabled` flag
+  before buying; exits always allowed. Persist the flag so a restart doesn't silently resume.
+- [ ] **4. Stop-fill realism check.** The paper trader snaps stop-loss fills to the stop
+  price (optimistic); real fills gap through in a crash. Add paper-vs-T212 stop-loss
+  slippage to the weekly report so the true crash cost is visible before trusting it live.
+
 ### Phase 2 — Scale to Real Capital (Month 3-6)
 - [ ] Set up UK Ltd company for tax efficiency (25% vs 40%)
 - [ ] Fund with £5-10K own savings
@@ -821,6 +850,23 @@ UK flow alive so we can judge whether UK is worth the deeper build at all.
 - [ ] crypto_treasury — Bitcoin treasury announcements (MicroStrategy pattern)
 - [ ] geopolitical — oil/defence/shipping on geopolitical events (Strait of Hormuz etc.)
 - [ ] day_trading — intraday momentum signals (separate project likely)
+
+### Exploration: profit from market falls ("crash alpha") — paper only
+The engine is **long-only momentum on bullish catalysts**; it can't currently profit from
+a drop. Options, cleanest-fit first for THIS architecture:
+- [ ] **Inverse ETFs on a risk-off regime** (best fit) — when the market-regime signal
+      (same one as pre-live gate #1) flips risk-off, *buy* an inverse ETF (-1x, e.g. SH /
+      a UK equivalent). Mechanically a "buy", so it slots into the existing long-only loop —
+      no shorting/margin. CAVEAT: only -1x for holds >1 day; leveraged inverse (SQQQ -3x)
+      decays from daily rebalancing — never hold those.
+- [ ] **Bearish-catalyst detector** — mirror of the bullish detectors (profit warnings,
+      guidance cuts, going-concern, fraud, mass downgrades) → feeds shorts or puts.
+- [ ] **Shorting (T212 CFD) / puts** — true short exposure, but: margin, borrow cost,
+      unlimited/large risk, regulatory friction (Invest account is long-only; CFDs are a
+      different product). Puts are Phase 3 (options). High complexity — defer.
+**Honest framing:** crash-timing is hard (sharp, brief, whipsaw-prone) and is a *different
+edge* from bullish-catalyst momentum. Worth trying on the paper trader, NOT a core feature.
+Naturally pairs with the regime filter we need for the kill-switch anyway.
 
 ### Completed
 - [x] 13 detectors live: ai_pivot, earnings_surprise, buyback, activist_13d, insider_cluster, index_inclusion, spinoff, analyst_upgrade, fda_decision, mna_target, guidance_raise, dividend_surprise, contract_win
