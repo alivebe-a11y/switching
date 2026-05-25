@@ -24,7 +24,7 @@ services:
     volumes:
       - ${SWITCHING_DATA_DIR:-./data/cache}:/app/.cache
     entrypoint: ["switching"]
-    command: ["paper-trade", "--seed", "20000", "--interval", "10", "--stop-loss", "0.026", "--hold-days", "5", "--max-position", "0.01", "--max-positions", "0"]
+    command: ["paper-trade", "--seed", "20000", "--interval", "10", "--stop-loss", "0.026", "--hold-days", "5", "--max-position", "0.015", "--max-positions", "0"]
     restart: unless-stopped
 
   trade:
@@ -72,7 +72,7 @@ services:
     volumes:
       - ${SWITCHING_DATA_DIR:-./data/cache}:/app/.cache
     entrypoint: ["switching"]
-    command: ["paper-trade", "--market", "uk", "--seed", "20000", "--interval", "10", "--stop-loss", "0.026", "--hold-days", "5", "--max-position", "0.01", "--max-positions", "0", "--state", "/app/.cache/uk_portfolio.json"]
+    command: ["paper-trade", "--market", "uk", "--seed", "20000", "--interval", "10", "--stop-loss", "0.026", "--hold-days", "5", "--max-position", "0.015", "--max-positions", "0", "--state", "/app/.cache/uk_portfolio.json"]
     restart: unless-stopped
 
   dashboard:

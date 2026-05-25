@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `main`
-- **577 tests**, run with: `pytest tests/`
+- **587 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path (Dockge UI): `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -115,13 +115,13 @@ so the three services share one file without colliding and can be compared with 
 | Detector | Source | Exit Profile | Markets |
 |----------|--------|--------------|---------|
 | earnings_surprise | RSS (earnings feeds + UK_FEEDS) | first_green +2%, 3-day hold | US + UK |
-| ai_pivot | RSS (default feeds) | first_green +2% (>$30) or +0% (<$30), 3-5 day | US |
+| ai_pivot | RSS (default feeds) | **ride mode**: first-green flips into peak-trailing (3% band), 6-8 day backstop | US |
 | analyst_upgrade | RSS (default feeds) | first_green +1%, 3-day hold | US + UK |
 | fda_decision | RSS (default + earnings) | first_green +3%, 3-day hold | US |
 | buyback | RSS (default + corporate) | NO first_green, 5-day hold | US + UK |
 | index_inclusion | RSS (default + corporate) | default (first_green +0%, 5-day) | US + UK (FTSE) |
 | spinoff | RSS (default + corporate) | default | US + UK |
-| mna_target | RSS (default + corporate + UK_FEEDS) | first_green +3%, 5-day hold; **acquirer-direction signals are skipped** | US + UK |
+| mna_target | RSS (default + corporate + UK_FEEDS) | **ride mode**: first-green flips into peak-trailing (3% band), 8-day backstop; **acquirer-direction signals are skipped** | US + UK |
 | guidance_raise | RSS (default + earnings + corporate + UK_FEEDS) | first_green +5%, 5-day hold | US + UK |
 | dividend_surprise | RSS (default + earnings + corporate) | first_green +1%, 4-day hold, +1% wider stop | US + UK |
 | contract_win | RSS (default + corporate) | first_green +2%, 5-day hold | US + UK |
@@ -144,6 +144,29 @@ Tiers apply to normalised price (GBP for UK = pence/100, USD for US):
 - £30+/\$30+ stocks: base stop
 - £5-30/\$5-30 stocks: base stop + 1%
 - <£5/<\$5 stocks: base stop + 2%
+
+## Ride Mode (momentum exit, `_exit_profile`)
+Live data showed momentum detectors leave money on the table (ai_pivot +22%/peak
+day ~8, mna_target +11%/peak day ~7) under a fixed first-green exit. "Ride mode"
+(profile keys `ride: True`, `trail_pct: 0.03`) makes a position **flip into
+peak-tracking when it goes green on day ≥1** instead of taking the small win — it
+then rides with a 3% trailing band until a 3% drop from peak or the hold-days
+backstop (ai_pivot 6–8d, mna_target 8d). Derived per-cycle in `check_exits`; no
+persisted Position fields beyond `peak_tracking`/`peak_price` (which already save).
+The pre-existing day-0 **+8% spike** peak-tracking still applies to all detectors.
+
+## Position Sizing — conviction weighting (`_position_weight`)
+Replaces the old fixed-$2k guidance_raise override with a fund-relative multiplier
+on the base `max_position_pct`:
+- guidance_raise ×7 (63% WR, ~95% of live P&L), dividend_surprise/contract_win ×2,
+  buyback ×1.5, everything else ×1.0.
+- Weak/fat-tail detectors are **not** sized down — tail winners come from
+  low-win-rate detectors (mna_target produced a +56% trade), so shrinking them
+  would clip the tail.
+- Hard cap `_MAX_SINGLE_POSITION_PCT = 0.12` per position; still bounded by cash.
+- Base `--max-position` raised 1.0% → 1.5% (US + UK paper) to lift capital use
+  (was deploying only ~£6k of £20k). Applied in both `open_position` (paper) and
+  the T212 buy loop.
 
 ## Architecture
 ```

@@ -320,20 +320,31 @@ def _tiered_stop_loss(base_stop: float, price: float, market: str = "us") -> flo
     return base_stop + 0.02
 
 
-def _position_size_override(detector: str) -> float | None:
-    """Return a fixed-dollar position size for high-performing detectors.
+# Never put more than this fraction of the fund into a single position, no
+# matter how high its conviction weight — caps idiosyncratic risk.
+_MAX_SINGLE_POSITION_PCT = 0.12
 
-    Detectors earn a fixed-size slot when live data shows they consistently
-    outperform the standard percentage-based allocation.  ``None`` means "use
-    the normal ``portfolio.total_value * max_position_pct`` formula".
 
-    The fixed amount is still capped by ``portfolio.cash`` so we never spend
-    money we don't have.
+def _position_weight(detector: str) -> float:
+    """Conviction multiplier on the base position size, by proven performance.
+
+    Sizes UP detectors that consistently earn it (from live data), leaving the
+    rest at baseline (1.0). Deliberately does NOT size weak detectors *down*:
+    the strategy's profit is fat-tailed and the tail winners arrive from
+    low-win-rate detectors (e.g. mna_target produced a +56% trade), so shrinking
+    them would clip the tail. Allocation is still bounded by available cash and
+    by ``_MAX_SINGLE_POSITION_PCT``.
+
+    Replaces the old fixed-dollar guidance_raise override with a fund-relative
+    weight so sizing scales as the fund grows.
     """
-    _OVERRIDES: dict[str, float] = {
-        "guidance_raise": 2_000.0,   # strong live performer — bump to fixed $2k
+    _WEIGHTS: dict[str, float] = {
+        "guidance_raise": 7.0,     # 63% WR, +4.2% avg, ~95% of live P&L — the engine
+        "dividend_surprise": 2.0,  # 60% WR, consistent small wins
+        "contract_win": 2.0,       # 60% WR
+        "buyback": 1.5,            # 50% WR, slow grind
     }
-    return _OVERRIDES.get(detector)
+    return _WEIGHTS.get(detector, 1.0)
 
 
 def _exit_profile(detector: str, price: float) -> dict:
@@ -345,15 +356,25 @@ def _exit_profile(detector: str, price: float) -> dict:
         # Raised to 2%; hold extended to 3 days to capture post-announcement drift.
         return {"first_green": True, "first_green_pct": 0.02, "hold_days": 3}
     if detector == "ai_pivot":
+        # Momentum: live data shows winners peak ~day 8 and leave ~22% on the
+        # table under the old fixed first-green exit. "Ride mode" flips a green
+        # position into peak-tracking with a wider 3% trailing band so it rides
+        # toward the peak, with an 8-day backstop. Plays it safe (locks in via
+        # trailing stop) rather than chasing the exact top.
         if price >= 30.0:
-            return {"first_green": True, "first_green_pct": 0.02, "hold_days": 5}
-        return {"first_green": True, "first_green_pct": 0.0, "hold_days": 3}
+            return {"first_green": True, "first_green_pct": 0.02, "hold_days": 8,
+                    "ride": True, "trail_pct": 0.03}
+        return {"first_green": True, "first_green_pct": 0.01, "hold_days": 6,
+                "ride": True, "trail_pct": 0.03}
     if detector == "fda_decision":
         return {"first_green": True, "first_green_pct": 0.03, "hold_days": 3}
     if detector == "analyst_upgrade":
         return {"first_green": True, "first_green_pct": 0.01, "hold_days": 3}
     if detector == "mna_target":
-        return {"first_green": True, "first_green_pct": 0.03, "hold_days": 5}
+        # Momentum: targets drift toward the offer price, peaking ~day 6-7 and
+        # leaving ~11% on the table. Ride mode + 8-day hold captures the drift.
+        return {"first_green": True, "first_green_pct": 0.03, "hold_days": 8,
+                "ride": True, "trail_pct": 0.03}
     if detector == "guidance_raise":
         # Live data: stocks consistently ran 5-25% beyond the old 2% threshold
         # (CVS +14.3%, GEN +12.3%, TBLA +37.8% post-exit). Raised to 5%;
@@ -398,12 +419,11 @@ def open_position(
         log.info("price %.4f (normalised %.4f) below floor, skipping %s", price, normalised, signal.ticker)
         return None
 
-    override = _position_size_override(signal.detector)
-    if override is not None:
-        alloc = min(override, portfolio.cash)
-    else:
-        alloc = portfolio.total_value * portfolio.max_position_pct
-        alloc = min(alloc, portfolio.cash)
+    # Conviction-weighted size: base allocation scaled by the detector's weight,
+    # capped per-position and by available cash.
+    weight = _position_weight(signal.detector)
+    alloc = portfolio.total_value * portfolio.max_position_pct * weight
+    alloc = min(alloc, portfolio.cash, portfolio.total_value * _MAX_SINGLE_POSITION_PCT)
     if alloc < 1.0:
         log.info("insufficient cash ($%.2f), skipping %s", portfolio.cash, signal.ticker)
         return None
@@ -475,6 +495,15 @@ def check_exits(portfolio: Portfolio, market: str = "us") -> list[ClosedTrade]:
         else:
             days_elapsed = trading_days_since(pos.entry_dt)
 
+        # Profile-derived exit modifiers (re-derived each cycle, so no extra
+        # persisted Position fields needed — peak_tracking/peak_price already
+        # persist). trail_pct: trailing band once peak-tracking. ride: momentum
+        # detectors flip into peak-tracking at first-green instead of exiting,
+        # to ride toward the peak.
+        _profile = _exit_profile(pos.detector, pos.entry_price)
+        trail_pct = _profile.get("trail_pct", 0.005)
+        ride = _profile.get("ride", False)
+
         if ret_low <= -pos.stop_loss:
             # Stop-loss fires regardless of market hours (last-known price is
             # the best we have; price is snapped to the stop level anyway).
@@ -484,13 +513,21 @@ def check_exits(portfolio: Portfolio, market: str = "us") -> list[ClosedTrade]:
             if price > pos.peak_price:
                 pos.peak_price = price
             drop_from_peak = (pos.peak_price - price) / pos.peak_price if pos.peak_price > 0 else 0
-            if drop_from_peak >= 0.005:
+            if drop_from_peak >= trail_pct:
                 reason = "peak_trailing"
+            elif _mkt_open and days_elapsed >= pos.hold_days:
+                reason = "hold_expiry"   # backstop: don't ride indefinitely
         elif _mkt_open and pos.first_green and ret >= 0.08 and days_elapsed == 0:
             pos.peak_tracking = True
             pos.peak_price = price
         elif _mkt_open and pos.first_green and ret >= pos.first_green_pct and days_elapsed >= 1:
-            reason = "first_green"
+            if ride:
+                # Ride toward the peak: flip into peak-tracking instead of
+                # taking the small first-green win.
+                pos.peak_tracking = True
+                pos.peak_price = price
+            else:
+                reason = "first_green"
         elif _mkt_open and days_elapsed >= pos.hold_days:
             reason = "hold_expiry"
 
@@ -1454,8 +1491,11 @@ def run_loop_t212(
                 console.print(f"  [yellow]SKIP {sig.ticker}: price unavailable[/yellow]")
                 continue
 
-            alloc = acct.total * max_position_pct
-            alloc = min(alloc, acct.free)
+            # Conviction-weighted size (same model as the internal paper trader),
+            # capped per-position and by available buying power.
+            weight = _position_weight(sig.detector)
+            alloc = acct.total * max_position_pct * weight
+            alloc = min(alloc, acct.free, acct.total * _MAX_SINGLE_POSITION_PCT)
             if alloc < 1.0:
                 console.print(f"  [yellow]SKIP {sig.ticker}: insufficient buying power (${acct.free:.2f})[/yellow]")
                 _record_t212_skip(skipped_tracker, sig, "insufficient_cash", stop_loss, price=price)

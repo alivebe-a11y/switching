@@ -17,8 +17,10 @@ from switching.paper_trader import (
     _T212_SETTLE_MINUTES,
     _calendar_days_since,
     _exit_profile,
+    _MAX_SINGLE_POSITION_PCT,
     _make_edgar_client,
     _minutes_since,
+    _position_weight,
     _prune_recently_sold,
     _reconcile_t212_ghosts,
     _signal_key,
@@ -32,7 +34,10 @@ from switching.paper_trader import (
 def _make_position(entry_dt: datetime, **overrides) -> Position:
     defaults = dict(
         ticker="TEST",
-        detector="ai_pivot",
+        # analyst_upgrade = a simple first-green detector (no "ride mode"), so the
+        # generic exit-mechanics tests below exercise the first_green/stop/hold
+        # paths. Detector-specific behaviour is tested explicitly elsewhere.
+        detector="analyst_upgrade",
         entry_price=100.0,
         shares=2.0,
         entry_dt=entry_dt.isoformat(),
@@ -210,13 +215,16 @@ class TestExitProfile:
         p = _exit_profile("ai_pivot", 50.0)
         assert p["first_green"] is True
         assert p["first_green_pct"] == 0.02
-        assert p["hold_days"] == 5
+        assert p["hold_days"] == 8           # extended for ride mode
+        assert p["ride"] is True
+        assert p["trail_pct"] == 0.03
 
     def test_ai_pivot_penny_stock_quick_exit(self):
         p = _exit_profile("ai_pivot", 10.0)
         assert p["first_green"] is True
-        assert p["first_green_pct"] == 0.0
-        assert p["hold_days"] == 3
+        assert p["first_green_pct"] == 0.01  # small confirmation before riding
+        assert p["hold_days"] == 6
+        assert p["ride"] is True
 
     def test_ai_pivot_boundary_30(self):
         p = _exit_profile("ai_pivot", 30.0)
@@ -224,8 +232,14 @@ class TestExitProfile:
 
     def test_ai_pivot_below_30(self):
         p = _exit_profile("ai_pivot", 29.99)
-        assert p["first_green_pct"] == 0.0
-        assert p["hold_days"] == 3
+        assert p["first_green_pct"] == 0.01
+        assert p["hold_days"] == 6
+
+    def test_mna_target_rides(self):
+        p = _exit_profile("mna_target", 50.0)
+        assert p["ride"] is True
+        assert p["trail_pct"] == 0.03
+        assert p["hold_days"] == 8
 
     def test_unknown_detector_defaults(self):
         p = _exit_profile("some_future_detector", 100.0)
@@ -588,3 +602,109 @@ class TestReconcileT212Ghosts:
         closed = _reconcile_t212_ghosts(p, {"KEEP"}, now)
         assert [c.ticker for c in closed] == ["GONE"]
         assert [pos.ticker for pos in p.positions] == ["KEEP"]
+
+
+class TestPositionWeight:
+    def test_guidance_raise_sized_up(self):
+        assert _position_weight("guidance_raise") == 7.0
+
+    def test_solid_detectors_2x(self):
+        assert _position_weight("dividend_surprise") == 2.0
+        assert _position_weight("contract_win") == 2.0
+
+    def test_unknown_and_weak_detectors_baseline(self):
+        # Weak/fat-tail detectors are NOT sized down (would clip the tail).
+        assert _position_weight("ai_pivot") == 1.0
+        assert _position_weight("mna_target") == 1.0
+        assert _position_weight("fda_decision") == 1.0
+        assert _position_weight("some_new_detector") == 1.0
+
+
+class TestConvictionSizing:
+    def _sig(self, detector):
+        from switching.signal import Signal
+        return Signal(detector=detector, ticker="T", company="C",
+                      event_dt=datetime.now(tz=timezone.utc), headline="h",
+                      url="", evidence="e", severity=0.8)
+
+    def test_weight_scales_allocation(self):
+        # guidance_raise (7x) should buy ~7x the shares of a baseline detector
+        # at the same price, all else equal.
+        base = Portfolio(cash=100_000.0, max_position_pct=0.015)
+        pos_base = open_position(base, self._sig("contract_win"), 50.0)  # 2x
+        conv = Portfolio(cash=100_000.0, max_position_pct=0.015)
+        pos_conv = open_position(conv, self._sig("guidance_raise"), 50.0)  # 7x
+        ratio = pos_conv.shares / pos_base.shares
+        assert abs(ratio - 3.5) < 0.01   # 7x / 2x
+
+    def test_per_position_cap_enforced(self):
+        # A huge weight can't exceed the per-position cap of the fund.
+        p = Portfolio(cash=100_000.0, max_position_pct=0.015)
+        pos = open_position(p, self._sig("guidance_raise"), 100.0)
+        cost = pos.shares * pos.entry_price
+        assert cost <= 100_000.0 * _MAX_SINGLE_POSITION_PCT + 1e-6
+
+    def test_baseline_size(self):
+        p = Portfolio(cash=100_000.0, max_position_pct=0.015)
+        pos = open_position(p, self._sig("analyst_upgrade"), 50.0)
+        cost = pos.shares * pos.entry_price
+        assert abs(cost - 100_000.0 * 0.015) < 0.01   # 1.5% baseline, weight 1.0
+
+
+class TestRideMode:
+    """Momentum detectors flip into peak-tracking at first-green and ride
+    toward the peak instead of taking the small first-green win."""
+
+    def _mkt(self, **kw):
+        # patch market open + trading days
+        return patch.multiple(
+            "switching.paper_trader",
+            is_market_hours=lambda: True,
+            **kw,
+        )
+
+    def test_ride_detector_does_not_exit_on_first_green(self):
+        yesterday = datetime.now(tz=timezone.utc) - timedelta(days=1)
+        p = Portfolio(cash=800.0, positions=[
+            _make_position(yesterday, detector="mna_target", first_green=True,
+                           first_green_pct=0.03)
+        ])
+        with patch("switching.paper_trader.get_intraday_data",
+                   return_value={"open":100.0,"high":105.0,"low":99.5,"close":104.0}), \
+             patch("switching.paper_trader.is_market_hours", return_value=True), \
+             patch("switching.paper_trader.trading_days_since", return_value=1):
+            closed = check_exits(p)
+        # +4% on day 1 with first_green 3% -> would normally exit first_green,
+        # but mna_target rides: no exit, now peak-tracking.
+        assert closed == []
+        assert len(p.positions) == 1
+        assert p.positions[0].peak_tracking is True
+
+    def test_ride_then_trailing_stop_exit(self):
+        yesterday = datetime.now(tz=timezone.utc) - timedelta(days=1)
+        pos = _make_position(yesterday, detector="mna_target", first_green=True,
+                             first_green_pct=0.03, peak_tracking=True, peak_price=120.0)
+        p = Portfolio(cash=800.0, positions=[pos])
+        # price dropped >3% from the 120 peak (to 115 = -4.2%) -> peak_trailing exit
+        with patch("switching.paper_trader.get_intraday_data",
+                   return_value={"open":116.0,"high":116.0,"low":115.0,"close":115.0}), \
+             patch("switching.paper_trader.is_market_hours", return_value=True), \
+             patch("switching.paper_trader.trading_days_since", return_value=2):
+            closed = check_exits(p)
+        assert len(closed) == 1
+        assert closed[0].exit_reason == "peak_trailing"
+
+    def test_ride_holds_above_trail_band(self):
+        yesterday = datetime.now(tz=timezone.utc) - timedelta(days=1)
+        pos = _make_position(yesterday, detector="mna_target", first_green=True,
+                             first_green_pct=0.03, peak_tracking=True, peak_price=120.0,
+                             hold_days=8)
+        p = Portfolio(cash=800.0, positions=[pos])
+        # only -1% from peak (119), inside the 3% band, day 2 < 8 -> keep riding
+        with patch("switching.paper_trader.get_intraday_data",
+                   return_value={"open":119.0,"high":119.5,"low":118.5,"close":118.8}), \
+             patch("switching.paper_trader.is_market_hours", return_value=True), \
+             patch("switching.paper_trader.trading_days_since", return_value=2):
+            closed = check_exits(p)
+        assert closed == []
+        assert len(p.positions) == 1
