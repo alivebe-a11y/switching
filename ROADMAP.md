@@ -61,6 +61,14 @@
 - [ ] S&P Capital IQ (£15-25K/year — only at £100K+ capital)
 - [ ] Bloomberg Terminal (£24K/year — only if running a fund)
 
+## Triggered / Deferred items
+- [ ] **Corporate-actions feed ingestion** — proactively map ticker changes + pre-empt
+      splits/delistings. DEFERRED; build only when running real capital AND holds extend
+      past ~5 days AND a *structured* corporate-actions data source exists AND the reactive
+      ghost-position reconciliation proves insufficient. Full trigger conditions and
+      rationale in `CLAUDE.md → Roadmap → Triggered / Deferred items` (re-checked on each
+      roadmap scan). Reactive fix already shipped (`_reconcile_t212_ghosts`).
+
 ## Detector Ideas
 - [ ] stock_split — splits often run up beforehand
 - [ ] crypto_treasury — Bitcoin treasury announcements (MicroStrategy pattern)

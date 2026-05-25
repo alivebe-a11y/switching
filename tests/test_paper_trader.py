@@ -20,6 +20,7 @@ from switching.paper_trader import (
     _make_edgar_client,
     _minutes_since,
     _prune_recently_sold,
+    _reconcile_t212_ghosts,
     _signal_key,
     _tiered_stop_loss,
     check_exits,
@@ -522,3 +523,68 @@ class TestPortfolioRecentlySoldPersistence:
         path.write_text(json.dumps({"cash": 500.0}), encoding="utf-8")
         loaded = Portfolio.load(path)
         assert loaded.recently_sold == {}
+
+
+class TestReconcileT212Ghosts:
+    """Local positions T212 no longer reports = closed externally (corporate
+    action / delisting / ticker change). They must be recorded + removed."""
+
+    def _pf(self, *tickers):
+        now = datetime.now(tz=timezone.utc)
+        p = Portfolio(cash=1000.0)
+        for t in tickers:
+            p.positions.append(_make_position(now, ticker=t, detector="mna_target"))
+        return p
+
+    def test_held_position_kept(self):
+        now = datetime.now(tz=timezone.utc)
+        p = self._pf("NVDA")
+        closed = _reconcile_t212_ghosts(p, {"NVDA"}, now)
+        assert closed == []
+        assert len(p.positions) == 1
+
+    def test_external_close_recorded_and_removed(self):
+        now = datetime.now(tz=timezone.utc)
+        p = self._pf("CTRA")
+        p.cached_prices["CTRA"] = 110.0   # last seen before T212 closed it
+        closed = _reconcile_t212_ghosts(p, set(), now)   # T212 reports nothing
+        assert len(closed) == 1
+        assert closed[0].ticker == "CTRA"
+        assert closed[0].exit_reason == "corporate_action"
+        assert closed[0].exit_price == 110.0
+        assert p.positions == []
+        assert len(p.trades) == 1
+        assert "CTRA" in p.recently_sold          # blocks immediate re-buy
+
+    def test_uses_entry_price_when_no_cached_price(self):
+        now = datetime.now(tz=timezone.utc)
+        p = self._pf("XYZ")   # entry_price defaults to 100.0 in _make_position
+        closed = _reconcile_t212_ghosts(p, set(), now)
+        assert closed[0].exit_price == 100.0
+        assert closed[0].pct_return == 0.0   # neutral placeholder, flagged by reason
+
+    def test_settling_own_sell_is_not_reconciled(self):
+        now = datetime.now(tz=timezone.utc)
+        p = self._pf("AAPL")
+        # We just sold AAPL ourselves 2 minutes ago — still settling, T212 may
+        # still report it gone briefly; must NOT be treated as a corporate action.
+        p.recently_sold["AAPL"] = (now - timedelta(minutes=2)).isoformat()
+        closed = _reconcile_t212_ghosts(p, set(), now)
+        assert closed == []
+        assert len(p.positions) == 1
+
+    def test_old_sell_past_settlement_is_reconciled(self):
+        now = datetime.now(tz=timezone.utc)
+        p = self._pf("AAPL")
+        # Sold 30 min ago (past the 15-min settle window) yet still locally
+        # tracked and absent from T212 -> genuine ghost, reconcile it.
+        p.recently_sold["AAPL"] = (now - timedelta(minutes=30)).isoformat()
+        closed = _reconcile_t212_ghosts(p, set(), now)
+        assert len(closed) == 1 and p.positions == []
+
+    def test_mixed_held_and_ghost(self):
+        now = datetime.now(tz=timezone.utc)
+        p = self._pf("KEEP", "GONE")
+        closed = _reconcile_t212_ghosts(p, {"KEEP"}, now)
+        assert [c.ticker for c in closed] == ["GONE"]
+        assert [pos.ticker for pos in p.positions] == ["KEEP"]

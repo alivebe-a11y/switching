@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `main`
-- **571 tests**, run with: `pytest tests/`
+- **577 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path (Dockge UI): `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -231,6 +231,11 @@ At the start of each session, verify this file is still accurate. Update when:
 - Performance baselines shift (win rates after 50+ trades)
 - Architecture decisions are revisited
 
+**Triggered backlog — check on every roadmap scan:** review the trigger conditions for
+deferred items in `## Roadmap → Triggered / Deferred items`. If a deferred item's
+conditions are now ALL met, surface it to the user as ready to build. (Currently:
+corporate-actions feed ingestion — gated on real capital + a structured data source.)
+
 ---
 
 ## Architecture Decision Records (ADRs)
@@ -300,7 +305,13 @@ internal paper trader, acquirer filter applied. Compare P&L after 50+ trades.
 - **Re-buy cooldown** (`_T212_REBUY_COOLDOWN_HOURS = 4`): don't churn back into a
   ticker just exited (the same story arrives via PRNewswire/BusinessWire/GlobeNewswire
   with different URLs → different signal keys → would otherwise re-buy).
-- `recently_sold` persists in the portfolio JSON and is pruned past the cooldown.
+- `recently_sold` persists with the portfolio (SQLite) and is pruned past the cooldown.
+- **Ghost reconciliation** (`_reconcile_t212_ghosts`): each cycle, local positions that T212
+  no longer reports — and that we didn't just sell (settlement window) — are treated as
+  externally closed (corporate action: M&A cash-out, delisting, liquidation, ticker change),
+  recorded as `ClosedTrade(exit_reason="corporate_action")` at the last cached price, removed,
+  and a Telegram alert fires (check T212 for the exact realized P&L). Gated on a SUCCESSFUL
+  positions fetch + sane account state so a transient API glitch can't close everything.
 
 **T212 client rate limiting (`broker_trading212.py`)**:
 - T212's API is rate-limited PER ENDPOINT (not a flat req/s). The client throttles
@@ -678,6 +689,33 @@ rate on US dividends (15% vs 30% default withholding). Do this at account openin
 - [ ] S&P Capital IQ (£15-25K/year — only at £100K+ capital)
 - [ ] Bloomberg Terminal (£24K/year — only if running a fund)
 
+### Triggered / Deferred items
+Items intentionally NOT built yet. **On every roadmap scan, re-check each item's trigger
+conditions; if ALL are met, raise it to the user as ready to build.**
+
+#### Corporate-actions feed ingestion  (DEFERRED — discussed 2026-05-25)
+Proactively map ticker changes and pre-empt splits/delistings/M&A from a corporate-actions
+source, instead of only reacting after the fact.
+
+**Build ONLY when ALL of these are true:**
+- [ ] Running **real capital** (T212_DEMO=false or live IBKR) — exact realized price and
+      holding-through-a-rename actually move the needle then; on demo they don't.
+- [ ] Hold periods materially **longer than ~5 days** — positions then span more corporate
+      actions, so tracking through them matters.
+- [ ] A **structured** corporate-actions data source is available (vendor feed/API with
+      lead time). The T212 monthly community post is free-text + retrospective — NOT
+      suitable to auto-act on (parse errors could corrupt good positions).
+- [ ] Ghost-position reconciliation proves **insufficient** — i.e. you observe material
+      P&L misattribution or missed re-entries that the reactive fix doesn't cover.
+
+**Why deferred** (see discussion 2026-05-25): with a 3-5 day demo strategy fed by a monthly
+forum scrape, ROI is poor and auto-mutating positions on scraped text adds real risk. T212
+already split-adjusts `unrealized_pnl_pct`/`avg_entry_price`, and M&A/delistings END the
+trade anyway (the cash-out IS the exit). The reactive **ghost-position reconciliation**
+(DONE — `_reconcile_t212_ghosts` in paper_trader.py) already handles the painful 80%:
+positions T212 closes externally are recorded as `corporate_action` and removed so they
+don't ghost, block re-buys, or skew analytics.
+
 ### Detector Ideas
 - [ ] stock_split — splits often run up beforehand
 - [ ] crypto_treasury — Bitcoin treasury announcements (MicroStrategy pattern)
@@ -713,4 +751,7 @@ rate on US dividends (15% vs 30% default withholding). Do this at account openin
 - [x] Weekly Saturday report (`weekly_report.py`) — auto-fires every Saturday at 09:00 UTC; covers detector rankings, T212 vs paper slippage, skipped-signal opportunity cost, data-driven improvement suggestions. Manual trigger: `switching weekly-report`
 - [x] Signal dedup bug fixed — `_signal_key` now URL-based (not date-based), so undated RSS articles can't re-fire daily
 - [x] T212 orphan position fix — positions in T212 with no local tracker get a synthetic record on reconciliation (no longer auto-sold on first profitable cycle)
+- [x] SQLite storage (`storage.py`) — one `switching.db`, `service` column (us/uk/t212); US/UK no longer share/clobber JSON; T212 now collects full analytics; auto-migration of legacy JSON with `scripts/migrate_to_sqlite.py` validation
+- [x] T212 rate limiting — per-endpoint throttle + 429 Retry-After backoff; batched post-buy position fetch
+- [x] T212 ghost-position reconciliation (`_reconcile_t212_ghosts`) — positions T212 closes externally (corporate action: M&A cash-out, delisting, liquidation, ticker change) are recorded as `corporate_action` and removed, so they don't ghost forever, block re-buys, or skew analytics
 - [x] `severity` stored on `ClosedTrade` — enables signal quality ↔ outcome correlation analysis

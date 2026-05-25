@@ -243,6 +243,56 @@ def _record_t212_skip(skipped_tracker, sig, reason: str, base_stop: float, price
     )
 
 
+def _reconcile_t212_ghosts(portfolio, held_symbols_t212, now) -> list:
+    """Close out local positions that T212 no longer reports.
+
+    When T212 closes a position via a corporate action (M&A cash-out, delisting,
+    liquidation) or a ticker change, it disappears from ``get_positions()`` but
+    lingers in our local ``portfolio.positions`` — never recorded, blocking
+    re-buys and showing as a phantom open position. This records each as a
+    ``ClosedTrade(exit_reason="corporate_action")`` (best-effort exit price from
+    the last cached price) and removes it.
+
+    Skips positions still inside the post-sell settlement window — those are our
+    OWN sells settling, not external closes. Returns the ClosedTrades created so
+    the caller can notify.
+
+    The caller must only invoke this after a SUCCESSFUL positions fetch, so a
+    transient API glitch can't wipe out every tracked position.
+    """
+    closed_out: list = []
+    for pos in list(portfolio.positions):
+        if pos.ticker in held_symbols_t212:
+            continue
+        sold_mins = _minutes_since(portfolio.recently_sold.get(pos.ticker, ""), now)
+        if sold_mins is not None and sold_mins < _T212_SETTLE_MINUTES:
+            continue   # our own sell, still settling — not an external close
+        exit_price = portfolio.cached_prices.get(pos.ticker) or pos.entry_price
+        ret = (exit_price / pos.entry_price - 1.0) if pos.entry_price else 0.0
+        pnl = round((exit_price - pos.entry_price) * pos.shares, 2)
+        closed = ClosedTrade(
+            ticker=pos.ticker,
+            detector=pos.detector,
+            entry_price=pos.entry_price,
+            exit_price=exit_price,
+            shares=pos.shares,
+            entry_dt=pos.entry_dt,
+            exit_dt=now.isoformat(),
+            pnl=pnl,
+            pct_return=round(ret, 4),
+            exit_reason="corporate_action",
+            headline=pos.headline,
+            severity=pos.severity,
+        )
+        portfolio.trades.append(closed)
+        portfolio.recently_sold[pos.ticker] = now.isoformat()
+        closed_out.append(closed)
+    if closed_out:
+        gone = {c.ticker for c in closed_out}
+        portfolio.positions = [p for p in portfolio.positions if p.ticker not in gone]
+    return closed_out
+
+
 def _normalise_price(price: float, market: str) -> float:
     """Return price in major currency units. UK stocks trade in pence (GBX)."""
     return price / 100.0 if market == "uk" else price
@@ -1147,6 +1197,7 @@ def run_loop_t212(
     from switching.exit_tracker import ExitTracker
     from switching.skipped_tracker import SkippedTracker
     from switching.trade_memory import update_memory
+    from switching import notifications
     service = storage.service_from_path(state_path)            # "t212"
     tracker_path = state_path.parent / "exit_tracker.json"
     skipped_path = state_path.parent / "skipped_signals.json"
@@ -1181,11 +1232,13 @@ def run_loop_t212(
         # ----------------------------------------------------------------
         # Exit checks — iterate over T212 positions
         # ----------------------------------------------------------------
+        positions_ok = True
         try:
             t212_positions = client.get_positions()
         except Exception as exc:
             console.print(f"[red]T212 positions fetch failed: {exc}[/red]")
             t212_positions = []
+            positions_ok = False   # do NOT reconcile ghosts off a failed fetch
 
         t212_map = {p.symbol: p for p in t212_positions}
 
@@ -1252,6 +1305,9 @@ def run_loop_t212(
         for sym, tp in list(t212_map.items()):
             if sym in settling:
                 continue   # order still settling — don't touch
+            # Cache last-seen price (for the dashboard + a best-effort exit
+            # estimate if this position is later closed by a corporate action).
+            portfolio.cached_prices[sym] = tp.current_price
             ret = tp.unrealized_pnl_pct
             color = "green" if ret >= 0 else "red"
             tracker = local_map.get(sym)
@@ -1322,6 +1378,30 @@ def run_loop_t212(
                     f"    {sym}: {tp.quantity:.4f} @ ${tp.avg_entry_price:.2f} "
                     f"[{color}]{ret*100:+.1f}%[/{color}] day {days}/{max_hold}"
                 )
+
+        # ----------------------------------------------------------------
+        # Ghost reconciliation — local positions T212 no longer reports were
+        # closed externally (corporate action: M&A cash-out, delisting,
+        # liquidation, or a ticker change). Record + remove them so they don't
+        # ghost forever, block re-buys, or skew analytics. Gated on a SUCCESSFUL
+        # positions fetch with a sane account state, so a transient T212 glitch
+        # (empty list but money still invested) can't wrongly close everything.
+        # ----------------------------------------------------------------
+        if positions_ok and (t212_map or acct.invested < 1.0):
+            ghosts = _reconcile_t212_ghosts(portfolio, set(t212_map.keys()), now)
+            for g in ghosts:
+                console.print(
+                    f"  [magenta]RECONCILE {g.ticker}: gone from T212 — recorded as "
+                    f"corporate_action close (check T212 for the real realized P&L)[/magenta]"
+                )
+                try:
+                    notifications.notify_sell(
+                        ticker=g.ticker, exit_price=g.exit_price, pnl=g.pnl,
+                        pct_return=g.pct_return, exit_reason="corporate_action",
+                        detector=g.detector,
+                    )
+                except Exception:
+                    pass
 
         # ----------------------------------------------------------------
         # Signal scan — buy new positions (only every scan_interval_minutes;
