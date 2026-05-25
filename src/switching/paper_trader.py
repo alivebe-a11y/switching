@@ -580,35 +580,43 @@ def scan_for_signals(
     *,
     min_severity: float = 0.0,
     feeds_override: "tuple[str, ...] | None" = None,
+    market: str = "us",
 ) -> list[Signal]:
     from switching import registry
+    from switching.sources import rss
     registry.load_builtin_detectors()
 
     edgar_client = None
     if any(d in _EDGAR_DETECTORS for d in detectors):
         edgar_client = _make_edgar_client()
 
+    # Most detectors call rss.fetch() without a market arg, so set the default
+    # for this scan. Reset afterwards so US scans (and tests) aren't affected.
+    rss.set_default_market(market)
     signals: list[Signal] = []
     seen: set[tuple[str, str, str]] = set()
-    for name in detectors:
-        cls = registry.get(name)
-        if name in _EDGAR_DETECTORS:
-            det = cls(client=edgar_client)
-        else:
-            det = cls(feeds=feeds_override) if feeds_override is not None else cls()
-        try:
-            count = 0
-            for sig in det.scan(since):
-                count += 1
-                key = sig.dedup_key()
-                if key in seen:
-                    continue
-                seen.add(key)
-                if sig.severity >= min_severity:
-                    signals.append(sig)
-            log.info("detector %s produced %d signal(s)", name, count)
-        except Exception as exc:
-            log.warning("scan failed for %s: %s", name, exc)
+    try:
+        for name in detectors:
+            cls = registry.get(name)
+            if name in _EDGAR_DETECTORS:
+                det = cls(client=edgar_client)
+            else:
+                det = cls(feeds=feeds_override) if feeds_override is not None else cls()
+            try:
+                count = 0
+                for sig in det.scan(since):
+                    count += 1
+                    key = sig.dedup_key()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    if sig.severity >= min_severity:
+                        signals.append(sig)
+                log.info("detector %s produced %d signal(s)", name, count)
+            except Exception as exc:
+                log.warning("scan failed for %s: %s", name, exc)
+    finally:
+        rss.set_default_market("us")
     return signals
 
 
@@ -830,7 +838,10 @@ def run_loop(
         if market == "uk":
             from switching.sources import rss as _rss
             feeds_override = _rss.UK_FEEDS
-        signals = scan_for_signals(detectors, since, min_severity=min_severity, feeds_override=feeds_override)
+        signals = scan_for_signals(
+            detectors, since, min_severity=min_severity,
+            feeds_override=feeds_override, market=market,
+        )
 
         from switching.trade_memory import load_memory, update_memory
         from switching.ai_filter import score_signals

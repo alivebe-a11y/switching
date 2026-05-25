@@ -9,7 +9,8 @@ weaker predictive value.
 Historical examples: countless small-cap recoveries telegraphed by
 director purchases at or near bottoms.
 
-Source: Investegate RNS feed (UK_FEEDS).
+Source: UK_FEEDS (Google News RSS — the old Investegate/Reuters RNS feeds died;
+see rss.py and the roadmap "primary-source ingestion" item).
 """
 
 from __future__ import annotations

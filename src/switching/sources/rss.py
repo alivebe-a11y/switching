@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Iterable
@@ -9,6 +10,19 @@ from typing import Iterable
 import feedparser
 
 log = logging.getLogger(__name__)
+
+# Default market for fetched items when a caller doesn't specify one. Each
+# trading service runs in its own process and scans a single market, so
+# scan_for_signals() sets this once per scan (per process) — see paper_trader.
+# Kept as a module default rather than threaded through every detector's
+# fetch() call.
+_DEFAULT_MARKET = "us"
+
+
+def set_default_market(market: str) -> None:
+    """Set the market tag applied to fetched items that don't specify one."""
+    global _DEFAULT_MARKET
+    _DEFAULT_MARKET = market
 
 DEFAULT_FEEDS: tuple[str, ...] = (
     # PR Newswire — technology
@@ -45,13 +59,28 @@ CORPORATE_FEEDS: tuple[str, ...] = (
     "https://www.globenewswire.com/RssFeed/industry/9531-Financial%20Services/feedTitle/GlobeNewswire%20-%20Financial%20Services",
 )
 
-UK_FEEDS: tuple[str, ...] = (
-    # Investegate — all RNS regulatory announcements for LSE-listed companies
-    "https://www.investegate.co.uk/rss/allnews.aspx",
-    # Reuters UK business news
-    "https://feeds.reuters.com/reuters/UKBusinessNews",
-    # Proactive Investors — UK small/mid-cap coverage
-    "https://www.proactiveinvestors.co.uk/rss",
+# UK feeds via Google News RSS search.
+#
+# The old direct RNS sources are all dead: Investegate dropped RSS in its 2023
+# redesign (404), Reuters discontinued public RSS in 2020 (DNS gone), and
+# Proactive's /rss 404s. Google News RSS is the only free, always-on RSS
+# firehose left — it lags the LSE primary RNS feed (it indexes journalist
+# write-ups, not raw RNS) and ticker coverage is patchy, so this is a
+# restore-flow probe. The proper low-latency fix (LSE RNS API direct + a UK
+# ticker resolver) is the roadmap "primary-source ingestion" item.
+_GOOGLE_NEWS_UK = "https://news.google.com/rss/search?q={q}&hl=en-GB&gl=GB&ceid=GB:en"
+_UK_QUERIES: tuple[str, ...] = (
+    "FTSE trading update ahead of expectations",
+    "London listed company raises full year guidance",
+    "recommended cash offer London listed takeover",
+    "LSE special dividend OR dividend increase",
+    "UK listed share buyback programme",
+    "FTSE 100 OR FTSE 250 index reshuffle inclusion",
+    "LSE director PDMR shareholding dealing",
+    "London listed contract win awarded",
+)
+UK_FEEDS: tuple[str, ...] = tuple(
+    _GOOGLE_NEWS_UK.format(q=urllib.parse.quote(q)) for q in _UK_QUERIES
 )
 
 # "NASDAQ: BIRD", "NYSE:ABC", "(OTC: FOOB)" — capture the ticker code.
@@ -59,8 +88,17 @@ _TICKER_RX = re.compile(
     r"\b(?:NASDAQ|NYSE|NYSE\s*American|AMEX|OTC|OTCQB|OTCQX|TSX|CBOE)\s*[:\-]\s*([A-Z][A-Z0-9\.\-]{0,6})\b"
 )
 
-# UK EPIC ticker codes appear in parentheses, e.g. "(BARC)", "(VOD)", "(RIO)"
+# Prefixed EPIC, e.g. "(LSE:VOD)", "(LON:GAMA)", "(AIM:XYZ)" — Google News format.
+_EPIC_PREFIXED_RX = re.compile(r"\((?:LSE|LON|AIM)\s*:\s*([A-Z][A-Z0-9]{1,5})\)")
+# Bare EPIC in parentheses, e.g. "(BARC)", "(VOD)", "(RIO)" — Investegate format.
 _EPIC_RX = re.compile(r"\(([A-Z]{2,5})\)")
+# Words that look like a bare EPIC but aren't — reject to cut false positives.
+_EPIC_STOPWORDS: frozenset[str] = frozenset({
+    "LSE", "LON", "AIM", "RNS", "PLC", "LTD", "AGM", "EGM", "CEO", "CFO", "COO",
+    "CIO", "GBP", "USD", "EUR", "GBX", "NAV", "EPS", "ESG", "IPO", "ETF", "REIT",
+    "VAT", "HMRC", "FCA", "ISA", "FTSE", "UK", "USA", "EU", "US", "AI", "IT",
+    "HR", "PR", "TV", "Q1", "Q2", "Q3", "Q4", "H1", "H2", "FY", "CET", "GMT",
+})
 
 
 @dataclass(frozen=True)
@@ -78,11 +116,16 @@ class FeedItem:
 
     def extract_ticker(self) -> str | None:
         if self.market == "uk":
-            # First try EPIC code in parentheses — return as yfinance LSE format
-            epic_match = _EPIC_RX.search(self.text)
-            if epic_match:
-                return f"{epic_match.group(1)}.L"
-            # Fall through to US pipeline for cross-listed companies
+            # 1. Prefixed EPIC "(LSE:VOD)" / "(LON:GAMA)" — unambiguous.
+            pref = _EPIC_PREFIXED_RX.search(self.text)
+            if pref:
+                return f"{pref.group(1)}.L"
+            # 2. Bare EPIC "(BARC)" — accept the first that isn't a common
+            #    non-ticker word (PLC, AGM, GBP, FTSE, ...).
+            for cand in _EPIC_RX.findall(self.text):
+                if cand not in _EPIC_STOPWORDS:
+                    return f"{cand}.L"
+            # 3. Fall through to the US pipeline for cross-listed companies.
         match = _TICKER_RX.search(self.text)
         if match:
             return match.group(1)
@@ -100,8 +143,11 @@ def _coerce_dt(entry: feedparser.FeedParserDict) -> datetime:
 def fetch(
     urls: Iterable[str] = DEFAULT_FEEDS,
     since: datetime | None = None,
-    market: str = "us",
+    market: str | None = None,
 ) -> list[FeedItem]:
+    # Fall back to the per-process default market when the caller doesn't pass
+    # one (most detectors don't — see _DEFAULT_MARKET).
+    mkt = market if market is not None else _DEFAULT_MARKET
     items: list[FeedItem] = []
     for url in urls:
         try:
@@ -120,7 +166,7 @@ def fetch(
                     url=entry.get("link") or "",
                     published=dt,
                     source=url,
-                    market=market,
+                    market=mkt,
                 )
             )
     return items

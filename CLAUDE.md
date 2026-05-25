@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `main`
-- **587 tests**, run with: `pytest tests/`
+- **593 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path (Dockge UI): `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -738,6 +738,34 @@ trade anyway (the cash-out IS the exit). The reactive **ghost-position reconcili
 (DONE — `_reconcile_t212_ghosts` in paper_trader.py) already handles the painful 80%:
 positions T212 closes externally are recorded as `corporate_action` and removed so they
 don't ghost, block re-buys, or skew analytics.
+
+#### Primary-source / low-latency news ingestion — UK + US  (DEFERRED — discussed 2026-05-25)
+**The edge question: "who gets the news first?"** Today's pipeline is *downstream* of the
+primary source on both markets, which costs latency (and on UK, completeness):
+- **UK**: all the old RNS feeds died (Investegate dropped RSS, Reuters killed RSS, Proactive
+  404). Current UK source is **Google News RSS** (`UK_FEEDS`) — the *laggiest* tier (indexes
+  journalist write-ups of RNS, not raw RNS) with patchy ticker coverage. The PRIMARY source is
+  the **LSE RNS service** (what companies file to first), surfaced by `londonstockexchange.com`
+  via its `api.londonstockexchange.com` JSON API (the page is a JS SPA — no HTML/RSS).
+- **US**: PR Newswire / BusinessWire / GlobeNewswire are close to primary (companies issue
+  releases through them) + SEC EDGAR for filings — decent, but worth assessing tighter latency
+  / direct exchange feeds when capital justifies it.
+
+**Two parts:** (1) a **UK ticker resolver** — an FTSE 350 company-name → `.L` EPIC map (the LSE
+equivalent of the US SEC `ticker_lookup.py`), so ANY feed resolves tickers without relying on
+parenthesised codes; (2) wire a **primary/low-latency source** per market (UK = LSE RNS API
+direct or a real RNS aggregator with a feed/API; US = evaluate direct exchange/wire latency).
+
+**Build when ANY of:**
+- [ ] UK shows real signal volume worth investing in (i.e. the Google-News probe produces
+      enough tradeable UK signals/week to bother — check the Saturday report).
+- [ ] Moving to **real capital** on either market — latency and completeness start to pay.
+- [ ] News-latency is identified as a measurable edge loss (signals firing materially later
+      than price has already moved).
+
+**Risks / notes:** the LSE API is undocumented + reverse-engineered (fragile, ToS-grey) — treat
+as a real integration, not a quick scrape. Until triggered, the Google-News probe (DONE) keeps
+UK flow alive so we can judge whether UK is worth the deeper build at all.
 
 ### Detector Ideas
 - [ ] stock_split — splits often run up beforehand

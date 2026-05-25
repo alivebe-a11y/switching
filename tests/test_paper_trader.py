@@ -402,6 +402,22 @@ class TestScanForSignals:
             scan_for_signals(["ai_pivot"], datetime.now(tz=timezone.utc))
             mock_cls.assert_called_once_with()
 
+    def test_scan_sets_market_during_scan_and_resets_after(self):
+        """market='uk' must be the rss default while detectors run, then reset."""
+        import switching.sources.rss as rss_mod
+        seen = {}
+
+        def _scan(since):
+            seen["during"] = rss_mod._DEFAULT_MARKET
+            return iter([])
+
+        with patch("switching.registry.get") as mock_get:
+            mock_cls = mock_get.return_value
+            mock_cls.return_value.scan.side_effect = _scan
+            scan_for_signals(["ai_pivot"], datetime.now(tz=timezone.utc), market="uk")
+        assert seen["during"] == "uk"           # set while scanning
+        assert rss_mod._DEFAULT_MARKET == "us"  # reset afterwards
+
 
 class TestSignalKey:
     """_signal_key must produce stable, content-based identifiers."""
