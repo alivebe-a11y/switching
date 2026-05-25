@@ -193,6 +193,29 @@ Every message is prefixed with a per-process market label (`notifications.set_ma
 called once at loop start): `🇺🇸 US` / `🇬🇧 LSE` / `🇺🇸 T212`, so the three services'
 alerts are distinguishable in one chat. Default is no prefix (unconfigured/tests).
 
+## Stability rules (Release It!)
+@docs/release-it.mini.md
+
+This bot is almost entirely flaky-external-dependency plumbing (yfinance, Trading 212,
+RNS scraping, Telegram, SEC EDGAR), so the Release It! ruleset above is imported and
+**applies whenever you add an outbound call, queue, cache, scheduled job, or deploy/ops
+path**. How it maps onto our code today:
+
+| Release It! pattern | Where we already do it | Gaps / TODO |
+|---|---|---|
+| Explicit timeouts | `requests(..., timeout=15)` in brokers + Investegate; Telegram `urlopen(timeout=10)` | yfinance calls rely on its defaults — audit |
+| Bounded retries + backoff | T212 429 `Retry-After`/escalating backoff (`_MAX_RETRIES_429`) | only T212; others fail-then-skip |
+| Fallback / degraded mode | UK Investegate→Google failover; T212 fill estimate falls back to yfinance | — |
+| Fail fast / fail loud | Investegate 0-items ⇒ failover + Telegram alert; migration validation | — |
+| Bounded buffers | `seen_signals[-500:]`, `last_signals[-50:]`, skipped tracker cap 500 | — |
+| Validate external responses | EPIC/ticker validation, `_safe_float`, market-aware price normalise | RSS/scrape shape only loosely checked |
+| Don't hold resources across slow calls | SQLite WAL + short txns; per-endpoint throttle | — |
+| **Circuit breaker** | — | **NOT DONE** — roadmap item "disable detector after N empty scans"; also a feed/source breaker |
+| Observability at boundaries | per-detector items/classified/with_ticker logs; `UK sources: …` line | no metrics/correlation IDs yet |
+
+When touching any external boundary, run the file's **Final checklist** — especially the
+circuit-breaker gap, which is the biggest missing defense.
+
 ## Architecture
 ```
 src/switching/
