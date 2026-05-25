@@ -27,13 +27,13 @@ within one scan cycle don't re-scrape the site every time.
 
 from __future__ import annotations
 
-import html
 import logging
 import re
 import time
 from datetime import datetime, timezone
 
 import requests
+from bs4 import BeautifulSoup
 
 from switching.sources.rss import FeedItem
 
@@ -47,12 +47,6 @@ _CACHE_TTL = 240.0  # seconds — one scrape covers a full scan cycle's detector
 
 _cache: dict = {"ts": 0.0, "items": []}
 
-# Announcement anchor — tolerant of attributes before href (the real markup is
-# `<a class="announcement-link" href="...">`) and of relative or absolute hrefs.
-_ANN_RX = re.compile(
-    r'<a\b[^>]*?href="([^"]*?/announcement/[^"]+)"[^>]*>\s*([^<]+?)\s*</a>',
-    re.I,
-)
 # Announcement URL path: /announcement/<src>/<company-slug>/<title-slug>/<id>.
 # The company-slug ends with the EPIC after a run of dashes, e.g.
 # "nokia-oyj--0haf", "sage-group--sge", "glenveagh-properties-cdi---glv".
@@ -85,28 +79,36 @@ def _parse_ts(s: str) -> datetime | None:
     return None
 
 
-def parse(raw_html: str) -> list[FeedItem]:
-    """Parse the announcements table HTML into FeedItems (market='uk').
+def _is_announcement_href(h: str | None) -> bool:
+    return bool(h) and "/announcement/" in h
 
-    Tolerant: iterates table-row chunks, and for each that contains an
-    announcement anchor with a resolvable EPIC in its URL, emits an item. Rows
-    without a tradeable EPIC (or digit-leading depositary lines) are skipped.
+
+def parse(raw_html: str) -> list[FeedItem]:
+    """Parse the announcements page HTML into FeedItems (market='uk').
+
+    DOM-based (BeautifulSoup), anchor-centric: find every announcement link
+    (by URL path, so it's robust to CSS-class renames and attribute order),
+    resolve the EPIC from the URL slug, and read the timestamp from the
+    enclosing row. Items without a tradeable EPIC (or digit-leading depositary
+    lines) are skipped. Returns [] if nothing parses — the caller treats that
+    as a failure and falls back to Google News.
     """
+    soup = BeautifulSoup(raw_html, "html.parser")
     items: list[FeedItem] = []
     now = datetime.now(tz=timezone.utc)
     seen_urls: set[str] = set()
-    for chunk in re.split(r"<tr[ >]", raw_html):
-        ann = _ANN_RX.search(chunk)
-        if not ann:
-            continue
-        url = ann.group(1)
-        headline = html.unescape(ann.group(2).strip())
+    for a in soup.find_all("a", href=_is_announcement_href):
+        url = a["href"]
         if url in seen_urls:
             continue
         epic = _epic_from_url(url)
         if not epic:
             continue
-        ts_m = _TS_RX.search(chunk)
+        headline = a.get_text(strip=True)   # bs4 decodes HTML entities for us
+        if not headline:
+            continue
+        row = a.find_parent("tr")
+        ts_m = _TS_RX.search(row.get_text(" ", strip=True)) if row else None
         dt = _parse_ts(ts_m.group(1)) if ts_m else None
         if dt is None:
             dt = now

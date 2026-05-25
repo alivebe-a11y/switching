@@ -174,8 +174,10 @@ The old UK RSS feeds all died. UK ingestion now (`rss._fetch_uk`, triggered when
 - **Investegate** (`sources/investegate.py`) is the **primary** source — HTML scrape
   of the RNS table (server-rendered, every row carries the EPIC), TTL-cached 240s so
   the ~13 UK detectors don't re-scrape per cycle. Near-primary RNS, far more complete
-  than Google News. EPIC parsed from the announcement URL slug (`---glv/`) so it
-  doesn't depend on exact table markup; **fails loud** (0 items ⇒ failover).
+  than Google News. Parsed with **BeautifulSoup**, anchor-centric (finds `/announcement/`
+  links by URL path, robust to CSS-class/attribute changes); EPIC taken from the URL
+  slug's last dash-token (digit-leading depositary lines like `0HAF` skipped);
+  **fails loud** (0 items ⇒ failover).
 - **Google News RSS** (`UK_FEEDS`) runs in **parallel** as fallback/supplement;
   merged with Investegate, deduping Google items whose normalised title Investegate
   already covers (Investegate wins).
