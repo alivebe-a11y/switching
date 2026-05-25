@@ -261,6 +261,16 @@ def create_app(state_path: Path | None = None) -> Flask:
             "reports": reports,
         })
 
+    @app.route("/api/drops")
+    def api_drops():
+        """Detection funnel — headlines classified by a detector but dropped for
+        lack of a resolvable ticker (the silent loss). Summary + recent samples."""
+        from switching import detection_funnel
+        return jsonify({
+            "summary": detection_funnel.drop_summary(_STATE_PATH),
+            "recent": detection_funnel.load_drops(_STATE_PATH, limit=100),
+        })
+
     @app.route("/api/equity-curve")
     def api_equity_curve():
         p = Portfolio.load(_STATE_PATH)
@@ -944,6 +954,19 @@ tr:hover { background: rgba(255,255,255,0.02); }
     <div id="options-body">
       <div class="empty-state">Set IV and DTE above, then click <strong>Run Comparison</strong>. Uses Black-Scholes to model what ATM calls on the same signals would have returned (same dollar amount committed to premium as to stock).</div>
     </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>Detection Funnel — Dropped Headlines</h2>
+      <span class="badge" id="drops-count">0</span>
+    </div>
+    <div style="font-size:0.78rem;color:var(--dim);padding:0.5rem 1.2rem 0">
+      Catalysts a detector matched but binned for lack of a resolvable ticker — the silent loss.
+      High counts here = trades we're missing (candidates for the LLM ticker-resolver).
+    </div>
+    <div id="drops-summary" style="padding:0.6rem 1.2rem"></div>
+    <div id="drops-body"><div class="empty-state">No drops captured yet (needs a deploy + a scan cycle).</div></div>
   </div>
 
   </div><!-- /tab-analytics -->
@@ -1966,7 +1989,43 @@ function showReport(idx) {
   $('#report-detail').scrollIntoView({ behavior: 'smooth' });
 }
 
+async function loadDrops() {
+  try {
+    const r = await fetch('/api/drops');
+    const d = await r.json();
+    const summary = d.summary || [];
+    const recent = d.recent || [];
+    $('#drops-count').textContent = recent.length;
+
+    if (summary.length === 0) {
+      $('#drops-summary').innerHTML = '';
+      $('#drops-body').innerHTML = '<div class="empty-state">No drops captured yet (needs a deploy + a scan cycle).</div>';
+      return;
+    }
+    // Summary chips: detector (service) = count
+    let chips = summary.map(s =>
+      `<span style="display:inline-block;margin:2px 6px 2px 0;padding:2px 8px;border:1px solid var(--border);border-radius:10px;font-size:0.78rem">`
+      + `<b>${s.detector}</b> <span style="color:var(--dim)">${s.service}</span> · ${s.n}</span>`).join('');
+    $('#drops-summary').innerHTML = chips;
+
+    let html = '<table><thead><tr><th>When</th><th>Svc</th><th>Detector</th><th>Dropped headline</th></tr></thead><tbody>';
+    recent.forEach(x => {
+      html += '<tr>'
+        + '<td style="font-size:0.75rem;color:var(--dim)">' + (x.ts || '').slice(0,16) + '</td>'
+        + '<td>' + x.service + '</td>'
+        + '<td>' + x.detector + '</td>'
+        + '<td style="max-width:520px">' + (x.url
+            ? '<a href="' + x.url + '" target="_blank" style="color:var(--fg)">' + x.headline + '</a>'
+            : x.headline) + '</td>'
+        + '</tr>';
+    });
+    html += '</tbody></table>';
+    $('#drops-body').innerHTML = html;
+  } catch(e) { console.error('drops load failed', e); }
+}
+
 async function loadAnalytics() {
+  loadDrops();
   try {
     const r = await fetch('/api/analytics');
     const d = await r.json();

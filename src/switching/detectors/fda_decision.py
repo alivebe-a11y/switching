@@ -22,6 +22,7 @@ from typing import Iterable
 
 from switching.detectors.base import Detector
 from switching.registry import register
+from switching import detection_funnel
 from switching.signal import Signal
 from switching.sources import rss
 
@@ -132,6 +133,7 @@ class FdaDecisionDetector(Detector):
             classified += 1
             ticker = item.extract_ticker()
             if not ticker:
+                detection_funnel.record_drop(self.name, item)
                 continue
             with_ticker += 1
             yield Signal(

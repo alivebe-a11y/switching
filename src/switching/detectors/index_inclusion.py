@@ -20,6 +20,7 @@ from typing import Iterable
 
 from switching.detectors.base import Detector
 from switching.registry import register
+from switching import detection_funnel
 from switching.signal import Signal
 from switching.sources import rss
 from switching.sources.sec_edgar import EdgarClient
@@ -60,6 +61,7 @@ class IndexInclusionDetector(Detector):
             classified += 1
             ticker = item.extract_ticker() or _guess_ticker(item.title)
             if not ticker:
+                detection_funnel.record_drop(self.name, item)
                 continue
             with_ticker += 1
             yield Signal(

@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `main`
-- **612 tests**, run with: `pytest tests/`
+- **621 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path (Dockge UI): `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -241,6 +241,7 @@ src/switching/
 │   ├── historical.py   — Seed CSV loader + live EDGAR augmentation
 │   ├── sec_edgar.py    — EdgarClient (rate-limited, needs SWITCHING_EDGAR_UA)
 │   └── ticker_lookup.py — SEC company-name→ticker fallback for extract_ticker()
+├── detection_funnel.py — captures classified-but-no-ticker drops (the silent loss)
 └── data/historical_events/*.csv  — Seed data for backtests
 ```
 
@@ -269,6 +270,26 @@ src/switching/
 2. **SEC fallback**: `sources/ticker_lookup.py` parses parenthesized tickers like `(AAPL)`
    and matches SEC-registered company names (≥5 chars) in the first 120 chars of the headline.
    Bare uppercase words are NOT matched (too many false positives). Cached to disk for 7 days.
+
+Known recall holes (candidates for the LLM resolver): short/brand company names
+(Meta, Visa, Ford; "Google"≠"Alphabet Inc."), tickers only in the body, UK items without
+an EPIC. When `classify()` matches but extraction fails, the signal is dropped — now
+captured by the detection funnel below.
+
+## Detection Funnel (drop capture) — `detection_funnel.py`
+Every RSS detector's `scan()` has one drop point: `if not ticker: continue`. That bins a
+real catalyst we classified but couldn't ticker — silently, with no record. `detection_funnel`
+makes that loss visible: each detector calls `detection_funnel.record_drop(self.name, item)`
+at that point, writing to the `dropped_signals` SQLite table (service-tagged, pruned to 1000).
+- `configure(service, state_path)` is called once at loop start (run_loop / run_loop_t212);
+  `record_drop` is a no-op until configured (tests/backtests don't write).
+- Dashboard: `/api/drops` + the "Detection Funnel — Dropped Headlines" panel (Analytics tab)
+  show counts by detector and the recent dropped headlines.
+- **This is the single chokepoint a future LLM ticker-resolver plugs into** — on a drop,
+  hand the headline to a model (a **local GPU model** via Ollama/llama.cpp, or Haiku),
+  validate the proposed ticker against the SEC/known list (kills hallucination), and recover
+  the trade. Measure first (a week of drops) to confirm ticker-loss is the bottleneck vs
+  classify misfires, then point the resolver at it.
 
 ## Notification Batching
 `src/switching/notifications.py` queues buy notifications in `_NotificationQueue` and flushes
