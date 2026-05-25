@@ -861,9 +861,19 @@ a drop. Options, cleanest-fit first for THIS architecture:
       decays from daily rebalancing — never hold those.
 - [ ] **Bearish-catalyst detector** — mirror of the bullish detectors (profit warnings,
       guidance cuts, going-concern, fraud, mass downgrades) → feeds shorts or puts.
-- [ ] **Shorting (T212 CFD) / puts** — true short exposure, but: margin, borrow cost,
-      unlimited/large risk, regulatory friction (Invest account is long-only; CFDs are a
-      different product). Puts are Phase 3 (options). High complexity — defer.
+- [ ] **CFD leverage on the best-performing detector** (long-horizon, hard-gated) — NOT
+      for shorting/crash plays; the idea is to *amplify* the proven winner (e.g.
+      guidance_raise) with modest leverage. ⚠️ Only after ALL of: (a) the detector's edge
+      is proven over 50-100+ trades across conditions (today the whole P&L rests on ~3
+      trades — SIBN alone is 57%, so it's NOT proven); (b) live on real money UNLEVERAGED
+      first; (c) modest leverage only (≤2x), leverage-aware stops, gap-risk accounted.
+      Note: **conviction sizing (`_position_weight`) is the UNLEVERAGED version of this and
+      already exists** — use it to lean into the winner until leverage is justified.
+      Costs/risks: daily financing erodes a +4%-avg edge, leverage amplifies the 37%
+      losers and gap-downs identically, different account + tax treatment (no ISA). Puts
+      are Phase 3 (options). Defer — a long way off.
+- [ ] **Shorting / puts for downside** — true short exposure (CFDs/puts): margin, borrow
+      cost, large/unlimited risk, regulatory friction. Phase 3+. Defer.
 **Honest framing:** crash-timing is hard (sharp, brief, whipsaw-prone) and is a *different
 edge* from bullish-catalyst momentum. Worth trying on the paper trader, NOT a core feature.
 Naturally pairs with the regime filter we need for the kill-switch anyway.
