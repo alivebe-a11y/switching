@@ -106,6 +106,21 @@ def test_fetch_uses_default_market_when_unset():
         rss_mod.set_default_market("us")
 
 
+def test_extract_ticker_uk_never_uses_sec_lookup():
+    """A UK item with no EPIC must NOT fall through to the US SEC lookup
+    (which would mis-resolve parenthesised codes like (AGM) to a US ticker)."""
+    item = _make_uk_item("Trading statement (RNS) and (AGM) notice", "")
+    with patch("switching.sources.ticker_lookup.lookup_ticker", return_value="AGM") as m:
+        assert item.extract_ticker() is None
+    m.assert_not_called()
+
+
+def test_extract_ticker_uk_cross_listed_exchange_prefix():
+    """An explicit US exchange prefix in a UK item still resolves (cross-listed)."""
+    item = _make_uk_item("Vodafone reports (NASDAQ: VOD) ADR update", "")
+    assert item.extract_ticker() == "VOD"
+
+
 def test_extract_ticker_us_market_still_works():
     """Regression: US FeedItems still extract tickers without .L suffix."""
     item = FeedItem(

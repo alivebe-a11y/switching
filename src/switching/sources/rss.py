@@ -125,7 +125,13 @@ class FeedItem:
             for cand in _EPIC_RX.findall(self.text):
                 if cand not in _EPIC_STOPWORDS:
                     return f"{cand}.L"
-            # 3. Fall through to the US pipeline for cross-listed companies.
+            # 3. Cross-listed: only an explicit US exchange prefix (NASDAQ:VOD).
+            #    Do NOT use the SEC bare-paren lookup here — it's US-centric and
+            #    would re-match parenthesised codes the stopword list rejected
+            #    (e.g. "(AGM)" -> US ticker AGM), returning a US ticker for a UK
+            #    item. Better to return None than trade the wrong instrument.
+            m = _TICKER_RX.search(self.text)
+            return m.group(1) if m else None
         match = _TICKER_RX.search(self.text)
         if match:
             return match.group(1)
