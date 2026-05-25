@@ -27,6 +27,7 @@ within one scan cycle don't re-scrape the site every time.
 
 from __future__ import annotations
 
+import html
 import logging
 import re
 import time
@@ -46,15 +47,33 @@ _CACHE_TTL = 240.0  # seconds — one scrape covers a full scan cycle's detector
 
 _cache: dict = {"ts": 0.0, "items": []}
 
-# Announcement anchor: captures the detail URL + the headline text.
+# Announcement anchor — tolerant of attributes before href (the real markup is
+# `<a class="announcement-link" href="...">`) and of relative or absolute hrefs.
 _ANN_RX = re.compile(
-    r'<a\s+href="(https://www\.investegate\.co\.uk/announcement/[^"]+)"[^>]*>\s*([^<]+?)\s*</a>',
+    r'<a\b[^>]*?href="([^"]*?/announcement/[^"]+)"[^>]*>\s*([^<]+?)\s*</a>',
     re.I,
 )
-# EPIC lives in the URL slug as ``---<epic>/<title-slug>/<id>``.
-_SLUG_EPIC_RX = re.compile(r'---([A-Za-z0-9.]{1,6})/[^/]+/\d+')
+# Announcement URL path: /announcement/<src>/<company-slug>/<title-slug>/<id>.
+# The company-slug ends with the EPIC after a run of dashes, e.g.
+# "nokia-oyj--0haf", "sage-group--sge", "glenveagh-properties-cdi---glv".
+_SLUG_RX = re.compile(r"/announcement/[^/]+/([^/]+)/[^/]+/\d+")
+# A tradeable UK EPIC: letter-leading, 2-5 alphanumerics. This deliberately
+# skips digit-leading depositary lines (0HAF, 0KEH) — foreign-company LSE lines
+# we don't want to trade.
+_EPIC_OK_RX = re.compile(r"^[A-Z][A-Z0-9]{1,4}$")
 # Timestamp like "22 May 2026 06:31 PM".
 _TS_RX = re.compile(r'(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}\s+\d{1,2}:\d{2}\s+[AP]M)')
+
+
+def _epic_from_url(url: str) -> str | None:
+    m = _SLUG_RX.search(url)
+    if not m:
+        return None
+    tokens = [t for t in m.group(1).split("-") if t]
+    if not tokens:
+        return None
+    epic = tokens[-1].upper()
+    return epic if _EPIC_OK_RX.match(epic) else None
 
 
 def _parse_ts(s: str) -> datetime | None:
@@ -66,27 +85,27 @@ def _parse_ts(s: str) -> datetime | None:
     return None
 
 
-def parse(html: str) -> list[FeedItem]:
+def parse(raw_html: str) -> list[FeedItem]:
     """Parse the announcements table HTML into FeedItems (market='uk').
 
     Tolerant: iterates table-row chunks, and for each that contains an
-    announcement anchor with an EPIC in its slug, emits an item. Rows without a
-    resolvable EPIC are skipped (we can't trade what we can't ticker).
+    announcement anchor with a resolvable EPIC in its URL, emits an item. Rows
+    without a tradeable EPIC (or digit-leading depositary lines) are skipped.
     """
     items: list[FeedItem] = []
     now = datetime.now(tz=timezone.utc)
     seen_urls: set[str] = set()
-    for chunk in re.split(r"<tr[ >]", html):
+    for chunk in re.split(r"<tr[ >]", raw_html):
         ann = _ANN_RX.search(chunk)
         if not ann:
             continue
-        url, headline = ann.group(1), ann.group(2).strip()
+        url = ann.group(1)
+        headline = html.unescape(ann.group(2).strip())
         if url in seen_urls:
             continue
-        epic_m = _SLUG_EPIC_RX.search(url)
-        if not epic_m:
+        epic = _epic_from_url(url)
+        if not epic:
             continue
-        epic = epic_m.group(1).upper()
         ts_m = _TS_RX.search(chunk)
         dt = _parse_ts(ts_m.group(1)) if ts_m else None
         if dt is None:
