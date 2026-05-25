@@ -98,7 +98,11 @@ def test_fetch_uses_default_market_when_unset():
     mock_parsed.entries = [_mock_feedparser_entry("Tesco (LSE:TSCO) trading update")]
     rss_mod.set_default_market("uk")
     try:
-        with patch("switching.sources.rss.feedparser.parse", return_value=mock_parsed):
+        # Mock the Investegate scrape (offline + deterministic) so only the
+        # mocked Google/feedparser item is returned.
+        with patch("switching.sources.investegate.scrape", return_value=[]), \
+             patch("switching.sources.rss._alert_uk_failover"), \
+             patch("switching.sources.rss.feedparser.parse", return_value=mock_parsed):
             items = fetch(["https://news.google.com/rss/search?q=x"])  # no market arg
         assert items[0].market == "uk"
         assert items[0].extract_ticker() == "TSCO.L"
@@ -165,11 +169,16 @@ def _mock_feedparser_entry(title: str = "Test", summary: str = "Summary") -> Mag
 
 
 def test_fetch_with_market_uk_sets_market_field():
+    # market=uk routes through _fetch_uk (Investegate + Google). Mock the
+    # Investegate scrape so the test stays offline and deterministic — here it
+    # returns nothing, so only the mocked Google/feedparser item comes through.
     mock_parsed = MagicMock()
     mock_parsed.entries = [_mock_feedparser_entry("Barclays PLC (BARC) - Dealing")]
 
-    with patch("switching.sources.rss.feedparser.parse", return_value=mock_parsed):
-        items = fetch(["https://www.investegate.co.uk/rss/allnews.aspx"], market="uk")
+    with patch("switching.sources.investegate.scrape", return_value=[]), \
+         patch("switching.sources.rss._alert_uk_failover"), \
+         patch("switching.sources.rss.feedparser.parse", return_value=mock_parsed):
+        items = fetch(["https://news.google.com/rss/search?q=x"], market="uk")
 
     assert len(items) == 1
     assert items[0].market == "uk"
