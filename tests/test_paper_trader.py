@@ -724,3 +724,32 @@ class TestRideMode:
             closed = check_exits(p)
         assert closed == []
         assert len(p.positions) == 1
+
+
+class TestRichMarkupEscapedExceptions:
+    """T212 error messages contain '[/equity/orders/market]', which Rich
+    parses as a closing markup tag and raises MarkupError on. The loops now
+    escape exception text before interpolating into Rich markup; this guards
+    against a regression where 9 real BUY FAILEDs were lost as tracebacks
+    because the error-printing line itself crashed.
+    """
+
+    def test_console_print_handles_path_brackets_in_exception(self):
+        import io
+        from rich.console import Console
+        from rich.markup import escape
+
+        msg = "T212 bad request [/equity/orders/market]: instrument not found"
+        buf = io.StringIO()
+        c = Console(file=buf, force_terminal=False, no_color=True, width=200)
+        # This is the exact pattern used in run_loop_t212's BUY FAILED branch.
+        c.print(f"[red]BUY FAILED NVDA: {escape(msg)}[/red]")
+        out = buf.getvalue()
+        assert "BUY FAILED NVDA" in out
+        # The bracketed path appears literally (proves it wasn't parsed as markup).
+        assert "[/equity/orders/market]" in out
+
+    def test_paper_trader_imports_rich_markup_escape(self):
+        # Locks the import so the codemod's premise (use escape()) stays true.
+        import switching.paper_trader as pt
+        assert hasattr(pt, "_esc")

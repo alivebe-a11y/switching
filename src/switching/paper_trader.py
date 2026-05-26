@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from rich.markup import escape as _esc
 import logging
 import time
 from dataclasses import asdict, dataclass, field
@@ -1118,7 +1119,7 @@ def run_loop_alpaca(
                     ))
                     portfolio.positions = [x for x in portfolio.positions if x.ticker != p.ticker]
                 except Exception as exc:
-                    console.print(f"  [red]SELL FAILED {p.ticker}: {exc}[/red]")
+                    console.print(f"  [red]SELL FAILED {p.ticker}: {_esc(str(exc))}[/red]")
             else:
                 if tracker:
                     tracker.days_held = days
@@ -1172,7 +1173,7 @@ def run_loop_alpaca(
                 ))
                 held_tickers.add(sig.ticker)
             except Exception as exc:
-                console.print(f"  [red]BUY FAILED {sig.ticker}: {exc}[/red]")
+                console.print(f"  [red]BUY FAILED {sig.ticker}: {_esc(str(exc))}[/red]")
 
         wins = sum(1 for t in portfolio.trades if t.pnl > 0)
         total_trades = len(portfolio.trades)
@@ -1228,7 +1229,7 @@ def run_loop_t212(
     try:
         client = Trading212Client()
     except T212AuthError as exc:
-        console.print(f"[red]Trading 212 auth error: {exc}[/red]")
+        console.print(f"[red]Trading 212 auth error: {_esc(str(exc))}[/red]")
         return
 
     mode = "[bold yellow]T212 DEMO[/bold yellow]" if client.demo else "[bold red]T212 LIVE — REAL MONEY[/bold red]"
@@ -1273,7 +1274,7 @@ def run_loop_t212(
         try:
             acct = client.get_account()
         except Exception as exc:
-            console.print(f"[red]T212 account fetch failed: {exc}[/red]")
+            console.print(f"[red]T212 account fetch failed: {_esc(str(exc))}[/red]")
             if once:
                 break
             time.sleep(_T212_EXIT_POLL_SECONDS)
@@ -1296,7 +1297,7 @@ def run_loop_t212(
         try:
             t212_positions = client.get_positions()
         except Exception as exc:
-            console.print(f"[red]T212 positions fetch failed: {exc}[/red]")
+            console.print(f"[red]T212 positions fetch failed: {_esc(str(exc))}[/red]")
             t212_positions = []
             positions_ok = False   # do NOT reconcile ghosts off a failed fetch
 
@@ -1430,7 +1431,7 @@ def run_loop_t212(
                     # and so we don't immediately re-buy the same ticker (churn).
                     portfolio.recently_sold[sym] = now.isoformat()
                 except (T212OrderError, Exception) as exc:
-                    console.print(f"  [red]SELL FAILED {sym}: {exc}[/red]")
+                    console.print(f"  [red]SELL FAILED {sym}: {_esc(str(exc))}[/red]")
             else:
                 if tracker:
                     tracker.days_held = days
@@ -1540,7 +1541,7 @@ def run_loop_t212(
                 held_symbols.add(sig.ticker)
                 active_count += 1
             except (T212OrderError, Exception) as exc:
-                console.print(f"  [red]BUY FAILED {sig.ticker}: {exc}[/red]")
+                console.print(f"  [red]BUY FAILED {sig.ticker}: {_esc(str(exc))}[/red]")
                 # Persist so the dashboard shows what T212 rejected and why
                 # (instrument-not-found, too-small qty, rate-limited, …).
                 detection_funnel.record_signal_drop(
@@ -1556,7 +1557,7 @@ def run_loop_t212(
             try:
                 fills = {p.symbol: p for p in client.get_positions()}
             except Exception as exc:
-                console.print(f"  [yellow]Fill lookup failed ({exc}); using estimates[/yellow]")
+                console.print(f"  [yellow]Fill lookup failed ({_esc(str(exc))}); using estimates[/yellow]")
                 fills = {}
             for sig, fb_price, fb_qty in pending_buys:
                 tp = fills.get(sig.ticker)
