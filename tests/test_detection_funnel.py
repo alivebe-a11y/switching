@@ -72,6 +72,32 @@ def test_prune_keeps_recent(tmp_path, monkeypatch):
     assert "drop 19" in drops[0]["headline"]
 
 
+def test_record_signal_drop_persists_ticker_and_reason(tmp_path):
+    """Buy-time failures (no yfinance price, broker rejected) are now captured."""
+    path = tmp_path / "t212_portfolio.json"
+    detection_funnel.configure("t212", path)
+
+    class Sig:
+        ticker = "RAASY"
+        headline = "RAASY announces strategic review"
+        detector = "mna_target"
+        url = "https://example.com/raasy"
+
+    detection_funnel.record_signal_drop("mna_target", Sig(), "price_unavailable")
+    detection_funnel.record_signal_drop(
+        "guidance_raise", Sig(),
+        "t212_rejected: T212OrderError: instrument not found",
+    )
+
+    drops = detection_funnel.load_drops(path)
+    assert len(drops) == 2
+    reasons = [d["reason"] for d in drops]
+    assert "price_unavailable" in reasons
+    assert any(r.startswith("t212_rejected:") for r in reasons)
+    # ticker prefixed onto the headline so the dashboard shows what we tried
+    assert all("[RAASY]" in d["headline"] for d in drops)
+
+
 def test_record_drop_never_raises_on_bad_item(tmp_path):
     detection_funnel.configure("us", tmp_path / "paper_portfolio.json")
     # An object missing attributes must not blow up a scan.

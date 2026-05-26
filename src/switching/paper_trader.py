@@ -884,6 +884,7 @@ def run_loop(
             if price is None:
                 console.print(f"  [yellow]SKIP {sig.ticker}: no price available[/yellow]")
                 notifications.notify_skip(sig.ticker, "no price available", sig.detector, sig.headline)
+                detection_funnel.record_signal_drop(sig.detector, sig, "price_unavailable")
                 portfolio.seen_signals.append(_signal_key(sig))
                 continue
             pos = open_position(portfolio, sig, price, stop_loss=stop_loss, hold_days=hold_days, market=market)
@@ -1511,6 +1512,7 @@ def run_loop_t212(
             price = get_current_price(sig.ticker)
             if not price or price <= 0:
                 console.print(f"  [yellow]SKIP {sig.ticker}: price unavailable[/yellow]")
+                detection_funnel.record_signal_drop(sig.detector, sig, "price_unavailable")
                 continue
 
             # Conviction-weighted size (same model as the internal paper trader),
@@ -1539,6 +1541,12 @@ def run_loop_t212(
                 active_count += 1
             except (T212OrderError, Exception) as exc:
                 console.print(f"  [red]BUY FAILED {sig.ticker}: {exc}[/red]")
+                # Persist so the dashboard shows what T212 rejected and why
+                # (instrument-not-found, too-small qty, rate-limited, …).
+                detection_funnel.record_signal_drop(
+                    sig.detector, sig,
+                    f"t212_rejected: {type(exc).__name__}: {str(exc)[:120]}",
+                )
 
         # Resolve actual fills with a SINGLE positions fetch (staggered/throttled
         # by the client), then record local trackers. Orders that haven't settled

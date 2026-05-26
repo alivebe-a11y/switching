@@ -105,6 +105,39 @@ def record_drop(detector: str, item, reason: str = "no_ticker") -> None:
         log.warning("detection_funnel.record_drop failed: %s", exc)
 
 
+def record_signal_drop(detector: str, signal, reason: str) -> None:
+    """Record a signal that survived classify+ticker but couldn't be acted on
+    (yfinance has no price, broker rejected the order, etc.). Same table as
+    ``record_drop``; the ``reason`` distinguishes them. The headline is
+    prefixed with the ticker so the dashboard shows what we tried to buy.
+    """
+    global _insert_count
+    if _db_path is None:
+        return
+    try:
+        from switching import storage
+        conn = storage.connect(_db_path)
+        ticker = getattr(signal, "ticker", "") or "?"
+        headline = getattr(signal, "headline", "") or ""
+        conn.execute(
+            "INSERT INTO dropped_signals (service, detector, reason, ts, headline, url, summary) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (
+                _service, detector, reason,
+                datetime.now(tz=timezone.utc).isoformat(),
+                f"[{ticker}] {headline}",
+                getattr(signal, "url", "") or "",
+                "",
+            ),
+        )
+        conn.commit()
+        _insert_count += 1
+        if _insert_count % _PRUNE_EVERY == 0:
+            _prune()
+    except Exception as exc:  # never let capture break the loop
+        log.warning("detection_funnel.record_signal_drop failed: %s", exc)
+
+
 def load_drops(cache_path, limit: int = 200) -> list[dict]:
     """Most-recent dropped headlines across all services (newest first)."""
     from switching import storage
