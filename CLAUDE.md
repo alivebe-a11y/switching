@@ -320,6 +320,14 @@ endpoints are US-scoped; `/api/uk` and `/api/t212` read their own services.
 - **No market-regime / drawdown halt yet** — the bot trades each signal independently and
   has no "risk-off, stop buying" switch. Fine for demo; a hard blocker before real money
   (pre-live gate #1).
+- **FX drift on cross-currency T212 holdings** — a UK-base T212 account (GBP) holding USD
+  stocks shows P&L moves *even on US market holidays*: stock prices are static but
+  GBP/USD keeps trading, so the GBP value of USD positions drifts. T212 returns position
+  prices in the instrument's currency (USD) but unrealised P&L in the account's currency
+  (GBP). Loop logs now use the actual `acct.currency` symbol for account/pnl values
+  (per-position prices stay `$` since they're USD stock quotes). When going to real money:
+  this FX *is* a real exposure — even when stocks don't move, your portfolio value floats
+  with GBP/USD until you close.
 
 ---
 

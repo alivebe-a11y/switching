@@ -74,6 +74,15 @@ class T212Account:
     total: float      # Total account value (cash + positions)
     invested: float   # Amount deployed in open positions
     ppl: float        # Unrealised P&L across all open positions
+    currency: str = "USD"   # account base currency (e.g. GBP for UK demo accounts)
+
+
+# Account-currency -> display symbol. Falls back to the ISO code when unknown.
+_CURRENCY_SYMBOLS = {"USD": "$", "GBP": "£", "EUR": "€"}
+
+
+def currency_symbol(code: str | None) -> str:
+    return _CURRENCY_SYMBOLS.get((code or "").upper(), code or "$")
 
 
 @dataclass
@@ -176,6 +185,7 @@ class Trading212Client:
             total=_safe_float(data.get("totalValue")),
             invested=_safe_float(investments.get("currentValue")),
             ppl=_safe_float(investments.get("unrealizedProfitLoss")),
+            currency=(data.get("currency") or "USD").upper(),
         )
 
     # ------------------------------------------------------------------

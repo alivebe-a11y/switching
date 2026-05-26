@@ -194,6 +194,16 @@ def test_get_account(client):
     assert acct.total == 10200.0
     assert acct.invested == 700.0
     assert acct.ppl == 50.0
+    assert acct.currency == "GBP"   # account currency captured for display
+
+
+def test_currency_symbol_helper():
+    from switching.broker_trading212 import currency_symbol
+    assert currency_symbol("GBP") == "£"
+    assert currency_symbol("USD") == "$"
+    assert currency_symbol("EUR") == "€"
+    assert currency_symbol(None) == "$"          # safe fallback
+    assert currency_symbol("AUD") == "AUD"       # unknown ISO -> shown as-is
 
 
 def test_get_account_missing_fields(client):

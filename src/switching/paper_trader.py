@@ -1278,9 +1278,14 @@ def run_loop_t212(
             time.sleep(_T212_EXIT_POLL_SECONDS)
             continue
 
+        # Use the actual T212 account currency (e.g. GBP for UK demo) for
+        # account-level + pnl values. Per-position stock prices stay $ since
+        # they're quoted in the instrument's currency (USD for US tickers).
+        from switching.broker_trading212 import currency_symbol
+        cs = currency_symbol(acct.currency)
         console.print(
-            f"Free: ${acct.free:.2f} | Invested: ${acct.invested:.2f} | "
-            f"Total: ${acct.total:.2f} | P&L: ${acct.ppl:+.2f}"
+            f"Free: {cs}{acct.free:.2f} | Invested: {cs}{acct.invested:.2f} | "
+            f"Total: {cs}{acct.total:.2f} | P&L: {cs}{acct.ppl:+.2f}"
         )
 
         # ----------------------------------------------------------------
@@ -1303,7 +1308,7 @@ def run_loop_t212(
                 console.print(
                     f"    {sym}: {tp.quantity:.4f} @ ${tp.avg_entry_price:.2f} "
                     f"[{color}]{tp.unrealized_pnl_pct*100:+.1f}% "
-                    f"(${tp.unrealized_pnl:+.2f})[/{color}]"
+                    f"({cs}{tp.unrealized_pnl:+.2f})[/{color}]"
                 )
             portfolio.save(state_path)
             if once:
@@ -1400,7 +1405,7 @@ def run_loop_t212(
                     pnl = round(tp.unrealized_pnl, 2)
                     console.print(
                         f"  [{color}]SELL {sym} ({reason}): "
-                        f"{ret*100:+.1f}% ${pnl:+.2f} — order {order.status}[/{color}]"
+                        f"{ret*100:+.1f}% {cs}{pnl:+.2f} — order {order.status}[/{color}]"
                     )
                     closed = ClosedTrade(
                         ticker=sym,
@@ -1514,7 +1519,7 @@ def run_loop_t212(
             alloc = acct.total * max_position_pct * weight
             alloc = min(alloc, acct.free, acct.total * _MAX_SINGLE_POSITION_PCT)
             if alloc < 1.0:
-                console.print(f"  [yellow]SKIP {sig.ticker}: insufficient buying power (${acct.free:.2f})[/yellow]")
+                console.print(f"  [yellow]SKIP {sig.ticker}: insufficient buying power ({cs}{acct.free:.2f})[/yellow]")
                 _record_t212_skip(skipped_tracker, sig, "insufficient_cash", stop_loss, price=price)
                 continue
 
@@ -1523,7 +1528,7 @@ def run_loop_t212(
             try:
                 order = client.buy_market(sig.ticker, quantity)
                 console.print(
-                    f"  [cyan]BUY {sig.ticker} {quantity:.4f} shares (~${alloc:.2f}) "
+                    f"  [cyan]BUY {sig.ticker} {quantity:.4f} shares (~{cs}{alloc:.2f}) "
                     f"— order {order.status} "
                     f"— {sig.detector}: {sig.headline[:55]}[/cyan]"
                 )
@@ -1592,7 +1597,7 @@ def run_loop_t212(
             total_pnl = sum(t.pnl for t in portfolio.trades)
             console.print(
                 f"  [dim]History: {total_trades} trades, {wins} wins ({wr:.0f}%), "
-                f"total P&L: ${total_pnl:+.2f}[/dim]"
+                f"total P&L: {cs}{total_pnl:+.2f}[/dim]"
             )
 
         portfolio.save(state_path)
