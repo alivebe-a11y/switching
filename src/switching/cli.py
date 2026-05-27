@@ -247,6 +247,17 @@ _UK_DEFAULT_DETECTORS = [
     "index_inclusion", "spinoff", "contract_win",
     "stock_split", "crypto_treasury",
     "uk_director_dealing",
+    # 2026-05-27: enabled on UK to collect data — both are RSS/regex detectors
+    # (no US-only data source), so they CAN fire on UK headlines.
+    # ai_pivot: UK has plenty of AI-pivot stories (Darktrace, ARM, smaller AIM
+    #   tech). Live data will tell us whether the edge holds at LSE liquidity.
+    # fda_decision: UK-listed biotechs (Hutchmed, Vectura, GSK) routinely
+    #   announce FDA decisions that move their UK price — real signal.
+    # NOTE: activist_13d + insider_cluster intentionally NOT enabled — they
+    # pull from SEC EDGAR with no UK data source, so flipping the flag is a
+    # no-op. UK equivalents are roadmap items: uk_activist_holdings (RNS
+    # TR-1) and uk_insider_cluster (PDMR clusters on top of uk_director_dealing).
+    "ai_pivot", "fda_decision",
 ]
 
 

@@ -564,11 +564,15 @@ def open_position(
             log.info("already holding %s, skipping", signal.ticker)
             return None
 
-    # Price floor check using normalised price (pounds for UK, dollars for US)
+    # Price floor — US only.  $1 keeps the bot out of OTC-grade / failing-
+    # reverse-split garbage on NYSE/NASDAQ.  UK floor REMOVED 2026-05-27:
+    # AIM has legitimate sub-£1 names (small caps, recovery plays) and we
+    # need live data on whether the bot can actually trade them.  The +2%
+    # tiered stop-loss for <£5 stocks (`_tiered_stop_loss`) stays as the
+    # volatility safeguard, so penny-stock churn is at least bounded.
     normalised = _normalise_price(price, market)
-    floor = 1.0  # £1 or $1 in normalised units
-    if normalised < floor:
-        log.info("price %.4f (normalised %.4f) below floor, skipping %s", price, normalised, signal.ticker)
+    if market != "uk" and normalised < 1.0:
+        log.info("price %.4f (normalised %.4f) below $1 floor, skipping %s", price, normalised, signal.ticker)
         return None
 
     # Conviction-weighted size: base allocation scaled by the detector's weight,
@@ -1102,7 +1106,10 @@ def run_loop(
                     skip_reason = "max_positions"
                 elif any(p.ticker == sig.ticker for p in portfolio.positions):
                     skip_reason = "already_holding"
-                elif _normalise_price(price, market) < 1.0:
+                elif market != "uk" and _normalise_price(price, market) < 1.0:
+                    # US-only $1 floor; UK has no price floor (AIM penny stocks
+                    # are tradeable). Keep this skip_reason classifier aligned
+                    # with the actual gate in `open_position`.
                     skip_reason = "price_too_low"
                 else:
                     alloc = portfolio.total_value * portfolio.max_position_pct

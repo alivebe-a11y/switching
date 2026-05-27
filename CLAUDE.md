@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `main`
-- **649 tests**, run with: `pytest tests/`
+- **651 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path (Dockge UI): `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -115,9 +115,9 @@ so the three services share one file without colliding and can be compared with 
 | Detector | Source | Exit Profile | Markets |
 |----------|--------|--------------|---------|
 | earnings_surprise | RSS (earnings feeds + UK_FEEDS) | first_green +2%, 3-day hold | US + UK |
-| ai_pivot | RSS (default feeds) | **ride mode**: first-green flips into peak-trailing (3% band), 6-8 day backstop | US |
+| ai_pivot | RSS (default feeds) | **ride mode**: first-green flips into peak-trailing (3% band), 6-8 day backstop | US + UK (enabled 2026-05-27, data-collection) |
 | analyst_upgrade | RSS (default feeds) | first_green +1%, 3-day hold | US + UK |
-| fda_decision | RSS (default + earnings) | first_green +3%, 3-day hold | US |
+| fda_decision | RSS (default + earnings) | first_green +3%, 3-day hold | US + UK (enabled 2026-05-27, data-collection) |
 | buyback | RSS (default + corporate) | NO first_green, 5-day hold | US + UK |
 | index_inclusion | RSS (default + corporate) | default (first_green +0%, 5-day) | US + UK (FTSE) |
 | spinoff | RSS (default + corporate) | default | US + UK |
@@ -134,10 +134,29 @@ so the three services share one file without colliding and can be compared with 
 ## UK Service (_UK_DEFAULT_DETECTORS)
 The `paper-trade-uk` service (and `--market uk` flag) uses `_UK_DEFAULT_DETECTORS` in cli.py:
 `earnings_surprise, analyst_upgrade, mna_target, guidance_raise, dividend_surprise, buyback,
-index_inclusion, spinoff, contract_win, stock_split, crypto_treasury, uk_director_dealing`
+index_inclusion, spinoff, contract_win, stock_split, crypto_treasury, uk_director_dealing,
+ai_pivot, fda_decision`
 
-Excluded from UK: `activist_13d` and `insider_cluster` (SEC/EDGAR-based, US-only).
-Also excluded: `ai_pivot`, `fda_decision` (US regulatory signals, not applicable to LSE).
+**Excluded from UK** (no UK data source — would require new detectors):
+- `activist_13d` (SEC 13D filings only). UK equivalent on roadmap:
+  `uk_activist_holdings` parsing RNS TR-1/DTR5 disclosures (3% threshold, 2-day filing —
+  faster than US 13D). Trigger built when UK paper-trade produces enough flow.
+- `insider_cluster` (SEC Form 4 only). UK equivalent on roadmap: `uk_insider_cluster`
+  aggregating PDMR notifications (MAR Article 19) on top of `uk_director_dealing` — same
+  Investegate RNS source, windowed cluster logic.
+
+**Re-enabled 2026-05-27 (data-collection)**: `ai_pivot`, `fda_decision`. Both are
+RSS/regex (not SEC-tied), so they can fire on UK headlines. UK has plenty of
+AI-pivot stories (Darktrace, ARM, AIM tech) and UK-listed biotechs (Hutchmed,
+GSK) announcing FDA decisions. Whether the edge holds at LSE liquidity is an
+open question — live data will tell us.
+
+**UK price floor REMOVED 2026-05-27**: was £1 in normalised units (rejected AIM
+penny stocks). AIM has legitimate sub-£1 names (small caps, recovery plays); the
+old floor was a US assumption transplanted. US $1 floor stays (sub-$1 NYSE/NASDAQ
+names are usually failing reverse-splits / OTC-grade). The +2% tiered stop-loss
+for <£5 stocks (`_tiered_stop_loss`) stays as the volatility safeguard, so
+penny-stock churn is at least bounded.
 
 ## Stop-Loss Tiers (normalised price)
 Tiers apply to normalised price (GBP for UK = pence/100, USD for US):
@@ -920,6 +939,20 @@ UK flow alive so we can judge whether UK is worth the deeper build at all.
 - [ ] crypto_treasury — Bitcoin treasury announcements (MicroStrategy pattern)
 - [ ] geopolitical — oil/defence/shipping on geopolitical events (Strait of Hormuz etc.)
 - [ ] day_trading — intraday momentum signals (separate project likely)
+- [ ] **uk_activist_holdings** — UK equivalent of `activist_13d`. Source: RNS
+  "Holding(s) in Company" announcements (TR-1 / DTR5 disclosures, already in
+  the Investegate scraper). Trigger fires when a known-activist name (Elliott,
+  ValueAct, Cevian, Pelham Capital, Crystal Amber, Gatemore, Asset Value
+  Investors, Boaz Weinstein/Saba) crosses 3% / 5% / 10% ownership. FCA
+  threshold is **3%** (vs SEC's 5%) and notification is within **2 trading days**
+  (vs SEC's 10) — meaningfully faster signal than US 13D. Build when UK
+  paper-trade produces enough flow to evaluate the edge.
+- [ ] **uk_insider_cluster** — UK equivalent of `insider_cluster`. Source: same
+  RNS "Director/PDMR Shareholding" stream that `uk_director_dealing` already
+  reads (MAR Article 19 — PDMRs must notify of transactions ≥€5,000 within 3
+  business days). Cluster logic: multiple PDMRs buying same ticker within an
+  N-day window. Sits ON TOP of `uk_director_dealing` (which already fires on
+  single dealings). Build when UK flow merits it.
 
 ### Exploration: profit from market falls ("crash alpha") — paper only
 The engine is **long-only momentum on bullish catalysts**; it can't currently profit from

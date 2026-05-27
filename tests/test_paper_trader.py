@@ -330,12 +330,34 @@ class TestOpenPositionProfiles:
         assert len(portfolio.positions) == 1
 
     def test_price_floor_rejects_penny_stock(self):
-        """Stocks under $1.00 should be rejected."""
+        """US stocks under $1.00 should be rejected."""
         portfolio = Portfolio(cash=1000.0)
         sig = self._make_signal("ai_pivot")
         pos = open_position(portfolio, sig, 0.50)
         assert pos is None
         assert portfolio.cash == 1000.0
+
+    def test_uk_has_no_price_floor(self):
+        """UK penny stocks (AIM <£1) should be accepted — the floor was lifted
+        2026-05-27 to collect data on whether the bot can trade them.
+
+        yfinance returns LSE tickers in pence (GBX). A 50p stock arrives as
+        price=50.0 and normalises to £0.50, which the old gate would reject.
+        """
+        portfolio = Portfolio(cash=1000.0)
+        sig = self._make_signal("guidance_raise")
+        # 50p (GBX = 50.0) → normalised £0.50 — below the old floor
+        pos = open_position(portfolio, sig, 50.0, market="uk")
+        assert pos is not None, "UK sub-£1 stock should now be tradeable"
+        assert pos.entry_price == pytest.approx(0.50)
+
+    def test_us_price_floor_still_active(self):
+        """US sub-$1 stocks must still be rejected — the UK exemption is UK-only."""
+        portfolio = Portfolio(cash=1000.0)
+        sig = self._make_signal("ai_pivot")
+        # $0.50 — below the US $1 floor (market="us" is the default)
+        pos = open_position(portfolio, sig, 0.50, market="us")
+        assert pos is None
 
     def test_first_green_pct_prevents_early_exit(self):
         """A +1% return should NOT trigger first_green when threshold is 2%."""
