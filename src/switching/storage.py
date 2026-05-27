@@ -127,7 +127,16 @@ def db_path_for(path: Path) -> Path:
 
 def connect(path: Path) -> sqlite3.Connection:
     """Return a WAL-mode connection to the shared db for *path*, initialising
-    the schema on first use. Connections are cached per process per db file."""
+    the schema on first use. Connections are cached per process per db file.
+
+    After schema init we run ``assert_schema_invariants`` once — a cheap
+    sanity check that the required tables + columns are present.  This
+    catches a hand-edited DB, a half-applied migration, or a code change
+    that forgot to update ``_init_schema``.  Failure logs WARNING and
+    optionally fires a one-shot Telegram alert, but does NOT crash the
+    process — the bot must keep trying in degraded mode (release-it
+    rule: "fail visibly, preserve core service").
+    """
     db_path = db_path_for(path)
     key = str(db_path.resolve())
     with _CONNECTION_LOCK:
@@ -141,6 +150,7 @@ def connect(path: Path) -> sqlite3.Connection:
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=30000")
         _init_schema(conn)
+        _check_invariants_once(conn, db_path)
         _CONNECTIONS[key] = conn
         return conn
 
@@ -201,6 +211,80 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Schema invariants (defensive sanity check on every connect)
+# ---------------------------------------------------------------------------
+# What we assert: every table the bot writes to must exist, and a minimum
+# set of mandatory columns must be present.  The list is intentionally
+# narrow — only fields whose absence would silently corrupt OR drop data.
+# A new optional column (e.g. ``peak_price``) being missing on an old DB
+# is fine — Python writes NULL and reads default.  A missing ``service``
+# column would mean rows can't be filtered by service, which IS a data-loss
+# event in disguise.  So we check ``service`` everywhere, plus a few
+# load-critical fields per table.
+_REQUIRED_TABLES_AND_COLS: dict[str, tuple[str, ...]] = {
+    "service_state":   ("service", "key", "value"),
+    "positions":       ("service", "ticker", "detector", "entry_price", "entry_dt", "stop_loss", "hold_days"),
+    "closed_trades":   ("service", "ticker", "detector", "exit_reason", "pnl", "pct_return"),
+    "exit_tracks":     ("service", "ticker", "detector", "exit_dt"),
+    "skipped_signals": ("service", "ticker", "detector", "skip_reason", "skipped_at"),
+}
+
+# One alert per process — we want a single loud warning, not log spam.
+_INVARIANTS_CHECKED: set[str] = set()
+
+
+def assert_schema_invariants(conn: sqlite3.Connection) -> list[str]:
+    """Return a list of human-readable invariant failures (empty = healthy).
+
+    Public so tests and ``scripts/migrate_to_sqlite.py`` can call it.
+    Pure read — never mutates the DB.
+    """
+    failures: list[str] = []
+    cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    existing_tables = {row["name"] for row in cur.fetchall()}
+
+    for table, required_cols in _REQUIRED_TABLES_AND_COLS.items():
+        if table not in existing_tables:
+            failures.append(f"table missing: {table}")
+            continue
+        cur = conn.execute(f"PRAGMA table_info({table})")
+        actual_cols = {row["name"] for row in cur.fetchall()}
+        for col in required_cols:
+            if col not in actual_cols:
+                failures.append(f"column missing: {table}.{col}")
+    return failures
+
+
+def _check_invariants_once(conn: sqlite3.Connection, db_path: Path) -> None:
+    key = str(db_path.resolve())
+    if key in _INVARIANTS_CHECKED:
+        return
+    _INVARIANTS_CHECKED.add(key)
+    try:
+        failures = assert_schema_invariants(conn)
+    except Exception as exc:
+        log.warning("schema invariant check raised: %s", exc)
+        return
+    if not failures:
+        return
+    msg = "switching.db schema invariants FAILED:\n  - " + "\n  - ".join(failures)
+    log.warning(msg)
+    # Best-effort Telegram alert so an operator sees this even if logs aren't
+    # being tailed. Wrapped in a bare except — alerting must never crash startup.
+    try:
+        from switching import notifications
+        if notifications.is_configured():
+            notifications._send(f"WARNING: {msg}")  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+
+def _reset_invariants_cache() -> None:
+    """Test helper — re-check invariants after a connection-cache reset."""
+    _INVARIANTS_CHECKED.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -469,3 +553,4 @@ def _reset_connection_cache() -> None:
             except Exception:
                 pass
         _CONNECTIONS.clear()
+    _reset_invariants_cache()

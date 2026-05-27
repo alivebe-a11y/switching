@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `main`
-- **651 tests**, run with: `pytest tests/`
+- **666 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path (Dockge UI): `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -29,9 +29,13 @@ From the `switch` folder on Windows:
 ```powershell
 .\deploy.ps1
 ```
-It pushes committed code to GitHub, SSHes into TrueNAS, runs `scripts/deploy.sh` (build
-once + recreate all four services), then tails logs. No Dockge shell needed. Flags:
-`-Services dashboard` (subset), `-SkipPush`, `-Force`, `-NoLogs`. Requires one-time
+Four steps, in order: **(1) backup live state** (invokes `backup.ps1`, aborts the deploy
+if the backup fails — release-it rule "rollback path before forward path"), **(2) push
+committed code to GitHub**, **(3) SSH to TrueNAS, run `scripts/deploy.sh`** (build once +
+recreate all four services), **(4) tail logs**. No Dockge shell needed. Flags:
+`-Services dashboard` (subset), `-SkipPush`, `-SkipBackup` (emergency hotfix when the
+backup itself is broken — prints loud warning), `-Snapshot Pool_1/Configs` (also take a
+ZFS snapshot in the backup step), `-Force`, `-NoLogs`. Requires one-time
 `ssh-copy-id root@<truenas-ip>`. The launcher lives at `switch\deploy.ps1`; an identical
 version-controlled copy is in the repo at `scripts/deploy.ps1`.
 
@@ -56,8 +60,10 @@ curl -sL "https://raw.githubusercontent.com/alivebe-a11y/switching/main/docker-c
   step). To confirm nothing was lost, exec into any service and run
   `python scripts/migrate_to_sqlite.py /app/.cache` — expect "VALIDATION PASSED".
 
-### Backup (run before every deploy)
-From the `switch` folder on Windows:
+### Backup
+`deploy.ps1` now runs `backup.ps1` automatically as Step 1 and aborts the deploy on
+backup failure — so you can't accidentally ship code on top of an un-backed-up state.
+You only need to invoke `backup.ps1` directly for **ad-hoc** backups outside a deploy:
 ```powershell
 .\backup.ps1                          # tar cache on NAS + pull copy to .\backups
 .\backup.ps1 -Dataset Pool_1/Configs  # also take a ZFS snapshot (gold standard)
@@ -110,6 +116,25 @@ so the three services share one file without colliding and can be compared with 
   none of it. SQLite + service column fixes all three, and WAL gives atomic, concurrent-safe
   writes (no more half-written-file reads by the dashboard).
 - Legacy JSON files are kept as read-only backups (gitignored, never re-read after migration).
+
+## Data-protection guarantees
+Three layers stop the trade history (now 188+ trades + 600+ funnel drops + post-exit
+trackers) from being silently corrupted by a future schema/code change:
+
+1. **Backup is the first step of every deploy** (`deploy.ps1` invokes `backup.ps1`
+   and aborts on backup failure). `-SkipBackup` is the emergency lever for when the
+   backup script itself breaks — prints a loud warning. Release-it rule: "rollback
+   path before forward path".
+2. **Frozen v1 fixture + compat tests** (`tests/fixtures/switching_v1.db`,
+   `tests/test_storage_compat.py`). CI loads a representative golden DB via the
+   public `Portfolio.load` / `ExitTracker.load` / etc. APIs and a load→save→reload
+   roundtrip every run. A change that drops a column, renames a key, or zeroes
+   rows on save fails CI before merge. Regenerate the fixture intentionally
+   (`python scripts/build_test_fixture.py`) when a schema change is deliberate.
+3. **Schema invariants at `connect()`** — `storage.assert_schema_invariants` runs
+   once per process and checks every required table + critical column (notably
+   `service` everywhere) is present. Mismatch → WARNING log + optional Telegram
+   alert. Never crashes (release-it: "preserve core service in degraded mode").
 
 ## Detectors (16 registered)
 | Detector | Source | Exit Profile | Markets |

@@ -21,6 +21,10 @@ data/cache/
 *.db-wal
 *.db-shm
 switching.db
+# Exception: the storage-compat fixture is a committed golden snapshot
+# (regenerated only via scripts/build_test_fixture.py on deliberate
+# schema changes). It is the ONLY .db file we want in the repo.
+!tests/fixtures/*.db
 paper_portfolio.json
 uk_portfolio.json
 t212_portfolio.json

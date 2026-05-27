@@ -215,3 +215,75 @@ def test_migration_script_validates(tmp_path):
     assert rc == 0
     # And the data is actually queryable from the DB afterwards.
     assert len(Portfolio.load(tmp_path / "paper_portfolio.json").trades) == 4
+
+
+# ---------------------------------------------------------------------------
+# Schema invariants
+# ---------------------------------------------------------------------------
+
+class TestSchemaInvariants:
+    """At connect() time we sanity-check the DB has every table + critical
+    column we need. Failure logs WARNING but does NOT crash — the bot
+    must keep trying in degraded mode."""
+
+    def test_freshly_created_db_passes_invariants(self, tmp_path):
+        from switching import storage
+        storage._reset_connection_cache()
+        conn = storage.connect(tmp_path / "paper_portfolio.json")
+        failures = storage.assert_schema_invariants(conn)
+        assert failures == []
+
+    def test_invariants_detect_missing_table(self, tmp_path):
+        from switching import storage
+        storage._reset_connection_cache()
+        conn = storage.connect(tmp_path / "paper_portfolio.json")
+        # Drop a table the bot relies on
+        conn.execute("DROP TABLE positions")
+        conn.commit()
+        failures = storage.assert_schema_invariants(conn)
+        assert any("positions" in f for f in failures)
+
+    def test_invariants_detect_missing_column(self, tmp_path):
+        from switching import storage
+        storage._reset_connection_cache()
+        conn = storage.connect(tmp_path / "paper_portfolio.json")
+        # Rebuild closed_trades without the `severity` column to simulate
+        # an old DB that pre-dates the severity addition. Note: invariants
+        # don't check `severity` (it's optional), so this should still
+        # PASS — but if we drop `service`, it MUST fail.
+        conn.execute("DROP TABLE closed_trades")
+        conn.execute("""
+            CREATE TABLE closed_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT, detector TEXT, exit_reason TEXT,
+                pnl REAL, pct_return REAL
+            )
+        """)
+        conn.commit()
+        failures = storage.assert_schema_invariants(conn)
+        assert any("closed_trades.service" in f for f in failures)
+
+    def test_invariants_run_once_per_db_path(self, tmp_path, caplog):
+        # The whole point of the cache is one alert per process, not log spam.
+        from switching import storage
+        import logging
+        storage._reset_connection_cache()
+
+        # Create a broken DB
+        conn = storage.connect(tmp_path / "paper_portfolio.json")
+        conn.execute("DROP TABLE positions")
+        conn.commit()
+        # Drop from the connection cache so next connect re-runs init
+        # (which won't recreate the dropped table at this point since we
+        # ALREADY ran _init_schema, and CREATE IF NOT EXISTS won't fire
+        # again... but we DO want to verify the invariants-cache stops the
+        # second check from running)
+        storage._INVARIANTS_CHECKED.clear()
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            storage._check_invariants_once(conn, tmp_path / "switching.db")
+            # Second call: should be a no-op (key already in _INVARIANTS_CHECKED)
+            storage._check_invariants_once(conn, tmp_path / "switching.db")
+        warnings = [r for r in caplog.records if "invariants" in r.message.lower()]
+        # First call should warn; second should be silent
+        assert len(warnings) == 1
