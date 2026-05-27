@@ -99,6 +99,38 @@ _ALL_HOLIDAYS: frozenset[date] = _HOLIDAYS | _load_extra_holidays()
 
 
 # ---------------------------------------------------------------------------
+# NYSE / NASDAQ half-day closes (1:00 pm ET early close)
+# ---------------------------------------------------------------------------
+# Recurring half-days:
+#   - Day before Independence Day (if July 4 falls on a weekday)
+#   - Day after Thanksgiving (Black Friday)
+#   - Christmas Eve (if a weekday)
+# When Christmas/Independence Day fall on the weekend, the half-day pattern
+# shifts and sometimes vanishes — date list is authoritative.
+# Update each year from https://www.nyse.com/markets/hours-calendars.
+# ---------------------------------------------------------------------------
+_NYSE_HALF_DAYS: frozenset[date] = frozenset({
+    # 2024
+    date(2024,  7,  3),   # Wed before July 4 (Thu)
+    date(2024, 11, 29),   # Black Friday
+    date(2024, 12, 24),   # Christmas Eve (Tue)
+    # 2025
+    date(2025,  7,  3),   # Thu before July 4 (Fri)
+    date(2025, 11, 28),   # Black Friday
+    date(2025, 12, 24),   # Christmas Eve (Wed)
+    # 2026
+    # NOTE: July 4 2026 is Sat (observed Fri Jul 3, full holiday) — no half-day that week.
+    date(2026, 11, 27),   # Black Friday
+    date(2026, 12, 24),   # Christmas Eve (Thu)
+    # 2027
+    date(2027, 11, 26),   # Black Friday
+    # July 4 2027 is Sun (observed Mon Jul 5) — Jul 2 Fri half-day per NYSE schedule
+    date(2027,  7,  2),
+    # Dec 25 2027 is Sat (observed Fri Dec 24, full holiday) — no half-day that week
+})
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -120,6 +152,7 @@ def is_market_hours(now: datetime | None = None) -> bool:
     """Return True if US equity markets are currently open.
 
     Regular session: 9:30 am – 4:00 pm US Eastern Time, on trading days.
+    Half-day closes (1:00 pm ET) are honored — see ``_NYSE_HALF_DAYS``.
     """
     now = now or datetime.now(tz=timezone.utc)
     try:
@@ -133,9 +166,31 @@ def is_market_hours(now: datetime | None = None) -> bool:
         return False
 
     h, m = et.hour, et.minute
-    after_open  = (h, m) >= (9, 30)
-    before_close = (h, m) < (16,  0)
+    after_open = (h, m) >= (9, 30)
+    if et.date() in _NYSE_HALF_DAYS:
+        before_close = (h, m) < (13, 0)
+    else:
+        before_close = (h, m) < (16, 0)
     return after_open and before_close
+
+
+def minutes_since_us_open(now: datetime | None = None) -> float | None:
+    """Minutes since today's NYSE/NASDAQ open, or None if the market is closed.
+
+    Used by the trader loops to tighten the scan cadence in the first window
+    after open so queued + just-arrived signals fire fast. Half-day-aware
+    indirectly: returns None whenever ``is_market_hours`` is False.
+    """
+    now = now or datetime.now(tz=timezone.utc)
+    if not is_market_hours(now):
+        return None
+    try:
+        import zoneinfo
+        et = now.astimezone(zoneinfo.ZoneInfo("America/New_York"))
+    except Exception:
+        et = now.astimezone(timezone(timedelta(hours=-4)))
+    open_dt = et.replace(hour=9, minute=30, second=0, microsecond=0)
+    return (et - open_dt).total_seconds() / 60.0
 
 
 def trading_days_between(start: date, end: date) -> int:
@@ -221,6 +276,29 @@ _LSE_HOLIDAYS: frozenset[date] = frozenset({
 })
 
 
+# ---------------------------------------------------------------------------
+# LSE half-day closes (12:30 London time early close)
+# ---------------------------------------------------------------------------
+# LSE closes early on Christmas Eve and New Year's Eve when those fall on a
+# weekday. Update each year as needed.
+# ---------------------------------------------------------------------------
+_LSE_HALF_DAYS: frozenset[date] = frozenset({
+    # 2024
+    date(2024, 12, 24),   # Christmas Eve (Tue)
+    date(2024, 12, 31),   # New Year's Eve (Tue)
+    # 2025
+    date(2025, 12, 24),   # Christmas Eve (Wed)
+    date(2025, 12, 31),   # New Year's Eve (Wed)
+    # 2026
+    date(2026, 12, 24),   # Christmas Eve (Thu)
+    date(2026, 12, 31),   # New Year's Eve (Thu)
+    # 2027
+    # NOTE: Dec 24 2027 is Fri but Dec 25 (Sat) is observed Mon Dec 27 — so
+    # the FULL holiday is Dec 27 and Dec 24 trades a normal session (no half-day).
+    date(2027, 12, 31),   # New Year's Eve (Fri)
+})
+
+
 def is_lse_trading_day(d: date | None = None) -> bool:
     """Return True if *d* is an LSE trading day.
 
@@ -242,7 +320,8 @@ def is_lse_hours(now: datetime | None = None) -> bool:
     """Return True if the LSE is currently open.
 
     Regular session: 08:00 – 16:30 London time (Europe/London), on LSE trading days.
-    zoneinfo handles BST/GMT transitions automatically.
+    Half-day closes (12:30 London) on Christmas Eve / New Year's Eve are honored —
+    see ``_LSE_HALF_DAYS``. zoneinfo handles BST/GMT transitions automatically.
     """
     now = now or datetime.now(tz=timezone.utc)
     try:
@@ -256,9 +335,26 @@ def is_lse_hours(now: datetime | None = None) -> bool:
         return False
 
     h, m = lt.hour, lt.minute
-    after_open   = (h, m) >= (8,  0)
-    before_close = (h, m) <  (16, 30)
+    after_open = (h, m) >= (8, 0)
+    if lt.date() in _LSE_HALF_DAYS:
+        before_close = (h, m) < (12, 30)
+    else:
+        before_close = (h, m) < (16, 30)
     return after_open and before_close
+
+
+def minutes_since_lse_open(now: datetime | None = None) -> float | None:
+    """Minutes since today's LSE open, or None if the LSE is closed."""
+    now = now or datetime.now(tz=timezone.utc)
+    if not is_lse_hours(now):
+        return None
+    try:
+        import zoneinfo
+        lt = now.astimezone(zoneinfo.ZoneInfo("Europe/London"))
+    except Exception:
+        lt = now.astimezone(timezone(timedelta(hours=1)))
+    open_dt = lt.replace(hour=8, minute=0, second=0, microsecond=0)
+    return (lt - open_dt).total_seconds() / 60.0
 
 
 def _lse_trading_days_between(start: date, end: date) -> int:

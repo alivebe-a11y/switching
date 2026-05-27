@@ -21,6 +21,8 @@ from typing import Sequence
 from switching.market_calendar import (
     is_market_hours,
     is_lse_hours,
+    minutes_since_us_open,
+    minutes_since_lse_open,
     trading_days_since,
     trading_days_since_lse,
 )
@@ -88,6 +90,12 @@ class Portfolio:
     # just-sold position while the broker settles the order (prevents double
     # sells) and (b) apply a short re-buy cooldown (prevents same-story churn).
     recently_sold: dict[str, str] = field(default_factory=dict)
+    # signal_key -> serialised Signal dict (with `queued_at` ISO timestamp).
+    # Signals that classified while the market was CLOSED — we can't fill
+    # market orders out of hours, so park them here and drain back into the
+    # buy pipeline at the first scan tick after the market opens. Bounded by
+    # _PENDING_ORDER_MAX_AGE_HOURS so a multi-day outage doesn't queue dead news.
+    pending_orders: dict[str, dict] = field(default_factory=dict)
 
     @property
     def total_value(self) -> float:
@@ -108,6 +116,7 @@ class Portfolio:
             "last_review_sent_dt": self.last_review_sent_dt,
             "last_weekly_report_dt": self.last_weekly_report_dt,
             "recently_sold": self.recently_sold,
+            "pending_orders": self.pending_orders,
         }
         storage.save_portfolio_state(path, state)
 
@@ -130,6 +139,7 @@ class Portfolio:
             last_review_sent_dt=state.get("last_review_sent_dt", ""),
             last_weekly_report_dt=state.get("last_weekly_report_dt", ""),
             recently_sold=state.get("recently_sold", {}),
+            pending_orders=state.get("pending_orders", {}),
         )
 
 
@@ -194,6 +204,31 @@ _T212_SETTLE_MINUTES = 15
 _T212_REBUY_COOLDOWN_HOURS = 4
 _T212_EXIT_POLL_SECONDS = 60   # how often to re-check live exits between scans
 
+# After a buy *attempt* fails for a transient reason (yfinance price unavailable,
+# T212 rejected the order, network blip), retry the SAME signal once the
+# cooldown lapses instead of marking it `seen` and locking it out forever.
+# The old code appended to `seen_signals` BEFORE the buy attempt, so a single
+# silent failure (e.g. a Rich-markup crash on the error log line, fixed) meant
+# the ticker never got another chance. This window gives transient failures
+# room to recover while still bounding retry traffic.
+_FAILED_BUY_RETRY_COOLDOWN_SECONDS = 30 * 60
+
+# Out-of-hours signals are parked in `portfolio.pending_orders` until the next
+# market-open scan tick, then drained back into the buy pipeline. Past this
+# age the news is stale (typical catalyst decay is hours, not days), so we
+# drop the queued signal rather than buying into a now-old story. 48h covers
+# a Friday-close → Monday-open weekend (~63h is the worst regular case, but
+# we cap at 48 deliberately — anything older isn't a "trade the news" play).
+_PENDING_ORDER_MAX_AGE_HOURS = 48
+
+# The first 15 minutes after market open are when news premium is hottest —
+# pent-up overnight catalysts gap, queued buys need to fire, and fresh
+# headlines drop at the bell. Tighten the scan cadence here so we catch
+# them within ~1 min instead of the regular 10-min cycle.  Outside this
+# window we revert to the user-supplied --interval to spare the feeds.
+_FAST_SCAN_AFTER_OPEN_MINUTES = 15
+_FAST_SCAN_INTERVAL_SECONDS = 60
+
 
 def _minutes_since(iso_ts: str, now: datetime) -> float | None:
     """Minutes elapsed since an ISO timestamp, or None if unparseable."""
@@ -217,6 +252,122 @@ def _prune_recently_sold(recently_sold: dict[str, str], now: datetime) -> None:
     ]
     for sym in stale:
         del recently_sold[sym]
+
+
+def _mark_seen(seen_signals: list[str], key: str) -> None:
+    """Append *key* to *seen_signals* unless already present.
+
+    Used because the same signal can flow through the buy loop twice (once
+    when queued out-of-hours, again when drained at open). Plain append
+    would create duplicate entries that push real history out of the
+    bounded ``seen_signals[-500:]`` window on save.
+    """
+    if key not in seen_signals:
+        seen_signals.append(key)
+
+
+def _hydrate_pending_signal(d: dict) -> Signal | None:
+    """Rebuild a Signal from its serialised dict form (queue payload).
+
+    Returns None if the payload is missing required fields — those entries
+    are dropped silently rather than crashing the loop.
+    """
+    try:
+        from switching.signal import PriceReaction
+        event_dt_raw = d["event_dt"]
+        event_dt = datetime.fromisoformat(event_dt_raw.replace("Z", "+00:00"))
+        if event_dt.tzinfo is None:
+            event_dt = event_dt.replace(tzinfo=timezone.utc)
+        pr = d.get("price_reaction")
+        return Signal(
+            detector=d["detector"],
+            ticker=d["ticker"],
+            company=d.get("company", ""),
+            event_dt=event_dt,
+            headline=d.get("headline", ""),
+            url=d.get("url", ""),
+            evidence=d.get("evidence", ""),
+            severity=float(d.get("severity", 0.0)),
+            price_reaction=PriceReaction(**pr) if pr else None,
+            extra=dict(d.get("extra", {})),
+        )
+    except Exception as exc:
+        log.warning("could not hydrate pending signal: %s", exc)
+        return None
+
+
+def _expire_pending_orders(pending: dict[str, dict], now: datetime) -> int:
+    """Drop queued entries older than _PENDING_ORDER_MAX_AGE_HOURS. Returns count expired."""
+    cutoff = now - timedelta(hours=_PENDING_ORDER_MAX_AGE_HOURS)
+    stale: list[str] = []
+    for k, d in pending.items():
+        qa_raw = d.get("queued_at", "")
+        try:
+            qa = datetime.fromisoformat(qa_raw.replace("Z", "+00:00"))
+            if qa.tzinfo is None:
+                qa = qa.replace(tzinfo=timezone.utc)
+        except Exception:
+            stale.append(k)
+            continue
+        if qa < cutoff:
+            stale.append(k)
+    for k in stale:
+        pending.pop(k, None)
+    return len(stale)
+
+
+def _queue_for_open(portfolio: "Portfolio", sig: Signal, now: datetime) -> None:
+    """Park *sig* until the market reopens. Idempotent on signal-key."""
+    key = _signal_key(sig)
+    if key in portfolio.pending_orders:
+        return
+    payload = sig.to_dict()
+    payload["queued_at"] = now.isoformat()
+    portfolio.pending_orders[key] = payload
+
+
+def _effective_scan_interval_seconds(
+    market: str, base_minutes: int, now: datetime | None = None
+) -> int:
+    """Return seconds-between-feed-scans, tightened in the first ``_FAST_SCAN_AFTER_OPEN_MINUTES``
+    after market open.
+
+    The fast window is intentionally narrow (15 min) — catalysts fire fast
+    after open then steady out, so we don't want to hammer RSS feeds all day.
+    The fast interval is capped at min(base, 60s) so a user who passes
+    ``--interval 0.5`` (30s) still gets *their* cadence rather than being
+    artificially slowed.
+    """
+    if market == "uk":
+        m_since = minutes_since_lse_open(now)
+    else:
+        m_since = minutes_since_us_open(now)
+    base_seconds = base_minutes * 60
+    if m_since is not None and 0.0 <= m_since <= _FAST_SCAN_AFTER_OPEN_MINUTES:
+        return min(_FAST_SCAN_INTERVAL_SECONDS, base_seconds)
+    return base_seconds
+
+
+def _drain_pending_orders(
+    portfolio: "Portfolio", market: str, now: datetime
+) -> list[Signal]:
+    """If the market is open, pop and return all queued signals.
+
+    Also expires stale entries on every call (whether market is open or not),
+    so the queue never grows unboundedly during an extended closure.
+    """
+    expired = _expire_pending_orders(portfolio.pending_orders, now)
+    if expired:
+        log.info("expired %d stale pending order(s) (>%dh old)", expired, _PENDING_ORDER_MAX_AGE_HOURS)
+    if not _is_market_open(market) or not portfolio.pending_orders:
+        return []
+    drained: list[Signal] = []
+    for key in list(portfolio.pending_orders.keys()):
+        payload = portfolio.pending_orders.pop(key)
+        sig = _hydrate_pending_signal(payload)
+        if sig is not None:
+            drained.append(sig)
+    return drained
 
 
 def _record_t212_skip(skipped_tracker, sig, reason: str, base_stop: float, price: float | None = None) -> None:
@@ -790,6 +941,10 @@ def run_loop(
 
     last_summary_date = ""
 
+    # Per-process retry-cooldown for transient buy failures (yfinance price
+    # holes mostly). See _FAILED_BUY_RETRY_COOLDOWN_SECONDS docstring above.
+    _failed_buy_attempts: dict[str, float] = {}
+
     while True:
         now = datetime.now(tz=timezone.utc)
         console.print(f"\n[bold]── Scan at {now.strftime('%Y-%m-%d %H:%M UTC')} ──[/bold]")
@@ -868,9 +1023,43 @@ def run_loop(
             if _signal_key(s) not in portfolio.seen_signals
         ]
 
+        # Drain any signals that were queued out-of-hours and are now
+        # eligible (market is open). They've already been through `seen`
+        # at queue time, so they're not in `new_signals` above.
+        pending_signals = _drain_pending_orders(portfolio, market, now)
+        if pending_signals:
+            console.print(
+                f"  [cyan]Draining {len(pending_signals)} queued signal(s) "
+                f"(market open)[/cyan]"
+            )
+
+        all_signals = pending_signals + new_signals
+        market_open_now = _is_market_open(market)
         if new_signals:
             console.print(f"  Found {len(new_signals)} new signal(s)")
-        for sig in new_signals:
+        if not market_open_now and new_signals:
+            console.print(
+                f"  [dim]Market closed — queueing {len(new_signals)} for next open[/dim]"
+            )
+        for sig in all_signals:
+            key = _signal_key(sig)
+
+            # Out-of-hours: park the signal until the next open, mark it
+            # seen so the next scan doesn't re-queue the same article.
+            # The acquirer / price / size gates run AT OPEN, not now, so
+            # we don't burn a yfinance call on a closed-market price.
+            if not market_open_now:
+                _queue_for_open(portfolio, sig, now)
+                _mark_seen(portfolio.seen_signals, key)
+                continue
+
+            # Retry-cooldown: a transient buy failure (yfinance price hole)
+            # leaves the signal eligible for retry rather than permanently
+            # marked seen.  Skip until the cooldown window elapses.
+            last_fail = _failed_buy_attempts.get(key, 0.0)
+            if last_fail and (time.time() - last_fail) < _FAILED_BUY_RETRY_COOLDOWN_SECONDS:
+                continue
+
             # Skip mna_target signals where the detected company is the ACQUIRER,
             # not the target. Acquirers typically drop on deal announcement day
             # (dilution / deal risk). Live data confirmed: 100% of acquirer-tagged
@@ -878,18 +1067,21 @@ def run_loop(
             if sig.detector == "mna_target" and sig.extra.get("direction") == "acquirer":
                 log.info("mna_target acquirer signal skipped for %s: %s", sig.ticker, sig.headline[:80])
                 console.print(f"  [dim]SKIP {sig.ticker} (mna_target acquirer — direction filter)[/dim]")
-                portfolio.seen_signals.append(_signal_key(sig))
+                _mark_seen(portfolio.seen_signals, key)
                 continue
 
             price = get_current_price(sig.ticker)
             if price is None:
-                console.print(f"  [yellow]SKIP {sig.ticker}: no price available[/yellow]")
+                # Transient yfinance hole — record the attempt so we retry
+                # after the cooldown rather than losing the ticker forever.
+                console.print(f"  [yellow]SKIP {sig.ticker}: no price available (will retry)[/yellow]")
                 notifications.notify_skip(sig.ticker, "no price available", sig.detector, sig.headline)
                 detection_funnel.record_signal_drop(sig.detector, sig, "price_unavailable")
-                portfolio.seen_signals.append(_signal_key(sig))
+                _failed_buy_attempts[key] = time.time()
                 continue
             pos = open_position(portfolio, sig, price, stop_loss=stop_loss, hold_days=hold_days, market=market)
             if pos:
+                _failed_buy_attempts.pop(key, None)
                 console.print(
                     f"  [cyan]BUY {pos.ticker} @ ${pos.entry_price:.2f} "
                     f"x {pos.shares:.4f} shares (${pos.cost_basis:.2f}) "
@@ -917,7 +1109,7 @@ def run_loop(
                     alloc = min(alloc, portfolio.cash)
                     skip_reason = "insufficient_cash" if alloc < 1.0 else "unknown"
                 notifications.notify_skip(sig.ticker, skip_reason.replace("_", " "), sig.detector, sig.headline)
-                portfolio.seen_signals.append(_signal_key(sig))
+                _mark_seen(portfolio.seen_signals, key)
                 if skip_reason != "already_holding":
                     profile = _exit_profile(sig.detector, price)
                     skipped_tracker.add(
@@ -1187,8 +1379,14 @@ def run_loop_alpaca(
         if once:
             break
 
-        console.print(f"  [dim]Next scan in {scan_interval_minutes}m...[/dim]")
-        time.sleep(scan_interval_minutes * 60)
+        # Tighten cadence during the first 15 min after market open so
+        # queued buys and just-arrived catalysts fire fast.
+        sleep_seconds = _effective_scan_interval_seconds(market, scan_interval_minutes, now)
+        if sleep_seconds < scan_interval_minutes * 60:
+            console.print(f"  [dim]Next scan in {sleep_seconds}s (fast-scan window after open)[/dim]")
+        else:
+            console.print(f"  [dim]Next scan in {scan_interval_minutes}m...[/dim]")
+        time.sleep(sleep_seconds)
 
 
 # ---------------------------------------------------------------------------
@@ -1265,6 +1463,13 @@ def run_loop_t212(
     # price tracking and fast stop-loss / first-green execution.  New-signal
     # scanning runs only every scan_interval_minutes to avoid hammering feeds.
     last_signal_scan = 0.0   # epoch seconds; 0 forces a scan on first iteration
+
+    # signal_key -> epoch when the last buy attempt failed transiently.
+    # In-memory only (per-process). On restart we lose the cooldown — that's
+    # fine; worst case is one extra retry on the next scan. We deliberately
+    # don't persist this: the bug we're fixing is "transient failure becomes
+    # permanent lockout", not "transient failure becomes one extra retry".
+    _failed_buy_attempts: dict[str, float] = {}
 
     while True:
         now = datetime.now(tz=timezone.utc)
@@ -1468,7 +1673,21 @@ def run_loop_t212(
         # Signal scan — buy new positions (only every scan_interval_minutes;
         # exit polling above runs every cycle for tight price tracking)
         # ----------------------------------------------------------------
-        do_signal_scan = (time.time() - last_signal_scan) >= (scan_interval_minutes * 60)
+        # Gate buys on US market hours. T212 won't fill a market order out
+        # of session anyway, so we defer the buy until the next open rather
+        # than spamming yfinance / firing failed orders. (Most T212 signals
+        # are US tickers; a stray UK signal also gets the US-open trigger —
+        # LSE is open during NYSE morning so this still resolves promptly.)
+        market_open_now = _is_market_open("us")
+        pending_signals = _drain_pending_orders(portfolio, "us", now)
+        if pending_signals:
+            console.print(
+                f"  [cyan]Draining {len(pending_signals)} queued signal(s) "
+                f"(market open)[/cyan]"
+            )
+
+        scan_interval_seconds = _effective_scan_interval_seconds("us", scan_interval_minutes, now)
+        do_signal_scan = (time.time() - last_signal_scan) >= scan_interval_seconds
         new_signals: list[Signal] = []
         if do_signal_scan:
             last_signal_scan = time.time()
@@ -1482,17 +1701,46 @@ def run_loop_t212(
 
         if new_signals:
             console.print(f"  Found {len(new_signals)} new signal(s)")
+        if not market_open_now and new_signals:
+            console.print(
+                f"  [dim]Market closed — queueing {len(new_signals)} for next open[/dim]"
+            )
 
-        for sig in new_signals:
-            portfolio.seen_signals.append(_signal_key(sig))
+        # IMPORTANT: do NOT mark `seen` at the top of this loop.  A signal is
+        # only "seen" once we've made a DEFINITIVE decision about it (took the
+        # buy, decided not to, or skipped for an enduring reason like
+        # cooldown/max-positions/insufficient-cash).  Transient failures
+        # (price unavailable, broker rejected) go into `_failed_buy_attempts`
+        # and get retried after the cooldown — otherwise a single Rich-markup
+        # crash on the error log (the bug we're fixing) silently loses the
+        # ticker forever.  This is the t212 equivalent of recently_sold churn
+        # protection, but for failed *attempts* rather than completed sells.
+        all_signals = pending_signals + new_signals
+        for sig in all_signals:
+            key = _signal_key(sig)
 
-            # Skip acquirer-direction M&A signals
+            # Out-of-hours: park the signal until the next open.  Mark seen
+            # so the next scan doesn't re-queue the same article.  All other
+            # gates (cooldown / price / size / broker) run AT OPEN.
+            if not market_open_now:
+                _queue_for_open(portfolio, sig, now)
+                _mark_seen(portfolio.seen_signals, key)
+                continue
+
+            # Retry-cooldown: skip if we just attempted this signal and failed.
+            last_fail = _failed_buy_attempts.get(key, 0.0)
+            if last_fail and (time.time() - last_fail) < _FAILED_BUY_RETRY_COOLDOWN_SECONDS:
+                continue
+
+            # Skip acquirer-direction M&A signals (enduring decision: never trade these)
             if sig.detector == "mna_target" and sig.extra.get("direction") == "acquirer":
                 console.print(f"  [dim]SKIP {sig.ticker} (mna_target acquirer)[/dim]")
+                _mark_seen(portfolio.seen_signals, key)
                 continue
 
             if sig.ticker in held_symbols:
                 console.print(f"  [dim]SKIP {sig.ticker}: already holding[/dim]")
+                _mark_seen(portfolio.seen_signals, key)
                 continue
 
             # Re-buy cooldown — don't churn back into a ticker we just exited
@@ -1502,18 +1750,22 @@ def run_loop_t212(
                     f"  [dim]SKIP {sig.ticker}: sold {sold_mins/60:.1f}h ago "
                     f"(cooldown {_T212_REBUY_COOLDOWN_HOURS}h)[/dim]"
                 )
+                _mark_seen(portfolio.seen_signals, key)
                 continue
 
             if max_positions > 0 and active_count >= max_positions:
                 console.print(f"  [dim]SKIP {sig.ticker}: max positions ({max_positions})[/dim]")
                 _record_t212_skip(skipped_tracker, sig, "max_positions", stop_loss)
+                _mark_seen(portfolio.seen_signals, key)
                 continue
 
-            # Get price to calculate quantity
+            # Get price to calculate quantity.  Transient failure (yfinance hole)
+            # — DON'T mark seen; retry after the cooldown.
             price = get_current_price(sig.ticker)
             if not price or price <= 0:
-                console.print(f"  [yellow]SKIP {sig.ticker}: price unavailable[/yellow]")
+                console.print(f"  [yellow]SKIP {sig.ticker}: price unavailable (will retry)[/yellow]")
                 detection_funnel.record_signal_drop(sig.detector, sig, "price_unavailable")
+                _failed_buy_attempts[key] = time.time()
                 continue
 
             # Conviction-weighted size (same model as the internal paper trader),
@@ -1524,6 +1776,7 @@ def run_loop_t212(
             if alloc < 1.0:
                 console.print(f"  [yellow]SKIP {sig.ticker}: insufficient buying power ({cs}{acct.free:.2f})[/yellow]")
                 _record_t212_skip(skipped_tracker, sig, "insufficient_cash", stop_loss, price=price)
+                _mark_seen(portfolio.seen_signals, key)
                 continue
 
             quantity = alloc / price
@@ -1540,14 +1793,20 @@ def run_loop_t212(
                 pending_buys.append((sig, price, quantity))
                 held_symbols.add(sig.ticker)
                 active_count += 1
+                _mark_seen(portfolio.seen_signals, key)
+                _failed_buy_attempts.pop(key, None)
             except (T212OrderError, Exception) as exc:
-                console.print(f"  [red]BUY FAILED {sig.ticker}: {_esc(str(exc))}[/red]")
+                console.print(f"  [red]BUY FAILED {sig.ticker}: {_esc(str(exc))} (will retry)[/red]")
                 # Persist so the dashboard shows what T212 rejected and why
                 # (instrument-not-found, too-small qty, rate-limited, …).
                 detection_funnel.record_signal_drop(
                     sig.detector, sig,
                     f"t212_rejected: {type(exc).__name__}: {str(exc)[:120]}",
                 )
+                # Transient — keep the signal eligible for retry after cooldown.
+                # If it's a permanent "instrument not found", the retry will fail
+                # the same way every 30 min — cheap, and visible in the funnel.
+                _failed_buy_attempts[key] = time.time()
 
         # Resolve actual fills with a SINGLE positions fetch (staggered/throttled
         # by the client), then record local trackers. Orders that haven't settled

@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `main`
-- **621 tests**, run with: `pytest tests/`
+- **649 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path (Dockge UI): `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -167,6 +167,47 @@ on the base `max_position_pct`:
 - Base `--max-position` raised 1.0% → 1.5% (US + UK paper) to lift capital use
   (was deploying only ~£6k of £20k). Applied in both `open_position` (paper) and
   the T212 buy loop.
+
+## Market calendar — half-days & fast-scan window
+`market_calendar.py` knows:
+- **NYSE half-days** (1:00 pm ET early close): Black Friday, Christmas Eve,
+  day-before-July-4 (when applicable). Hard-coded in `_NYSE_HALF_DAYS` through
+  2027 — update annually from https://www.nyse.com/markets/hours-calendars.
+- **LSE half-days** (12:30 London early close): Christmas Eve, New Year's Eve.
+  In `_LSE_HALF_DAYS`.
+- `is_market_hours()` / `is_lse_hours()` honor the early close automatically.
+- `minutes_since_us_open()` / `minutes_since_lse_open()` return float minutes
+  since today's open, or None when the market is closed.
+
+**Fast-scan window** (`_FAST_SCAN_AFTER_OPEN_MINUTES = 15`,
+`_FAST_SCAN_INTERVAL_SECONDS = 60`): for the first 15 min after market open,
+both `run_loop` and `run_loop_t212` tighten their feed-scan cadence to 1 min
+(capped at the user's base `--interval` so a faster user setting isn't slowed).
+This is when news premium is hottest — overnight catalysts gap on the open
+and fresh headlines drop at the bell, so we want them detected within ~1 min,
+not the regular 10-min cycle. Outside the window we revert to base interval
+to spare RSS feeds.
+
+## Out-of-hours signal queue (`pending_orders`)
+News breaks 24/7 but US markets are open ~6.5h/day and LSE ~8.5h/day, so the bot
+used to (a) silently fail or (b) submit market orders the broker had to reject
+when a catalyst arrived after-hours. Both meant the trade was lost. Fix:
+- When the relevant market is closed and a fresh signal classifies + tickers,
+  it's serialised into `Portfolio.pending_orders` (persisted SQLite blob) and
+  marked `seen` so the next scan doesn't re-queue the same article. No
+  yfinance call, no broker call.
+- At the top of every loop tick when the market is open, `_drain_pending_orders`
+  pops the whole queue and feeds those signals back into the buy pipeline as
+  if fresh — so they run through the normal acquirer/price/size/cooldown gates
+  using *the open-time price*, not a stale after-hours quote.
+- Stale entries (`>_PENDING_ORDER_MAX_AGE_HOURS = 48h` old) are dropped on every
+  drain/expiry pass so a multi-day outage doesn't replay dead news. 48h covers
+  the Fri-close → Mon-open weekend; anything older has decayed past "news trade".
+- Applied to both `run_loop` (US + UK paper) and `run_loop_t212` (gated on US
+  hours since the T212 service trades US tickers; LSE is open during NYSE
+  morning so a stray UK ticker still resolves promptly).
+- Survives container restarts: the queue is in the same SQLite blob list as
+  `seen_signals` / `recently_sold`. Verified by `test_queue_persists_through_save_and_load`.
 
 ## UK news sources (Investegate primary + Google News fallback)
 The old UK RSS feeds all died. UK ingestion now (`rss._fetch_uk`, triggered when

@@ -140,3 +140,86 @@ def test_trading_days_since_bad_string_returns_zero():
 def test_trading_days_since_future_returns_zero():
     # A date far in the future should return 0 (end <= start)
     assert trading_days_since("2099-01-01T00:00:00+00:00") == 0
+
+
+# ---------------------------------------------------------------------------
+# Half-day closes (1:00 pm ET early close)
+# ---------------------------------------------------------------------------
+
+def test_market_open_at_noon_on_half_day():
+    # Black Friday 2025 — half-day. 12:00 ET should still be OPEN.
+    # 12:00 ET (EST = UTC-5) = 17:00 UTC
+    bf_noon = datetime(2025, 11, 28, 17, 0, tzinfo=timezone.utc)
+    assert is_market_hours(bf_noon) is True
+
+def test_market_closed_at_1pm_on_half_day():
+    # Black Friday 2025 — half-day. 13:00 ET = 18:00 UTC, market CLOSED.
+    bf_1pm = datetime(2025, 11, 28, 18, 0, tzinfo=timezone.utc)
+    assert is_market_hours(bf_1pm) is False
+
+def test_market_still_open_at_2pm_on_normal_day():
+    # Regular Wednesday in Nov 2025 (no half-day) — 14:00 ET = 19:00 UTC, OPEN.
+    normal = datetime(2025, 11, 26, 19, 0, tzinfo=timezone.utc)
+    assert is_market_hours(normal) is True
+
+def test_market_closed_at_2pm_on_christmas_eve_half_day():
+    # Christmas Eve 2025 (Wed) — half-day, 14:00 ET = 19:00 UTC.
+    xe = datetime(2025, 12, 24, 19, 0, tzinfo=timezone.utc)
+    assert is_market_hours(xe) is False
+
+
+# ---------------------------------------------------------------------------
+# minutes_since_us_open
+# ---------------------------------------------------------------------------
+
+def test_minutes_since_us_open_at_open():
+    # 14:30 UTC in winter = 09:30 ET, market just opened
+    open_t = datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc)
+    from switching.market_calendar import minutes_since_us_open
+    result = minutes_since_us_open(open_t)
+    assert result is not None
+    assert 0 <= result < 1.0
+
+def test_minutes_since_us_open_30_min_later():
+    # 30 minutes after open
+    later = datetime(2026, 1, 5, 15, 0, tzinfo=timezone.utc)
+    from switching.market_calendar import minutes_since_us_open
+    result = minutes_since_us_open(later)
+    assert result is not None
+    assert 29 <= result <= 31
+
+def test_minutes_since_us_open_returns_none_when_closed():
+    # Saturday — market closed
+    sat = datetime(2026, 1, 3, 15, 0, tzinfo=timezone.utc)
+    from switching.market_calendar import minutes_since_us_open
+    assert minutes_since_us_open(sat) is None
+
+
+# ---------------------------------------------------------------------------
+# LSE half-day closes (12:30 London early close)
+# ---------------------------------------------------------------------------
+
+def test_lse_open_at_noon_on_half_day():
+    from switching.market_calendar import is_lse_hours
+    # Christmas Eve 2025 (Wed) — half-day. 12:00 London = 12:00 UTC (GMT in winter).
+    # Market should still be OPEN at noon.
+    xe_noon = datetime(2025, 12, 24, 12, 0, tzinfo=timezone.utc)
+    assert is_lse_hours(xe_noon) is True
+
+def test_lse_closed_at_1230_on_half_day():
+    from switching.market_calendar import is_lse_hours
+    # Christmas Eve 2025 — 12:30 London = 12:30 UTC, market CLOSED.
+    xe_1230 = datetime(2025, 12, 24, 12, 30, tzinfo=timezone.utc)
+    assert is_lse_hours(xe_1230) is False
+
+def test_lse_open_at_3pm_on_normal_day():
+    from switching.market_calendar import is_lse_hours
+    # Regular Mon Nov 24 2025 — 15:00 London = 15:00 UTC, OPEN.
+    normal = datetime(2025, 11, 24, 15, 0, tzinfo=timezone.utc)
+    assert is_lse_hours(normal) is True
+
+def test_lse_nye_half_day():
+    from switching.market_calendar import is_lse_hours
+    # New Year's Eve 2025 (Wed) — half-day, 13:00 London = 13:00 UTC, CLOSED.
+    nye = datetime(2025, 12, 31, 13, 0, tzinfo=timezone.utc)
+    assert is_lse_hours(nye) is False

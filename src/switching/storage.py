@@ -290,7 +290,7 @@ _PORTFOLIO_SCALARS = (
     "cash", "last_scan_dt", "max_position_pct", "max_positions",
     "last_review_sent_dt", "last_weekly_report_dt",
 )
-_PORTFOLIO_BLOBS = ("seen_signals", "last_signals", "cached_prices", "recently_sold")
+_PORTFOLIO_BLOBS = ("seen_signals", "last_signals", "cached_prices", "recently_sold", "pending_orders")
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +321,7 @@ def load_portfolio_state(path: Path) -> dict | None:
         "last_signals": _get_state(conn, service, "last_signals", []),
         "cached_prices": _get_state(conn, service, "cached_prices", {}),
         "recently_sold": _get_state(conn, service, "recently_sold", {}),
+        "pending_orders": _get_state(conn, service, "pending_orders", {}),
         "positions": _fetch_rows(conn, "positions", service),
         "trades": _fetch_rows(conn, "closed_trades", service),
     }
@@ -375,6 +376,7 @@ def _import_legacy_portfolio(conn: sqlite3.Connection, service: str, legacy: Pat
     _set_state(conn, service, "last_signals", data.get("last_signals", []))
     _set_state(conn, service, "cached_prices", data.get("cached_prices", {}))
     _set_state(conn, service, "recently_sold", data.get("recently_sold", {}))
+    _set_state(conn, service, "pending_orders", data.get("pending_orders", {}))
     _replace_rows(conn, "positions", service, data.get("positions", []))
     _replace_rows(conn, "closed_trades", service, data.get("trades", []))
     conn.commit()

@@ -753,3 +753,168 @@ class TestRichMarkupEscapedExceptions:
         # Locks the import so the codemod's premise (use escape()) stays true.
         import switching.paper_trader as pt
         assert hasattr(pt, "_esc")
+
+
+# ---------------------------------------------------------------------------
+# Out-of-hours signal queue
+# ---------------------------------------------------------------------------
+
+def _make_signal(ticker="ACME", url="https://example.com/acme", detector="guidance_raise"):
+    from switching.signal import Signal
+    return Signal(
+        detector=detector,
+        ticker=ticker,
+        company=f"{ticker} Corp",
+        event_dt=datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc),
+        headline=f"{ticker} raises full-year guidance",
+        url=url,
+        evidence="raises full-year guidance",
+        severity=0.8,
+        extra={},
+    )
+
+
+class TestPendingOrderQueue:
+    """The bot can classify news 24/7 but markets are open ~6.5h/day.
+    Out-of-hours signals must be queued and drained at the next open
+    rather than (a) firing as failed orders or (b) being lost forever."""
+
+    def test_queue_for_open_is_idempotent_per_signal(self):
+        from switching.paper_trader import _queue_for_open, _signal_key
+        port = Portfolio()
+        sig = _make_signal("ACME")
+        now = datetime(2026, 1, 5, 22, 0, tzinfo=timezone.utc)
+        _queue_for_open(port, sig, now)
+        _queue_for_open(port, sig, now)   # duplicate enqueue
+        assert len(port.pending_orders) == 1
+        assert _signal_key(sig) in port.pending_orders
+
+    def test_drain_returns_nothing_when_market_closed(self):
+        from switching.paper_trader import _queue_for_open, _drain_pending_orders
+        port = Portfolio()
+        closed_now = datetime(2026, 1, 3, 22, 0, tzinfo=timezone.utc)
+        _queue_for_open(port, _make_signal("ACME"), closed_now)
+        with patch("switching.paper_trader._is_market_open", return_value=False):
+            drained = _drain_pending_orders(port, "us", closed_now)
+        assert drained == []
+        assert len(port.pending_orders) == 1  # still queued
+
+    def test_drain_returns_queued_signals_when_market_open(self):
+        from switching.paper_trader import _queue_for_open, _drain_pending_orders
+        port = Portfolio()
+        queued_at = datetime(2026, 1, 4, 22, 0, tzinfo=timezone.utc)
+        _queue_for_open(port, _make_signal("ACME"), queued_at)
+        _queue_for_open(port, _make_signal("FOO", url="https://example.com/foo"), queued_at)
+        open_now = datetime(2026, 1, 5, 15, 0, tzinfo=timezone.utc)
+        with patch("switching.paper_trader._is_market_open", return_value=True):
+            drained = _drain_pending_orders(port, "us", open_now)
+        assert {s.ticker for s in drained} == {"ACME", "FOO"}
+        assert port.pending_orders == {}  # popped after drain
+
+    def test_expire_drops_stale_entries(self):
+        from switching.paper_trader import (
+            _queue_for_open, _expire_pending_orders, _PENDING_ORDER_MAX_AGE_HOURS,
+        )
+        port = Portfolio()
+        old_now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        _queue_for_open(port, _make_signal("OLD"), old_now)
+        # Advance past the expiry window
+        later = old_now + timedelta(hours=_PENDING_ORDER_MAX_AGE_HOURS + 1)
+        expired = _expire_pending_orders(port.pending_orders, later)
+        assert expired == 1
+        assert port.pending_orders == {}
+
+    def test_drain_also_expires_stale_entries(self):
+        # Queue something stale, then call drain when market is open —
+        # the stale entry must be dropped, not returned.
+        from switching.paper_trader import (
+            _queue_for_open, _drain_pending_orders, _PENDING_ORDER_MAX_AGE_HOURS,
+        )
+        port = Portfolio()
+        stale_queued = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        _queue_for_open(port, _make_signal("STALE"), stale_queued)
+        much_later = stale_queued + timedelta(hours=_PENDING_ORDER_MAX_AGE_HOURS + 5)
+        with patch("switching.paper_trader._is_market_open", return_value=True):
+            drained = _drain_pending_orders(port, "us", much_later)
+        assert drained == []
+        assert port.pending_orders == {}
+
+    def test_queue_persists_through_save_and_load(self, tmp_path):
+        # The queue must survive a container restart — otherwise we lose
+        # signals queued overnight when the deploy script bounces services.
+        from switching.paper_trader import _queue_for_open
+        path = tmp_path / "paper_portfolio.json"
+        port = Portfolio()
+        queued_at = datetime(2026, 1, 4, 22, 0, tzinfo=timezone.utc)
+        _queue_for_open(port, _make_signal("ACME"), queued_at)
+        port.save(path)
+
+        # Simulate restart by loading fresh
+        loaded = Portfolio.load(path)
+        assert len(loaded.pending_orders) == 1
+        key = list(loaded.pending_orders.keys())[0]
+        assert "ACME" in key
+
+    def test_hydrate_pending_signal_round_trip(self):
+        # The queue payload must round-trip back into a usable Signal so
+        # the buy pipeline can re-evaluate it at market open.
+        from switching.paper_trader import _hydrate_pending_signal
+        sig = _make_signal("RNDX")
+        payload = sig.to_dict()
+        rebuilt = _hydrate_pending_signal(payload)
+        assert rebuilt is not None
+        assert rebuilt.ticker == "RNDX"
+        assert rebuilt.detector == "guidance_raise"
+        assert rebuilt.url == "https://example.com/acme"
+
+    def test_hydrate_pending_signal_returns_none_on_bad_payload(self):
+        # A corrupt persisted entry must not crash the loop.
+        from switching.paper_trader import _hydrate_pending_signal
+        assert _hydrate_pending_signal({"not": "a signal"}) is None
+        assert _hydrate_pending_signal({}) is None
+
+
+# ---------------------------------------------------------------------------
+# Fast-scan window after open
+# ---------------------------------------------------------------------------
+
+class TestFastScanWindow:
+    """The first 15 min after market open uses a tight 1-min scan cadence
+    so queued buys and freshly-broken catalysts fire promptly. Outside
+    that window the user's base interval is honored."""
+
+    def test_fast_interval_used_at_open(self):
+        from switching.paper_trader import (
+            _effective_scan_interval_seconds, _FAST_SCAN_INTERVAL_SECONDS,
+        )
+        # 5 min after open (within fast window)
+        with patch("switching.paper_trader.minutes_since_us_open", return_value=5.0):
+            assert _effective_scan_interval_seconds("us", 10) == _FAST_SCAN_INTERVAL_SECONDS
+
+    def test_base_interval_after_fast_window(self):
+        from switching.paper_trader import _effective_scan_interval_seconds
+        # 30 min after open (past fast window)
+        with patch("switching.paper_trader.minutes_since_us_open", return_value=30.0):
+            assert _effective_scan_interval_seconds("us", 10) == 600
+
+    def test_base_interval_when_market_closed(self):
+        from switching.paper_trader import _effective_scan_interval_seconds
+        with patch("switching.paper_trader.minutes_since_us_open", return_value=None):
+            assert _effective_scan_interval_seconds("us", 10) == 600
+
+    def test_fast_interval_capped_at_user_base(self):
+        # If the user passes --interval 0.5 (30s), fast window mustn't slow them down.
+        from switching.paper_trader import _effective_scan_interval_seconds
+        with patch("switching.paper_trader.minutes_since_us_open", return_value=5.0):
+            # base = 30 seconds (0.5 min), fast cap = 60s — should return 30
+            assert _effective_scan_interval_seconds("us", 0) == 0  # edge: 0 -> 0
+            # We can't pass float to base_minutes via the signature, but real
+            # usage in run_loop passes int. Just verify the min() logic:
+            # base 1 minute (60s) -> min(60, 60) = 60
+            assert _effective_scan_interval_seconds("us", 1) == 60
+
+    def test_fast_window_uses_lse_helper_for_uk(self):
+        from switching.paper_trader import _effective_scan_interval_seconds, _FAST_SCAN_INTERVAL_SECONDS
+        with patch("switching.paper_trader.minutes_since_lse_open", return_value=10.0), \
+             patch("switching.paper_trader.minutes_since_us_open", return_value=None):
+            assert _effective_scan_interval_seconds("uk", 10) == _FAST_SCAN_INTERVAL_SECONDS
