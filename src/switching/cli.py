@@ -399,8 +399,17 @@ def trade_t212_cmd(
     max_position_pct: float = typer.Option(0.01, "--max-position", help="Max % of portfolio per trade."),
     max_positions: int = typer.Option(0, "--max-positions", help="Max concurrent positions (0 = unlimited)."),
     state_file: Path = typer.Option(
-        "/app/.cache/t212_portfolio.json", "--state",
-        help="Path to T212 trade state file (separate from internal paper trader).",
+        None, "--state",
+        help=("Path to T212 trade state file (separate from internal paper trader). "
+              "Defaults to t212_portfolio.json (US) or t212_uk_portfolio.json (UK) "
+              "based on --market."),
+    ),
+    market: str = typer.Option(
+        "us", "--market",
+        help="T212 market: 'us' (NYSE/NASDAQ) or 'uk' (LSE). "
+             "Picks the broker ticker convention, market-hours gate, and "
+             "detector set. The two markets share ONE T212 account but are "
+             "isolated by ticker suffix at the client layer.",
     ),
     once: bool = typer.Option(False, "--once", help="Run one scan cycle and exit."),
     log_level: str = typer.Option("WARNING", help="Python log level."),
@@ -414,12 +423,36 @@ def trade_t212_cmd(
 
     State is saved to a separate JSON file — both this service and the internal
     paper-trade service can run simultaneously for comparison.
+
+    Two parallel T212 services can also run side-by-side (one --market us,
+    one --market uk) — they share the same T212 account but are isolated
+    by the broker's position-filter bulkhead and use distinct state files
+    (t212_portfolio.json vs t212_uk_portfolio.json).
     """
     logging.basicConfig(level=log_level.upper())
+
+    market_norm = (market or "us").lower()
+    if market_norm not in ("us", "uk"):
+        typer.echo(f"Error: --market must be 'us' or 'uk', got {market!r}", err=True)
+        raise typer.Exit(code=2)
+
+    # Pick a sensible default state file + detector set per market when
+    # the caller didn't override them on the command line.
+    if state_file is None:
+        default_state = (
+            "/app/.cache/t212_portfolio.json"
+            if market_norm == "us"
+            else "/app/.cache/t212_uk_portfolio.json"
+        )
+        state_file = Path(default_state)
+    default_detectors = (
+        _DEFAULT_DETECTORS if market_norm == "us" else _UK_DEFAULT_DETECTORS
+    )
+
     from switching.paper_trader import run_loop_t212
     run_loop_t212(
         state_path=state_file,
-        detectors=detectors or _DEFAULT_DETECTORS,
+        detectors=detectors or default_detectors,
         stop_loss=stop_loss,
         hold_days=hold_days,
         scan_interval_minutes=interval,
@@ -427,6 +460,7 @@ def trade_t212_cmd(
         max_position_pct=max_position_pct,
         max_positions=max_positions,
         once=once,
+        market=market_norm,
     )
 
 

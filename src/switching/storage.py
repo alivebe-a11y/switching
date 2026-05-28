@@ -46,6 +46,7 @@ _SERVICE_BY_STEM: dict[str, str] = {
     "paper_portfolio": "us",
     "uk_portfolio": "uk",
     "t212_portfolio": "t212",
+    "t212_uk_portfolio": "t212_uk",
     "alpaca_state": "alpaca",
 }
 

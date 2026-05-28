@@ -52,6 +52,7 @@ def test_service_from_path():
     assert storage.service_from_path(Path("/c/paper_portfolio.json")) == "us"
     assert storage.service_from_path(Path("/c/uk_portfolio.json")) == "uk"
     assert storage.service_from_path(Path("/c/t212_portfolio.json")) == "t212"
+    assert storage.service_from_path(Path("/c/t212_uk_portfolio.json")) == "t212_uk"
     assert storage.service_from_path(Path("/c/alpaca_state.json")) == "alpaca"
 
 

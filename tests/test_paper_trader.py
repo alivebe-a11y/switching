@@ -940,3 +940,85 @@ class TestFastScanWindow:
         with patch("switching.paper_trader.minutes_since_lse_open", return_value=10.0), \
              patch("switching.paper_trader.minutes_since_us_open", return_value=None):
             assert _effective_scan_interval_seconds("uk", 10) == _FAST_SCAN_INTERVAL_SECONDS
+
+
+class TestRunLoopT212Market:
+    """`run_loop_t212(market="uk")` must construct a UK-scoped Trading212Client,
+    use LSE market hours, use the LSE trading-day calendar, and write state
+    under the `t212_uk` service tag. The two T212 services (US + UK) share one
+    T212 account but stay isolated via the broker bulkhead + distinct state
+    files.
+    """
+
+    def test_invalid_market_returns_without_running(self, tmp_path, monkeypatch):
+        """Bad --market must exit cleanly, NOT touch T212 or state files."""
+        from switching.paper_trader import run_loop_t212
+        monkeypatch.setenv("T212_API_KEY", "fake")
+        monkeypatch.setenv("T212_API_SECRET", "fake")
+        called = {"client_constructed": False}
+
+        def boom(*a, **kw):
+            called["client_constructed"] = True
+            raise AssertionError("should not construct client for invalid market")
+
+        monkeypatch.setattr("switching.broker_trading212.Trading212Client", boom)
+        # Should print error and return None without raising
+        run_loop_t212(
+            state_path=tmp_path / "t212_portfolio.json",
+            detectors=[],
+            market="de",
+            once=True,
+        )
+        assert called["client_constructed"] is False
+
+    def test_market_us_constructs_us_client(self, tmp_path, monkeypatch):
+        """market='us' must pass market='us' to Trading212Client."""
+        from switching.paper_trader import run_loop_t212
+        monkeypatch.setenv("T212_API_KEY", "fake")
+        monkeypatch.setenv("T212_API_SECRET", "fake")
+
+        captured = {}
+
+        class StubClient:
+            def __init__(self, market="us"):
+                captured["market"] = market
+                self.demo = True
+                self.market = market
+            def get_account(self):
+                # Stop the loop after construction by raising — `once=True`
+                # then exits the loop without running further cycles.
+                raise RuntimeError("stop")
+
+        monkeypatch.setattr("switching.broker_trading212.Trading212Client", StubClient)
+        run_loop_t212(
+            state_path=tmp_path / "t212_portfolio.json",
+            detectors=[],
+            market="us",
+            once=True,
+        )
+        assert captured["market"] == "us"
+
+    def test_market_uk_constructs_uk_client(self, tmp_path, monkeypatch):
+        """market='uk' must pass market='uk' to Trading212Client."""
+        from switching.paper_trader import run_loop_t212
+        monkeypatch.setenv("T212_API_KEY", "fake")
+        monkeypatch.setenv("T212_API_SECRET", "fake")
+
+        captured = {}
+
+        class StubClient:
+            def __init__(self, market="us"):
+                captured["market"] = market
+                self.demo = True
+                self.market = market
+            def get_account(self):
+                raise RuntimeError("stop")
+
+        monkeypatch.setattr("switching.broker_trading212.Trading212Client", StubClient)
+        run_loop_t212(
+            state_path=tmp_path / "t212_uk_portfolio.json",
+            detectors=[],
+            market="uk",
+            once=True,
+        )
+        assert captured["market"] == "uk"

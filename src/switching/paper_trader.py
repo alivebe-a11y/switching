@@ -1411,6 +1411,7 @@ def run_loop_t212(
     max_position_pct: float = 0.01,
     max_positions: int = 0,
     once: bool = False,
+    market: str = "us",
 ) -> None:
     """Trading loop that executes orders via the Trading 212 REST API.
 
@@ -1422,6 +1423,19 @@ def run_loop_t212(
     State is persisted to *state_path* (separate from the internal paper
     trader's portfolio JSON so both can run simultaneously).
 
+    Args:
+        market: "us" (default — NYSE/NASDAQ via _US_EQ tickers) or
+                "uk" (LSE via L_EQ tickers). Sets the broker market,
+                the market-hours gate, the trading-day calendar for
+                day counts, the pending-order queue's market tag, and
+                the fast-scan window's open-time reference.
+
+                Both markets share ONE T212 account (one API key, one
+                cash pool, one combined positions list). The bulkhead
+                in Trading212Client.get_positions() filters positions
+                to this service's market, so US and UK services never
+                see each other's positions.
+
     Env vars required:
         T212_API_KEY  — key from Settings → API in the T212 app
         T212_DEMO     — "true" (default) for demo account
@@ -1431,13 +1445,23 @@ def run_loop_t212(
 
     console = Console()
 
+    market = (market or "us").lower()
+    if market not in ("us", "uk"):
+        console.print(f"[red]Unsupported T212 market: {market!r} (expected 'us' or 'uk')[/red]")
+        return
+
     try:
-        client = Trading212Client()
+        client = Trading212Client(market=market)
     except T212AuthError as exc:
         console.print(f"[red]Trading 212 auth error: {_esc(str(exc))}[/red]")
         return
 
-    mode = "[bold yellow]T212 DEMO[/bold yellow]" if client.demo else "[bold red]T212 LIVE — REAL MONEY[/bold red]"
+    market_label = market.upper()   # "US" or "UK" — shown in every Poll header
+    mode = (
+        f"[bold yellow]T212 {market_label} DEMO[/bold yellow]"
+        if client.demo
+        else f"[bold red]T212 {market_label} LIVE — REAL MONEY[/bold red]"
+    )
 
     if not client.demo:
         console.print("\n[bold red]⚠  WARNING: T212_DEMO=false — THIS WILL PLACE REAL ORDERS WITH REAL MONEY.[/bold red]")
@@ -1457,8 +1481,24 @@ def run_loop_t212(
     from switching.skipped_tracker import SkippedTracker
     from switching.trade_memory import update_memory
     from switching import notifications, detection_funnel
-    service = storage.service_from_path(state_path)            # "t212"
-    notifications.set_market(service)   # tag Telegram messages as T212
+    service = storage.service_from_path(state_path)            # "t212" or "t212_uk"
+    # Sanity: the state-file name should match the market.  Mismatch means
+    # the UK service would write into the US T212 partition (or vice versa),
+    # silently mixing trade history.  We warn loudly but don't crash —
+    # release-it rule: "fail visibly, preserve core service in degraded mode".
+    expected_service = "t212" if market == "us" else "t212_uk"
+    if service != expected_service:
+        log.warning(
+            "run_loop_t212(market=%s) state_path=%s resolves to service=%r "
+            "(expected %r). Trade history may collide with another service. "
+            "Rename the state file to '%s_portfolio.json' to fix.",
+            market, state_path, service, expected_service, expected_service,
+        )
+        console.print(
+            f"[yellow]WARN: state file {state_path.name} -> service={service!r} "
+            f"but market={market!r} expects {expected_service!r}[/yellow]"
+        )
+    notifications.set_market(service)   # tag Telegram messages (US T212 / UK T212)
     detection_funnel.configure(service, state_path)            # capture drops
     tracker_path = state_path.parent / "exit_tracker.json"
     skipped_path = state_path.parent / "skipped_signals.json"
@@ -1515,8 +1555,8 @@ def run_loop_t212(
 
         t212_map = {p.symbol: p for p in t212_positions}
 
-        if not _is_market_open("us"):
-            console.print("  [yellow]Market closed — monitoring only[/yellow]")
+        if not _is_market_open(market):
+            console.print(f"  [yellow]{market_label} market closed — monitoring only[/yellow]")
             for sym, tp in t212_map.items():
                 color = "green" if tp.unrealized_pnl_pct >= 0 else "red"
                 console.print(
@@ -1584,7 +1624,16 @@ def run_loop_t212(
             ret = tp.unrealized_pnl_pct
             color = "green" if ret >= 0 else "red"
             tracker = local_map.get(sym)
-            days = trading_days_since(tracker.entry_dt) if tracker else 0
+            # Day counts must use the right calendar — LSE trading days for
+            # UK (LSE bank-holiday list differs from NYSE), NYSE for US.
+            if tracker:
+                days = (
+                    trading_days_since_lse(tracker.entry_dt)
+                    if market == "uk"
+                    else trading_days_since(tracker.entry_dt)
+                )
+            else:
+                days = 0
 
             # Apply per-detector exit profile
             profile = _exit_profile(
@@ -1680,20 +1729,18 @@ def run_loop_t212(
         # Signal scan — buy new positions (only every scan_interval_minutes;
         # exit polling above runs every cycle for tight price tracking)
         # ----------------------------------------------------------------
-        # Gate buys on US market hours. T212 won't fill a market order out
-        # of session anyway, so we defer the buy until the next open rather
-        # than spamming yfinance / firing failed orders. (Most T212 signals
-        # are US tickers; a stray UK signal also gets the US-open trigger —
-        # LSE is open during NYSE morning so this still resolves promptly.)
-        market_open_now = _is_market_open("us")
-        pending_signals = _drain_pending_orders(portfolio, "us", now)
+        # Gate buys on THIS service's market hours. T212 won't fill a market
+        # order out of session anyway, so we defer the buy until the next open
+        # rather than spamming yfinance / firing failed orders.
+        market_open_now = _is_market_open(market)
+        pending_signals = _drain_pending_orders(portfolio, market, now)
         if pending_signals:
             console.print(
                 f"  [cyan]Draining {len(pending_signals)} queued signal(s) "
-                f"(market open)[/cyan]"
+                f"({market_label} market open)[/cyan]"
             )
 
-        scan_interval_seconds = _effective_scan_interval_seconds("us", scan_interval_minutes, now)
+        scan_interval_seconds = _effective_scan_interval_seconds(market, scan_interval_minutes, now)
         do_signal_scan = (time.time() - last_signal_scan) >= scan_interval_seconds
         new_signals: list[Signal] = []
         if do_signal_scan:
