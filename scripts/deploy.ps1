@@ -1,19 +1,31 @@
 #!/usr/bin/env pwsh
-# deploy.ps1 - one-click deploy from Windows.
+# deploy.ps1 - one-stop deploy from Windows.
 #
-# Pushes your committed code to GitHub, then SSHes into TrueNAS and runs the
-# canonical scripts/deploy.sh there (build the shared image once, recreate ALL
-# active services, print a verification summary). Same GitHub image as a manual
-# TrueNAS deploy - no divergent local image, and no logging into the Dockge shell.
+# Full lifecycle: backup live state -> verify GitHub sync -> push if needed ->
+# SSH into TrueNAS and run scripts/deploy.sh (build image once, recreate ALL
+# active services, print verification summary). Same GitHub image as a manual
+# TrueNAS deploy - no divergent local image, no Dockge shell needed.
+#
+# Step-by-step:
+#   [1/4] Backup  -- tars the live cache on TrueNAS + pulls a local copy. Aborts
+#                    the deploy if backup fails (rollback path before forward path).
+#   [2/4] Sync    -- git fetch origin, then:
+#                      ahead only  -> push commits to GitHub (normal deploy)
+#                      in sync     -> skip push, deploy current GitHub HEAD
+#                      behind      -> ABORT with "git pull" instructions
+#                      diverged    -> ABORT with "git pull --rebase" instructions
+#   [3/4] Build   -- SSH to TrueNAS, curl scripts/deploy.sh from GitHub, rebuild
+#                    image once, recreate all four active services.
+#   [4/4] Logs    -- tail logs for the deployed services (Ctrl+C to stop).
 #
 # First-time setup (so SSH does not prompt for a password):
 #   ssh-copy-id root@<truenas-ip>
 #   (or paste ~/.ssh/id_rsa.pub into TrueNAS UI > Credentials > SSH Keys)
 #
 # Usage:
-#   .\deploy.ps1                       # backup + push + deploy all four active services
+#   .\deploy.ps1                       # backup + sync/push + deploy all four active services
 #   .\deploy.ps1 -Services dashboard   # deploy a subset (still backs up + builds once)
-#   .\deploy.ps1 -SkipPush             # deploy already-pushed code (no git push)
+#   .\deploy.ps1 -SkipPush             # deploy already-pushed code (no git push or sync check)
 #   .\deploy.ps1 -SkipBackup           # EMERGENCY: skip the pre-deploy backup
 #   .\deploy.ps1 -Snapshot Pool_1/Configs   # ZFS snapshot too (gold standard)
 #   .\deploy.ps1 -Force                # push/deploy even with uncommitted changes
@@ -101,13 +113,15 @@ if ($SkipBackup) {
     }
 }
 
-# --- 2. push committed code to GitHub ---
+# --- 2. verify GitHub sync state, then push if needed ---
 if ($SkipPush) {
     Write-Host ""
     Write-Host "[2/4] Skipping git push (-SkipPush)." -ForegroundColor Yellow
 } else {
     Write-Host ""
-    Write-Host "[2/4] Pushing committed code to GitHub..." -ForegroundColor Cyan
+    Write-Host "[2/4] Checking GitHub sync state..." -ForegroundColor Cyan
+
+    # Check for uncommitted local changes
     $dirty = git -C $RepoDir status --porcelain
     if ($dirty -and -not $Force) {
         Write-Host "Uncommitted changes detected:" -ForegroundColor Yellow
@@ -115,10 +129,54 @@ if ($SkipPush) {
         throw "Commit your changes first - a GitHub deploy only ships PUSHED commits. Re-run with -Force to deploy the last pushed commit anyway."
     }
     if ($dirty -and $Force) {
-        Write-Host "  -Force: the uncommitted changes above will NOT ship; deploying last commit." -ForegroundColor Yellow
+        Write-Host "  -Force: uncommitted changes above will NOT ship; deploying last commit." -ForegroundColor Yellow
     }
-    git -C $RepoDir push origin HEAD
-    if ($LASTEXITCODE -ne 0) { throw "git push failed (exit $LASTEXITCODE)." }
+
+    # Fetch remote state so we can compare accurately
+    Write-Host "  Fetching from origin..." -ForegroundColor Gray
+    git -C $RepoDir fetch origin 2>$null
+    if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE). Check network / GitHub access." }
+
+    # How many commits ahead/behind is local vs origin/<Branch>?
+    $ahead  = [int](git -C $RepoDir rev-list "origin/$Branch..HEAD"       --count 2>$null)
+    $behind = [int](git -C $RepoDir rev-list "HEAD..origin/$Branch"       --count 2>$null)
+    $sha    = (git -C $RepoDir rev-parse --short HEAD 2>$null).Trim()
+
+    if ($ahead -eq 0 -and $behind -eq 0) {
+        # Already in sync -- the server needs a rebuild, but there is nothing to push
+        Write-Host "  Local is already in sync with origin/$Branch ($sha)." -ForegroundColor Green
+        Write-Host "  Nothing to push -- deploying the current GitHub HEAD." -ForegroundColor Gray
+
+    } elseif ($ahead -gt 0 -and $behind -eq 0) {
+        # Normal deploy: local has new commits to ship
+        Write-Host "  Local is $ahead commit(s) ahead of origin/$Branch -- pushing..." -ForegroundColor Cyan
+        git -C $RepoDir push origin HEAD
+        if ($LASTEXITCODE -ne 0) { throw "git push failed (exit $LASTEXITCODE)." }
+        Write-Host "  Pushed OK." -ForegroundColor Green
+
+    } elseif ($behind -gt 0 -and $ahead -eq 0) {
+        # Local is stale: remote has commits we don't have -- deploying now would re-ship old code
+        Write-Host ""
+        Write-Host "==============================================================" -ForegroundColor Yellow
+        Write-Host " SYNC WARNING: local is $behind commit(s) BEHIND origin/$Branch" -ForegroundColor Yellow
+        Write-Host "   Run:  git pull origin $Branch" -ForegroundColor Yellow
+        Write-Host "   Then: .\deploy.ps1" -ForegroundColor Yellow
+        Write-Host "   (Use -SkipPush to force-deploy what is already on GitHub.)" -ForegroundColor Yellow
+        Write-Host "==============================================================" -ForegroundColor Yellow
+        throw "Local branch is behind origin/$Branch by $behind commit(s). Pull first to avoid deploying stale code."
+
+    } else {
+        # Diverged: local and remote have different commits -- need a rebase/merge
+        Write-Host ""
+        Write-Host "==============================================================" -ForegroundColor Red
+        Write-Host " SYNC ERROR: branches have DIVERGED" -ForegroundColor Red
+        Write-Host "   Local:  $ahead commit(s) ahead of origin/$Branch" -ForegroundColor Red
+        Write-Host "   Remote: $behind commit(s) ahead of local" -ForegroundColor Red
+        Write-Host "   Resolve: git pull --rebase origin $Branch" -ForegroundColor Red
+        Write-Host "   Then:   .\deploy.ps1" -ForegroundColor Red
+        Write-Host "==============================================================" -ForegroundColor Red
+        throw "Branches have diverged ($ahead ahead, $behind behind). Resolve before deploying."
+    }
 }
 
 # --- 3. trigger the canonical deploy.sh on TrueNAS ---
