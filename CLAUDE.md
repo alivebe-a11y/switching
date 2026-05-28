@@ -21,8 +21,9 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 - **All services share ONE image tag** (`ghcr.io/alivebe-a11y/switching:latest`) and the
   same build context. So you BUILD once, but must `up -d` EVERY active service to put it
   on the new image — a running container keeps its old image until recreated.
-- Active services that run the shared code: `paper-trade`, `paper-trade-uk`, `trade-t212`
-  (all use `paper_trader.py`) and `dashboard` (uses `web.py` + `weekly_report.py`).
+- Active services that run the shared code: `paper-trade`, `paper-trade-uk`, `trade-t212`,
+  `trade-t212-uk` (all use `paper_trader.py`) and `dashboard` (uses `web.py` +
+  `weekly_report.py`).
 
 ### Deploy — one-click from Windows (preferred)
 From the `switch` folder on Windows:
@@ -78,6 +79,8 @@ copy. Secrets (`.env`) are deliberately excluded. Version-controlled copy at
 |---------|---------|-------|
 | paper-trade | `switching paper-trade --seed 20000 --interval 10 --stop-loss 0.026 --hold-days 5` | US paper trading, runs 24/7 |
 | paper-trade-uk | `switching paper-trade --market uk --seed 20000 --interval 10 --stop-loss 0.026 --hold-days 5 --state /app/.cache/uk_portfolio.json` | LSE paper trading, runs 24/7 |
+| trade-t212 | `switching trade-t212 --market us ...` | US T212 demo trading via REST API |
+| trade-t212-uk | `switching trade-t212 --market uk ...` | LSE T212 demo trading via REST API. Shares ONE T212 account with `trade-t212` but isolated via broker-level position filter (US sees `*_US_EQ` only, UK sees `*L_EQ` only). State in `t212_uk_portfolio.json`. |
 | dashboard | `switching web --port 8080` | Flask web UI on port 8080 |
 | trade | `switching trade ...` | Alpaca live trading (not yet active) |
 | switching | `switching list-detectors` | One-shot utility |
@@ -505,6 +508,25 @@ internal paper trader, acquirer filter applied. Compare P&L after 50+ trades.
   recorded as `ClosedTrade(exit_reason="corporate_action")` at the last cached price, removed,
   and a Telegram alert fires (check T212 for the exact realized P&L). Gated on a SUCCESSFUL
   positions fetch + sane account state so a transient API glitch can't close everything.
+
+**T212 US + UK split (`trade-t212-uk` service, added 2026-05-28)**:
+- `Trading212Client(market="us"|"uk")` — same client class drives both markets.
+  US uses `_US_EQ` suffix (AAPL → AAPL_US_EQ), UK uses `L_EQ` (MKS.L → MKSL_EQ).
+- Both services use ONE T212 API key + ONE T212 account + ONE cash pool. Demo
+  balance ~£50k so cash starvation between services is irrelevant for now.
+  When going live: revisit with explicit per-service allocation.
+- **Bulkhead**: `Trading212Client.get_positions()` filters /equity/positions
+  to this instance's market only. So US ghost-recon never sees (and never
+  closes) UK positions, and vice versa. The match is tightened to require
+  no underscore between ticker and suffix — necessary because foreign codes
+  like `ASML_NL_EQ` end with `L_EQ` and would otherwise falsely match UK.
+- **State isolation**: US state in `t212_portfolio.json` (service tag `t212`),
+  UK state in `t212_uk_portfolio.json` (service tag `t212_uk`). Analytics,
+  weekly report, and dashboard panels separate cleanly.
+- **Telegram tags**: 🇺🇸 T212 (US), 🇬🇧 T212 (UK).
+- **Dual-listing safety (VOD)**: VOD lists on both NASDAQ (VOD_US_EQ, USD ADR)
+  and LSE (VODL_EQ, GBX primary). UK client strictly maps `VOD.L → VODL_EQ`
+  and never resolves to the US ADR. Tested explicitly.
 
 **T212 client rate limiting (`broker_trading212.py`)**:
 - T212's API is rate-limited PER ENDPOINT (not a flat req/s). The client throttles

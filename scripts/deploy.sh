@@ -28,9 +28,9 @@ BRANCH="${BRANCH:-main}"
 COMPOSE_FILE="compose.yaml"   # Dockge expects compose.yaml, not docker-compose.yml
 
 # Active services that run the shared image. Override by passing names as args.
-# paper-trade / paper-trade-uk / trade-t212 all use paper_trader.py;
+# paper-trade / paper-trade-uk / trade-t212 / trade-t212-uk all use paper_trader.py;
 # dashboard uses web.py + weekly_report.py.
-DEFAULT_SERVICES=(paper-trade paper-trade-uk trade-t212 dashboard)
+DEFAULT_SERVICES=(paper-trade paper-trade-uk trade-t212 trade-t212-uk dashboard)
 if [ "$#" -gt 0 ]; then
   SERVICES=("$@")
 else

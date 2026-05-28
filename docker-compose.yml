@@ -58,7 +58,37 @@ services:
     volumes:
       - ${SWITCHING_DATA_DIR:-./data/cache}:/app/.cache
     entrypoint: ["switching"]
-    command: ["trade-t212", "--interval", "10", "--stop-loss", "0.026", "--hold-days", "5", "--max-position", "0.01", "--max-positions", "0"]
+    command: ["trade-t212", "--market", "us", "--interval", "10", "--stop-loss", "0.026", "--hold-days", "5", "--max-position", "0.01", "--max-positions", "0"]
+    restart: unless-stopped
+
+  # UK sibling of trade-t212. Same image, same T212 credentials, same
+  # account, but --market uk:
+  #   - LSE market-hours gate (Europe/London), LSE trading-day calendar
+  #   - Tickers map MKS.L -> MKSL_EQ (LSE), never to MKS_US_EQ
+  #   - Position bulkhead in Trading212Client filters /equity/positions to
+  #     only L_EQ instruments, so US ghost-reconciliation never closes
+  #     UK positions and vice versa
+  #   - State lives in t212_uk_portfolio.json (service tag "t212_uk")
+  #     so analytics, weekly slippage report, and dashboard panels
+  #     separate cleanly from the US T212 service.
+  # Both services compete for the same T212 cash; on demo (~50k GBP) that
+  # is fine. When going to real money: split via per-service allocation.
+  trade-t212-uk:
+    image: ${SWITCHING_IMAGE:-ghcr.io/alivebe-a11y/switching:latest}
+    build:
+      context: https://github.com/alivebe-a11y/switching.git#main
+      dockerfile: Dockerfile
+    environment:
+      - T212_API_KEY=${T212_API_KEY}
+      - T212_API_SECRET=${T212_API_SECRET}
+      - T212_DEMO=${T212_DEMO:-true}
+      - SWITCHING_EDGAR_UA=${SWITCHING_EDGAR_UA:-}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+    volumes:
+      - ${SWITCHING_DATA_DIR:-./data/cache}:/app/.cache
+    entrypoint: ["switching"]
+    command: ["trade-t212", "--market", "uk", "--interval", "10", "--stop-loss", "0.026", "--hold-days", "5", "--max-position", "0.01", "--max-positions", "0"]
     restart: unless-stopped
 
   paper-trade-uk:

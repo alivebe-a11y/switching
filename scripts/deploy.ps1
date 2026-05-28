@@ -50,7 +50,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Repo = "alivebe-a11y/switching"
-$DefaultServices = @("paper-trade", "paper-trade-uk", "trade-t212", "dashboard")
+$DefaultServices = @("paper-trade", "paper-trade-uk", "trade-t212", "trade-t212-uk", "dashboard")
 
 # --- locate the git repo (works whether this script sits in switch\ or the repo) ---
 if (-not $RepoDir) {
