@@ -367,33 +367,37 @@ def test_400_raises_order_error(client):
 
 
 def test_market_open_weekday_during_hours(monkeypatch, client):
-    from datetime import datetime, timezone
-    # Wednesday 15:00 UTC = market open
-    fixed = datetime(2026, 5, 13, 15, 0, 0, tzinfo=timezone.utc)
-    with patch("switching.broker_trading212.datetime") as mock_dt:
-        mock_dt.now.return_value = fixed
-        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+    # is_market_open() now delegates to market_calendar.is_market_hours()
+    # — patch that function directly rather than mocking datetime internals.
+    with patch("switching.market_calendar.is_market_hours", return_value=True):
         assert client.is_market_open() is True
 
 
 def test_market_closed_weekend(monkeypatch, client):
-    from datetime import datetime, timezone
-    # Saturday 15:00 UTC
-    fixed = datetime(2026, 5, 16, 15, 0, 0, tzinfo=timezone.utc)
-    with patch("switching.broker_trading212.datetime") as mock_dt:
-        mock_dt.now.return_value = fixed
-        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+    with patch("switching.market_calendar.is_market_hours", return_value=False):
         assert client.is_market_open() is False
 
 
 def test_market_closed_after_hours(monkeypatch, client):
-    from datetime import datetime, timezone
-    # Wednesday 22:00 UTC = after close
-    fixed = datetime(2026, 5, 13, 22, 0, 0, tzinfo=timezone.utc)
-    with patch("switching.broker_trading212.datetime") as mock_dt:
-        mock_dt.now.return_value = fixed
-        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+    with patch("switching.market_calendar.is_market_hours", return_value=False):
         assert client.is_market_open() is False
+
+
+def test_market_open_dst_first_hour(client):
+    """During EDT the first hour (9:30–10:30 AM EDT = 13:30–14:30 UTC) must
+    return True — this was broken by the hardcoded 14:30 UTC threshold that
+    only worked in EST (winter time).
+
+    We verify this at the market_calendar layer (which is_market_open delegates
+    to) by passing an explicit 'now' datetime.  The broker just delegates, so
+    if is_market_hours(13:45 UTC on a Thursday) is True the broker is correct.
+    """
+    from datetime import datetime, timezone
+    from switching.market_calendar import is_market_hours
+
+    # Thursday 13:45 UTC = 9:45 AM EDT — inside the old broken dead zone
+    fixed = datetime(2026, 5, 14, 13, 45, 0, tzinfo=timezone.utc)
+    assert is_market_hours(now=fixed) is True
 
 
 # ---------------------------------------------------------------------------

@@ -53,6 +53,8 @@ services:
       - T212_API_SECRET=${T212_API_SECRET}
       - T212_DEMO=${T212_DEMO:-true}
       - SWITCHING_EDGAR_UA=${SWITCHING_EDGAR_UA:-}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
     volumes:
       - ${SWITCHING_DATA_DIR:-./data/cache}:/app/.cache
     entrypoint: ["switching"]

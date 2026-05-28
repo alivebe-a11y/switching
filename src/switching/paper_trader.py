@@ -1515,7 +1515,7 @@ def run_loop_t212(
 
         t212_map = {p.symbol: p for p in t212_positions}
 
-        if not client.is_market_open():
+        if not _is_market_open("us"):
             console.print("  [yellow]Market closed — monitoring only[/yellow]")
             for sym, tp in t212_map.items():
                 color = "green" if tp.unrealized_pnl_pct >= 0 else "red"

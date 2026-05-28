@@ -283,17 +283,18 @@ class Trading212Client:
     # ------------------------------------------------------------------
 
     def is_market_open(self) -> bool:
-        """Return True during NYSE core session Mon-Fri 14:30–21:00 UTC.
+        """Return True during the NYSE regular session.
 
-        Trading 212 has no dedicated market-hours endpoint, so we use the
-        NYSE schedule.  Pre-market / after-hours orders are not supported
-        by the Invest account type.
+        Delegates to market_calendar.is_market_hours() which uses
+        America/New_York zoneinfo (DST-correct) and honours the
+        NYSE holiday list and half-day calendar.
+
+        Previously this used a hardcoded 14:30–21:00 UTC range which is
+        correct for EST (Nov–Mar) but one hour late during EDT (Mar–Nov),
+        causing the T212 loop to skip the 9:30–10:30 AM EDT window every day.
         """
-        now = datetime.now(tz=timezone.utc)
-        if now.weekday() >= 5:        # Saturday=5, Sunday=6
-            return False
-        t = now.time()
-        return dt_time(14, 30) <= t < dt_time(21, 0)
+        from switching.market_calendar import is_market_hours
+        return is_market_hours()
 
     # ------------------------------------------------------------------
     # Internal HTTP helpers
