@@ -81,6 +81,43 @@ _DECLARES_DIV_RX = re.compile(
     r"(?i)declares?\s+(?:\$[\d,.]+\s+)?(?:quarterly\s+)?(?:cash\s+)?dividend"
 )
 
+# ---------------------------------------------------------------------------
+# Title-only no-op-declaration exclusion
+# ---------------------------------------------------------------------------
+# Live post-mortem (2026-05-28) showed "declares regular quarterly dividend"
+# headlines consistently lose: -4.6% stop-outs for TRU, SII, LFVN, CCAP.
+# Pattern: vanilla "Declares <Nth/Q-N/Regular> Dividend" with NO change-direction
+# language in the TITLE. The classifier was firing on these because the summary
+# happened to mention "dividend" — but the actual title is a no-op recurring
+# declaration, not a surprise.
+_TITLE_VANILLA_DECLARE_RX = re.compile(
+    r"(?i)\bdeclares?\s+"
+    r"(?:(?:its?|the|a)\s+)?"
+    r"(?:first|second|third|fourth|1st|2nd|3rd|4th|q[1-4]|monthly|quarterly|annual|"
+    r"semi[-\s]?annual|regular|next|new|the)\s+"
+    # Allow up to 4 intermediate tokens like "Quarter 2026 Cash" so real
+    # headlines like "Declares First Quarter 2026 Dividend" match.
+    r"(?:\w+\s+){0,4}"
+    r"(?:cash\s+)?dividend\b"
+)
+
+# Title-only POSITIVE indicator: if title has any of these, the announcement is
+# a real surprise (increase / special / initiation) — let it through even if
+# the vanilla-declare pattern also matches.
+_TITLE_HAS_POSITIVE_SIGNAL_RX = re.compile(
+    r"(?i)(?:"
+    r"\b(?:increases?|raises?|hikes?|boosts?|lifts?)\b"
+    r"|\bspecial\s+(?:cash\s+)?dividend\b"
+    r"|\bsupplemental\s+dividend\b"
+    r"|\bextraordinary\s+dividend\b"
+    r"|\bone[- ]time\s+dividend\b"
+    r"|\d+%?\s+dividend\s+(?:increase|hike|raise|boost)\b"
+    r"|\bdividend\s+(?:increase|hike|raise|boost)\b"
+    r"|\binaugural\s+dividend\b"
+    r"|\bfirst[- ]ever\s+dividend\b"
+    r")"
+)
+
 
 @register
 class DividendSurpriseDetector(Detector):
@@ -138,6 +175,13 @@ def classify(title: str, summary: str = "") -> dict | None:
     pct_increase — or None if no match.
     """
     text = f"{title}\n{summary}"
+
+    # Title-only check: vanilla "Declares Quarterly Dividend" with no
+    # change-direction language in the title is a routine no-op announcement —
+    # consistently loses in live data. Reject before classification.
+    if (_TITLE_VANILLA_DECLARE_RX.search(title)
+            and not _TITLE_HAS_POSITIVE_SIGNAL_RX.search(title)):
+        return None
 
     special_m = _SPECIAL_DIV_RX.search(text)
     init_m = _DIV_INITIATION_RX.search(text)

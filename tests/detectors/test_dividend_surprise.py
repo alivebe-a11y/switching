@@ -91,3 +91,88 @@ def test_extraordinary_dividend():
     assert m is not None
     assert m["direction"] == "special"
     assert m["per_share"] == 3.0
+
+
+# ---------------------------------------------------------------------------
+# Vanilla-declaration exclusion — sourced from live post-mortem (2026-05-28).
+# Counterfactual on 22 closed trades: tightening lifts WR 59%->69% and avg
+# return +0.22% -> +0.92% by blocking routine "declares quarterly dividend"
+# announcements that consistently lose.
+# ---------------------------------------------------------------------------
+
+class TestVanillaDeclareExclusion:
+    """Routine "Declares <Nth> Quarter Dividend" headlines are no-op
+    recurring announcements with no surprise content. Block them unless
+    the TITLE also has change-direction language (increase/special/init)."""
+
+    def test_excludes_first_quarter_dividend_declaration(self):
+        # TRU -3.6% loser
+        assert classify(
+            "TransUnion Declares First Quarter 2026 Dividend of $0.125 per Share"
+        ) is None
+
+    def test_excludes_quarterly_dividend_declaration(self):
+        # LFVN -3.6% loser
+        assert classify("LifeVantage Declares Quarterly Dividend") is None
+
+    def test_excludes_sprott_quarterly(self):
+        # SII -2.6% loser
+        assert classify("Sprott Inc. Declares First Quarter 2026 Dividend") is None
+
+    def test_excludes_second_quarter_declaration(self):
+        # CCAP -4.6% loser
+        assert classify(
+            "Crescent Capital BDC, Inc. Reports First Quarter 2026 Earnings Results; "
+            "Declares a Second Quarter Dividend"
+        ) is None
+
+    def test_excludes_regular_quarterly_when_no_other_signal(self):
+        assert classify("Company XYZ Declares Regular Quarterly Cash Dividend") is None
+
+    # ── Critical: real surprises must still classify ──
+    def test_increase_still_matches_via_title(self):
+        # NACCO +5.0% biggest title-only-increase winner
+        m = classify("NACCO INDUSTRIES INCREASES DIVIDEND BY 4%")
+        assert m is not None
+        assert m["direction"] == "increase"
+
+    def test_raises_quarterly_still_matches(self):
+        # TKR +1.4% winner
+        m = classify(
+            "Timken Raises Quarterly Dividend to 36 Cents Per Share; "
+            "Marking 13 Years of Increases"
+        )
+        assert m is not None
+        assert m["direction"] == "increase"
+
+    def test_special_dividend_still_matches(self):
+        # TK +2.7% winner — title says "Declares" BUT also "Special Dividend"
+        m = classify(
+            "Teekay Corporation Ltd. First Quarter 2026 Update; "
+            "and Declares a Special Dividend"
+        )
+        assert m is not None
+        assert m["direction"] == "special"
+
+    def test_supplemental_dividend_still_matches(self):
+        # NOV -4.6% loser BUT structurally a real surprise (supplemental).
+        # We deliberately let it through — special dividends ARE catalysts;
+        # NOV happening to lose is noise, not a regex failure.
+        m = classify("NOV Declares Regular Quarterly Dividend and Supplemental Dividend")
+        assert m is not None
+        assert m["direction"] == "special"
+
+    def test_consecutive_increase_still_matches(self):
+        # CB +1.0% winner
+        m = classify(
+            "Chubb Limited Shareholders Approve 33rd Consecutive Annual Dividend "
+            "Increase; Chubb Limited Announces Next Quarterly Dividend Payment"
+        )
+        assert m is not None
+        assert m["direction"] == "increase"
+
+    def test_n_percent_increase_still_matches(self):
+        # CPK +1.0% winner
+        m = classify("Chesapeake Utilities Corporation Raises Dividend by 7.3 Percent")
+        assert m is not None
+        assert m["direction"] == "increase"

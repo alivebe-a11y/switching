@@ -27,9 +27,9 @@ from switching.sources import rss
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Exclusion guard — regular quarterly earnings reports
+# Exclusion guards
 # ---------------------------------------------------------------------------
-
+# A) Regular quarterly earnings reports — belong to earnings_surprise instead.
 _EARNINGS_REPORT_RX = re.compile(
     r"(?i)(?:"
     r"reports?\s+Q[1-4]"
@@ -38,6 +38,32 @@ _EARNINGS_REPORT_RX = re.compile(
     r"|quarterly\s+results"
     r"|quarterly\s+earnings"
     r"|quarterly\s+financial"
+    r")"
+)
+
+# B) Law-firm class-action / securities-investigation announcements.
+# Live post-mortem (2026-05-28) showed 4 of 8 guidance_raise losers were
+# Levi & Korsinsky / similar firm PRs — their boilerplate body text contains
+# phrases like "raises serious concerns about prior guidance" which triggers
+# the RAISE_RX from the summary. These are negative events about the company
+# in question (under investigation), NOT real guidance changes.
+_LAW_FIRM_INVESTIGATION_RX = re.compile(
+    r"(?i)(?:"
+    # Specific law-firm names that frequently issue these announcements
+    r"\b(?:levi\s*(?:&|and|&amp;)\s*korsinsky|schall\s+law(?:\s+firm)?|"
+    r"bragar\s+eagel|bronstein,?\s+gewirtz|robbins\s+geller|"
+    r"the\s+rosen\s+law(?:\s+firm)?|pomerantz\s+(?:llp|law)|"
+    r"kessler\s+topaz|block\s*(?:&|and)\s*leviton|the\s+gross\s+law\s+firm|"
+    r"glancy\s+prongay|kirby\s+mcinerney|the\s+klein\s+law\s+firm|"
+    r"labaton\s+sucharow|johnson\s+fistel|hagens\s+berman|kahn\s+swick)\b"
+    # Generic class-action / investigation phrasing
+    r"|\bsecurities\s+(?:fraud\s+)?(?:investigation|class\s+action|claims?)\b"
+    r"|\bclass[\s-]?action\s+(?:lawsuit|investigation|complaint)\b"
+    r"|\bshareholder\s+(?:rights|investigation|class\s+action|alert)"
+    r"|\binvestor\s+alert\b"
+    r"|\binvestigates?\s+(?:the\s+)?(?:officers\s+and\s+directors|securities\s+claims)"
+    r"|\bencourages\s+(?:investors|shareholders)\s+(?:to\s+)?(?:contact|submit|join|inquire)"
+    r"|\bcontact\s+(?:the\s+firm|levi(?:\s+&|\s+and|\s+&amp;)|the\s+rosen)"
     r")"
 )
 
@@ -185,6 +211,13 @@ def classify(title: str, summary: str = "") -> dict | None:
 
     # Must not be a regular earnings report
     if _EARNINGS_REPORT_RX.search(text):
+        return None
+
+    # Must not be a law-firm class-action / securities-investigation announcement.
+    # Their boilerplate body text contains phrases like "raises serious concerns
+    # about prior guidance" which would otherwise trigger _RAISE_RX from the
+    # summary even though the title is clearly a class-action PR.
+    if _LAW_FIRM_INVESTIGATION_RX.search(text):
         return None
 
     raise_m = _RAISE_RX.search(text)

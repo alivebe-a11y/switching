@@ -99,3 +99,91 @@ def test_narrows_range():
     m = classify("Apple Narrows Guidance Range to Upper End", "")
     assert m is not None
     assert m["direction"] == "raise"
+
+
+# ---------------------------------------------------------------------------
+# Law-firm class-action exclusions — sourced from live post-mortem (2026-05-28).
+# 4 of 8 guidance_raise losers were Levi & Korsinsky / similar firm PRs whose
+# boilerplate summary text matched the RAISE regex. None are real guidance changes.
+# ---------------------------------------------------------------------------
+
+class TestLawFirmExclusions:
+    def test_excludes_levi_korsinsky_securities_fraud_pr(self):
+        # TLSI -4.6% loser
+        assert classify(
+            "TLSI (TLSI) Securities Fraud Investigation - Levi & Korsinsky"
+        ) is None
+
+    def test_excludes_levi_korsinsky_investigates_officers(self):
+        # UPWK -3.6% loser
+        assert classify(
+            "Upwork Inc. Investigation Initiated: Levi & Korsinsky Investigates the "
+            "Officers and Directors of Upwork Inc. (UPWK)"
+        ) is None
+
+    def test_excludes_securities_claims_investigation(self):
+        # WGS -2.6% loser
+        assert classify(
+            "Levi & Korsinsky Announces Investigation of Securities Claims Against "
+            "GeneDx Holdings Corp. (WGS)"
+        ) is None
+
+    def test_excludes_other_law_firms(self):
+        # Same pattern from other class-action firms — must also be blocked
+        assert classify(
+            "Bragar Eagel & Squire, P.C. Investigates Aterian, Inc. on Behalf of "
+            "Long-Term Stockholders"
+        ) is None
+        assert classify(
+            "The Schall Law Firm Announces Investigation of Securities Claims Against XYZ"
+        ) is None
+        assert classify(
+            "Robbins Geller Rudman & Dowd LLP Files Securities Class Action Against ABC"
+        ) is None
+
+    def test_excludes_when_law_firm_phrasing_is_only_in_summary(self):
+        # Title alone looks innocuous; summary contains the boilerplate.
+        # This is the real-world case: the SUMMARY's "raises serious concerns
+        # about prior guidance" triggered _RAISE_RX before the exclusion existed.
+        assert classify(
+            "Important Investor Notice Regarding XYZ Corp",
+            "Levi & Korsinsky LLP encourages investors to contact the firm regarding "
+            "XYZ's previously issued guidance. The investigation raises serious "
+            "concerns about the company's outlook."
+        ) is None
+
+    # ── Critical: legitimate guidance raises must still classify ──
+    def test_real_guidance_raise_still_matches(self):
+        # SIBN +15.8% biggest winner — must still fire
+        m = classify(
+            "SI-BONE, Inc. Reports Financial Results for the First Quarter 2026 "
+            "and Raises 2026 Guidance"
+        )
+        assert m is not None
+        assert m["direction"] == "raise"
+
+    def test_cvs_full_year_raise_still_matches(self):
+        # CVS +7.9% winner
+        m = classify(
+            "CVS HEALTH CORPORATION REPORTS STRONG FIRST QUARTER 2026 RESULTS "
+            "AND RAISES FULL-YEAR 2026 GUIDANCE"
+        )
+        assert m is not None
+        assert m["direction"] == "raise"
+        assert m["full_year"] is True
+
+    def test_trivago_legit_guidance_raise_still_matches(self):
+        m = classify(
+            "trivago Delivers 15% Growth in Q1 and Raises Guidance After Fifth "
+            "Consecutive Double-Digit Quarter"
+        )
+        assert m is not None
+        assert m["direction"] == "raise"
+
+    def test_taboola_legit_full_year_raise_still_matches(self):
+        m = classify(
+            "Taboola Reports Strong First Quarter 2026 Results Exceeding High-End "
+            "of Guidance, Raises Full-Year Outlook"
+        )
+        assert m is not None
+        assert m["direction"] == "raise"
