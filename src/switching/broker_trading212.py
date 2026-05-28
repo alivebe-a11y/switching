@@ -12,8 +12,17 @@ Environment variables:
 Authentication: HTTP Basic Auth — base64(API_KEY:API_SECRET)
 Both key and secret are required for every request.
 
-Ticker format: Trading 212 uses "AAPL_US_EQ" internally.
-This client accepts plain symbols ("AAPL") and converts automatically.
+Ticker format: Trading 212 uses market-suffixed instrument IDs internally:
+  - US equities: "AAPL_US_EQ"        (NYSE/NASDAQ)
+  - UK equities: "MKSL_EQ"           (LSE — {TICKER}L_EQ, capital L)
+This client accepts plain symbols ("AAPL", "MKS.L") and converts automatically
+based on the client's market ("us" / "uk", set at construction time).
+
+Dual-listing safety: VOD is listed on both Nasdaq (VOD_US_EQ, the ADR in USD)
+and the LSE (VODL_EQ, primary in GBX). A client constructed with market="uk"
+will never resolve "VOD.L" to the US ADR and vice versa — the mapper is
+strict, so paper-vs-T212 slippage analysis is never poisoned by currency
+mismatch.
 
 Rate limits (T212 docs — PER ENDPOINT, stricter than a flat req/s):
   - /equity/positions is the tightest we hit (~1 request / 5s)
@@ -135,7 +144,29 @@ class Trading212Client:
     get_account, get_positions, buy_market, sell_all, is_market_open.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, market: str = "us") -> None:
+        """Construct a Trading 212 client scoped to one market.
+
+        Args:
+            market: "us" (default, NYSE/NASDAQ → _US_EQ suffix) or
+                    "uk" (LSE → L_EQ suffix). Sets the ticker-mapping
+                    convention AND the market-hours gate AND the
+                    position filter (the bulkhead: a UK client sees
+                    only UK positions in get_positions(), and vice
+                    versa, so US ghost-reconciliation cannot close
+                    UK positions and vice versa).
+
+        Raises:
+            ValueError: if market is not "us" or "uk".
+            T212AuthError: if API credentials are missing.
+        """
+        market = (market or "us").lower()
+        if market not in ("us", "uk"):
+            raise ValueError(
+                f"Unsupported T212 market: {market!r} (expected 'us' or 'uk')"
+            )
+        self.market: str = market
+
         api_key = os.environ.get("T212_API_KEY", "").strip()
         api_secret = os.environ.get("T212_API_SECRET", "").strip()
         if not api_key:
@@ -158,9 +189,12 @@ class Trading212Client:
         self._session.headers.update({"Content-Type": "application/json"})
         # Per-endpoint last-call timestamps (monotonic) for client-side throttling
         self._last_call: dict[str, float] = {}
-        # Never log the key itself — only mode and base URL
+        # Never log the key itself — only mode, market, and base URL
         mode = "DEMO" if self.demo else "LIVE"
-        log.info("Trading212Client initialised (%s) base=%s", mode, self._base)
+        log.info(
+            "Trading212Client initialised (%s, market=%s) base=%s",
+            mode, self.market.upper(), self._base,
+        )
         # Scrub credentials from local scope after session is configured
         del api_key, api_secret
 
@@ -193,21 +227,32 @@ class Trading212Client:
     # ------------------------------------------------------------------
 
     def get_positions(self) -> list[T212Position]:
-        """Return all open positions.
+        """Return all open positions in this client's market.
 
         The endpoint is paginated but for typical retail portfolios a single
         page (up to 50 items) is sufficient.  We fetch page 1 only; extend
         if needed.
+
+        Bulkhead: positions are filtered to ``self.market`` before being
+        returned. So a UK client never sees US positions (and vice versa),
+        even though both services share one T212 account. Without this
+        filter, the US service's ghost-reconciliation would treat every
+        UK position as an orphan and close it (and vice versa).
         """
         data = self._get("/equity/positions")
         # Response is either a bare list or {"items": [...], "nextPagePath": ...}
         items: list[dict] = data if isinstance(data, list) else data.get("items", [])
         result: list[T212Position] = []
+        filtered_other_market = 0
         for item in items:
             # ticker is nested: item["instrument"]["ticker"] e.g. "AAPL_US_EQ"
             instrument = item.get("instrument") or {}
             t212_ticker = instrument.get("ticker", "")
-            symbol = _from_t212_ticker(t212_ticker)
+            # Bulkhead — drop positions belonging to the other market(s)
+            if not _matches_market(t212_ticker, self.market):
+                filtered_other_market += 1
+                continue
+            symbol = _from_t212_ticker(t212_ticker, self.market)
             qty = _safe_float(item.get("quantity"))
             # field is "averagePricePaid", not "averagePrice"
             avg = _safe_float(item.get("averagePricePaid"))
@@ -225,6 +270,11 @@ class Trading212Client:
                 unrealized_pnl=ppl,
                 unrealized_pnl_pct=pnl_pct,
             ))
+        if filtered_other_market:
+            log.debug(
+                "T212 get_positions(market=%s): kept %d, filtered %d (other market)",
+                self.market, len(result), filtered_other_market,
+            )
         return result
 
     def get_position(self, symbol: str) -> T212Position | None:
@@ -239,21 +289,21 @@ class Trading212Client:
     # ------------------------------------------------------------------
 
     def buy_market(self, symbol: str, quantity: float) -> T212Order:
-        """Place a fractional market buy order.
+        """Place a fractional market buy order in this client's market.
 
         Args:
-            symbol:   Plain ticker e.g. "AAPL".
+            symbol:   Plain ticker e.g. "AAPL" (US) or "MKS.L" (UK).
             quantity: Number of shares (fractional OK). Must be > 0.
 
         Returns:
             T212Order with id, ticker, status.
         """
-        t212_ticker = _to_t212_ticker(symbol)
+        t212_ticker = _to_t212_ticker(symbol, self.market)
         qty = round(abs(quantity), 4)
         if qty < 0.0001:
             raise T212OrderError(f"Quantity too small to buy: {qty} {symbol}")
         payload = {"ticker": t212_ticker, "quantity": qty}
-        log.info("T212 BUY %s qty=%.4f", t212_ticker, qty)
+        log.info("T212[%s] BUY %s qty=%.4f", self.market, t212_ticker, qty)
         data = self._post("/equity/orders/market", payload)
         return _parse_order(data, t212_ticker)
 
@@ -263,18 +313,18 @@ class Trading212Client:
         T212 uses a negative quantity to denote sells.
 
         Args:
-            symbol:   Plain ticker e.g. "AAPL".
+            symbol:   Plain ticker e.g. "AAPL" (US) or "MKS.L" (UK).
             quantity: Positive number of shares currently held.
 
         Returns:
             T212Order with id, ticker, status.
         """
-        t212_ticker = _to_t212_ticker(symbol)
+        t212_ticker = _to_t212_ticker(symbol, self.market)
         qty = round(abs(quantity), 4)
         if qty < 0.0001:
             raise T212OrderError(f"Quantity too small to sell: {qty} {symbol}")
         payload = {"ticker": t212_ticker, "quantity": -qty}
-        log.info("T212 SELL %s qty=%.4f", t212_ticker, qty)
+        log.info("T212[%s] SELL %s qty=%.4f", self.market, t212_ticker, qty)
         data = self._post("/equity/orders/market", payload)
         return _parse_order(data, t212_ticker)
 
@@ -283,16 +333,21 @@ class Trading212Client:
     # ------------------------------------------------------------------
 
     def is_market_open(self) -> bool:
-        """Return True during the NYSE regular session.
+        """Return True during this client's market regular session.
 
-        Delegates to market_calendar.is_market_hours() which uses
-        America/New_York zoneinfo (DST-correct) and honours the
-        NYSE holiday list and half-day calendar.
+        Dispatches on self.market:
+          - "us" → NYSE via market_calendar.is_market_hours() (America/New_York,
+                   DST-correct, NYSE holiday list + half-day calendar honoured)
+          - "uk" → LSE via market_calendar.is_lse_hours() (Europe/London,
+                   BST/GMT correct, LSE half-day calendar honoured)
 
-        Previously this used a hardcoded 14:30–21:00 UTC range which is
-        correct for EST (Nov–Mar) but one hour late during EDT (Mar–Nov),
-        causing the T212 loop to skip the 9:30–10:30 AM EDT window every day.
+        Previously this was hardcoded to 14:30–21:00 UTC which is correct
+        for EST (Nov–Mar) but one hour late during EDT (Mar–Nov), causing
+        the T212 loop to skip the 9:30–10:30 AM EDT window every day.
         """
+        if self.market == "uk":
+            from switching.market_calendar import is_lse_hours
+            return is_lse_hours()
         from switching.market_calendar import is_market_hours
         return is_market_hours()
 
@@ -406,30 +461,111 @@ def _sanitise_error_body(text: str, max_len: int = 200) -> str:
     return cleaned[:max_len]
 
 
-def _to_t212_ticker(symbol: str) -> str:
-    """Convert plain ticker to Trading 212 instrument ID.
+def _to_t212_ticker(symbol: str, market: str = "us") -> str:
+    """Convert plain ticker to Trading 212 instrument ID for the given market.
 
-    AAPL      → AAPL_US_EQ
-    AAPL_US_EQ → AAPL_US_EQ  (passthrough if already formatted)
+    US: AAPL       → AAPL_US_EQ
+        AAPL_US_EQ → AAPL_US_EQ   (passthrough)
+    UK: MKS.L      → MKSL_EQ      (strip .L, append L_EQ)
+        MKS        → MKSL_EQ
+        MKSL_EQ    → MKSL_EQ      (passthrough)
 
-    Only alphanumerics and underscores are allowed — rejects anything
-    that could be a path traversal or injection attempt.
+    Only alphanumerics, dot and underscore are allowed in the input —
+    rejects anything else (path traversal / injection guard).
+
+    Raises ValueError for unknown markets or invalid input.
     """
     import re
+    market = (market or "us").lower()
+    if market not in ("us", "uk"):
+        raise ValueError(f"Unsupported market: {market!r}")
+
     symbol = symbol.upper().strip()
-    if not re.fullmatch(r"[A-Z0-9_]{1,20}", symbol):
+    # Allow ".L" for UK input; alphanumerics + underscore otherwise.
+    if not re.fullmatch(r"[A-Z0-9_.]{1,20}", symbol):
         raise ValueError(f"Invalid ticker symbol: {symbol!r}")
-    if "_" in symbol:
+
+    # Already a T212 instrument ID — passthrough (caller should know what
+    # they're doing; the bulkhead in get_positions handles cross-market leak).
+    if symbol.endswith("_EQ"):
         return symbol
+
+    if market == "uk":
+        # Accept "MKS" or "MKS.L"; both map to MKSL_EQ
+        if symbol.endswith(".L"):
+            symbol = symbol[:-2]
+        if "." in symbol:
+            raise ValueError(f"Invalid UK ticker symbol: {symbol!r}")
+        if not symbol:
+            raise ValueError("Empty UK ticker after stripping .L")
+        return f"{symbol}L_EQ"
+
+    # US
+    if "." in symbol:
+        raise ValueError(f"Invalid US ticker symbol: {symbol!r}")
     return f"{symbol}_US_EQ"
 
 
-def _from_t212_ticker(t212_ticker: str) -> str:
-    """Extract plain ticker from T212 instrument ID.
+def _from_t212_ticker(t212_ticker: str, market: str = "us") -> str:
+    """Extract plain ticker from T212 instrument ID, market-aware.
 
-    AAPL_US_EQ → AAPL
+    US: AAPL_US_EQ → AAPL
+    UK: MKSL_EQ    → MKS.L   (strip L_EQ, append .L)
+        VODL_EQ    → VOD.L
+        BARCL_EQ   → BARC.L
+
+    For unknown formats falls back to the leading alphanumeric run
+    (US convention). Caller should not pass a foreign-market ID after
+    the get_positions bulkhead.
     """
+    market = (market or "us").lower()
+    if market == "uk":
+        if t212_ticker.endswith("L_EQ"):
+            core = t212_ticker[:-4]   # strip "L_EQ"
+            return f"{core.upper()}.L"
+        # Unexpected format — best-effort
+        return t212_ticker.split("_")[0].upper() + ".L"
+    # US
     return t212_ticker.split("_")[0].upper()
+
+
+def _matches_market(t212_ticker: str, market: str) -> bool:
+    """True if the T212 instrument ID belongs to the given market.
+
+    Used by get_positions() to filter positions to this client's market
+    — the bulkhead that prevents the US service from ghost-reconciling
+    a UK position (and vice versa) when both services share one T212
+    account.
+
+    Suffix conventions (verified empirically from T212's instrument
+    catalogue):
+      US:  {TICKER}_US_EQ        (e.g. AAPL_US_EQ)
+      UK:  {TICKER}L_EQ          (e.g. MKSL_EQ, capital L, NO underscore
+                                  between ticker and L)
+      EU:  {TICKER}_XX_EQ        (e.g. SAP_DE_EQ, MC_FR_EQ, ASML_NL_EQ —
+                                  always has an underscore before the
+                                  two-letter country code)
+
+    The UK and EU patterns both contain "L_EQ" if the country code ends
+    in L (e.g. Netherlands ASML_NL_EQ). They are distinguished by the
+    presence of an underscore between the ticker and the suffix: UK has
+    NONE, EU has one. So the UK match is "ends with L_EQ AND no '_' in
+    the ticker portion".
+
+    Other markets match neither and are filtered out of both services.
+    """
+    market = (market or "us").lower()
+    if not t212_ticker:
+        return False
+    if market == "us":
+        return t212_ticker.endswith("_US_EQ")
+    if market == "uk":
+        if not t212_ticker.endswith("L_EQ"):
+            return False
+        core = t212_ticker[:-4]   # strip "L_EQ"
+        # If core has an underscore it's a foreign _XX_EQ (e.g. _NL_EQ).
+        return bool(core) and "_" not in core
+    return False
 
 
 def _parse_order(data: dict, fallback_ticker: str) -> T212Order:

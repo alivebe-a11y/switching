@@ -14,6 +14,7 @@ from switching.broker_trading212 import (
     T212RateLimitError,
     Trading212Client,
     _from_t212_ticker,
+    _matches_market,
     _retry_after_seconds,
     _safe_float,
     _to_t212_ticker,
@@ -57,6 +58,93 @@ def test_to_t212_ticker_rejects_invalid():
 def test_to_t212_ticker_rejects_too_long():
     with pytest.raises(ValueError, match="Invalid ticker"):
         _to_t212_ticker("A" * 21)
+
+
+# ---------------------------------------------------------------------------
+# UK ticker conversion (LSE: {TICKER}L_EQ)
+# ---------------------------------------------------------------------------
+
+
+def test_to_t212_ticker_uk_with_dot_l():
+    """UK input "MKS.L" should map to "MKSL_EQ"."""
+    assert _to_t212_ticker("MKS.L", "uk") == "MKSL_EQ"
+
+
+def test_to_t212_ticker_uk_without_dot_l():
+    """UK input "MKS" should also map to "MKSL_EQ"."""
+    assert _to_t212_ticker("MKS", "uk") == "MKSL_EQ"
+
+
+def test_to_t212_ticker_uk_multi_char():
+    """Longer UK tickers (BARC, BARCL_EQ) behave the same."""
+    assert _to_t212_ticker("BARC.L", "uk") == "BARCL_EQ"
+    assert _to_t212_ticker("VOD.L", "uk") == "VODL_EQ"
+
+
+def test_to_t212_ticker_uk_passthrough():
+    assert _to_t212_ticker("MKSL_EQ", "uk") == "MKSL_EQ"
+
+
+def test_to_t212_ticker_uk_rejects_dot_in_middle():
+    with pytest.raises(ValueError, match="Invalid UK ticker"):
+        _to_t212_ticker("M.K.S", "uk")
+
+
+def test_to_t212_ticker_us_rejects_dot():
+    """US tickers should never carry a dot."""
+    with pytest.raises(ValueError, match="Invalid US ticker"):
+        _to_t212_ticker("MKS.L", "us")
+
+
+def test_to_t212_ticker_rejects_unknown_market():
+    with pytest.raises(ValueError, match="Unsupported market"):
+        _to_t212_ticker("AAPL", "de")
+
+
+def test_from_t212_ticker_uk():
+    assert _from_t212_ticker("MKSL_EQ", "uk") == "MKS.L"
+    assert _from_t212_ticker("BARCL_EQ", "uk") == "BARC.L"
+    assert _from_t212_ticker("VODL_EQ", "uk") == "VOD.L"
+
+
+def test_uk_roundtrip():
+    """`.L` ticker should roundtrip through T212 ID unchanged."""
+    for sym in ("MKS.L", "VOD.L", "BARC.L", "JUP.L", "SHI.L"):
+        assert _from_t212_ticker(_to_t212_ticker(sym, "uk"), "uk") == sym
+
+
+# ---------------------------------------------------------------------------
+# Bulkhead — _matches_market filter
+# ---------------------------------------------------------------------------
+
+
+def test_matches_market_us():
+    assert _matches_market("AAPL_US_EQ", "us") is True
+    assert _matches_market("MKSL_EQ", "us") is False
+    assert _matches_market("VODL_EQ", "us") is False
+    assert _matches_market("VOD_US_EQ", "us") is True
+
+
+def test_matches_market_uk():
+    assert _matches_market("MKSL_EQ", "uk") is True
+    assert _matches_market("VODL_EQ", "uk") is True
+    assert _matches_market("BARCL_EQ", "uk") is True
+    # The US ADR for Vodafone must NOT match the UK service
+    assert _matches_market("VOD_US_EQ", "uk") is False
+    assert _matches_market("AAPL_US_EQ", "uk") is False
+
+
+def test_matches_market_other_markets_excluded():
+    """EU / other markets match neither US nor UK and are filtered from both."""
+    # T212 uses _DE_EQ for Xetra, _FR_EQ for Euronext Paris, etc.
+    for foreign in ("SAP_DE_EQ", "MC_FR_EQ", "ASML_NL_EQ"):
+        assert _matches_market(foreign, "us") is False
+        assert _matches_market(foreign, "uk") is False
+
+
+def test_matches_market_empty_ticker():
+    assert _matches_market("", "us") is False
+    assert _matches_market("", "uk") is False
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +486,155 @@ def test_market_open_dst_first_hour(client):
     # Thursday 13:45 UTC = 9:45 AM EDT — inside the old broken dead zone
     fixed = datetime(2026, 5, 14, 13, 45, 0, tzinfo=timezone.utc)
     assert is_market_hours(now=fixed) is True
+
+
+# ---------------------------------------------------------------------------
+# UK client — construction + market-hours dispatch + bulkhead
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def uk_client(monkeypatch):
+    monkeypatch.setenv("T212_API_KEY", "fake-key")
+    monkeypatch.setenv("T212_API_SECRET", "fake-secret")
+    monkeypatch.setenv("T212_DEMO", "true")
+    c = Trading212Client(market="uk")
+    c._session = MagicMock()
+    return c
+
+
+def test_client_market_default_is_us(client):
+    assert client.market == "us"
+
+
+def test_client_market_uk(uk_client):
+    assert uk_client.market == "uk"
+
+
+def test_client_market_rejects_unknown(monkeypatch):
+    monkeypatch.setenv("T212_API_KEY", "fake-key")
+    monkeypatch.setenv("T212_API_SECRET", "fake-secret")
+    with pytest.raises(ValueError, match="Unsupported T212 market"):
+        Trading212Client(market="de")
+
+
+def test_us_client_market_open_uses_nyse(client):
+    """US client's is_market_open delegates to is_market_hours (NYSE)."""
+    with patch("switching.market_calendar.is_market_hours", return_value=True), \
+         patch("switching.market_calendar.is_lse_hours", return_value=False):
+        assert client.is_market_open() is True
+
+
+def test_uk_client_market_open_uses_lse(uk_client):
+    """UK client's is_market_open delegates to is_lse_hours, NOT NYSE."""
+    with patch("switching.market_calendar.is_market_hours", return_value=False), \
+         patch("switching.market_calendar.is_lse_hours", return_value=True):
+        assert uk_client.is_market_open() is True
+
+
+def test_uk_client_market_open_lse_closed(uk_client):
+    with patch("switching.market_calendar.is_market_hours", return_value=True), \
+         patch("switching.market_calendar.is_lse_hours", return_value=False):
+        # NYSE open but LSE closed — UK client should see closed
+        assert uk_client.is_market_open() is False
+
+
+# Bulkhead — the most important behaviour for two services sharing one account
+
+
+def _positions_response(*tickers):
+    """Build a minimal /equity/positions response with the given T212 ticker IDs."""
+    return [
+        {
+            "instrument": {"ticker": t},
+            "quantity": 1.0,
+            "averagePricePaid": 100.0,
+            "currentPrice": 105.0,
+            "walletImpact": {"unrealizedProfitLoss": 5.0},
+        }
+        for t in tickers
+    ]
+
+
+def test_get_positions_bulkhead_us_filters_uk(client):
+    """US client must not see UK positions (would otherwise be ghost-closed)."""
+    client._session.get.return_value = _mock_response(
+        _positions_response("AAPL_US_EQ", "MKSL_EQ", "VODL_EQ", "TSLA_US_EQ")
+    )
+    positions = client.get_positions()
+    symbols = sorted(p.symbol for p in positions)
+    assert symbols == ["AAPL", "TSLA"]
+
+
+def test_get_positions_bulkhead_uk_filters_us(uk_client):
+    """UK client must not see US positions (would otherwise be ghost-closed)."""
+    uk_client._session.get.return_value = _mock_response(
+        _positions_response("AAPL_US_EQ", "MKSL_EQ", "VODL_EQ", "TSLA_US_EQ")
+    )
+    positions = uk_client.get_positions()
+    symbols = sorted(p.symbol for p in positions)
+    assert symbols == ["MKS.L", "VOD.L"]
+
+
+def test_get_positions_dual_listing_vod(uk_client, client):
+    """Vodafone dual-listing: UK service sees VODL_EQ as VOD.L (GBX),
+    US service sees VOD_US_EQ as VOD (USD ADR). The two never collide.
+    """
+    response = _mock_response(_positions_response("VOD_US_EQ", "VODL_EQ"))
+
+    uk_client._session.get.return_value = response
+    uk_positions = uk_client.get_positions()
+    assert [p.symbol for p in uk_positions] == ["VOD.L"]
+    assert uk_positions[0].t212_ticker == "VODL_EQ"
+
+    client._session.get.return_value = response
+    us_positions = client.get_positions()
+    assert [p.symbol for p in us_positions] == ["VOD"]
+    assert us_positions[0].t212_ticker == "VOD_US_EQ"
+
+
+def test_get_positions_bulkhead_excludes_eu(client, uk_client):
+    """Markets we don't trade (Xetra/Euronext) are filtered from BOTH services."""
+    response = _mock_response(
+        _positions_response("AAPL_US_EQ", "SAP_DE_EQ", "MC_FR_EQ", "MKSL_EQ")
+    )
+
+    client._session.get.return_value = response
+    assert [p.symbol for p in client.get_positions()] == ["AAPL"]
+
+    uk_client._session.get.return_value = response
+    assert [p.symbol for p in uk_client.get_positions()] == ["MKS.L"]
+
+
+def test_uk_client_buy_uses_l_eq_suffix(uk_client):
+    """A UK client buying MKS.L must hit T212 with ticker=MKSL_EQ."""
+    uk_client._session.post.return_value = _mock_response(
+        {"id": "1", "ticker": "MKSL_EQ", "status": "CONFIRMED"}
+    )
+    uk_client.buy_market("MKS.L", 5.0)
+    posted = uk_client._session.post.call_args.kwargs["json"]
+    assert posted["ticker"] == "MKSL_EQ"
+    assert posted["quantity"] == 5.0
+
+
+def test_us_client_buy_uses_us_eq_suffix(client):
+    """A US client buying AAPL must hit T212 with ticker=AAPL_US_EQ."""
+    client._session.post.return_value = _mock_response(
+        {"id": "1", "ticker": "AAPL_US_EQ", "status": "CONFIRMED"}
+    )
+    client.buy_market("AAPL", 5.0)
+    posted = client._session.post.call_args.kwargs["json"]
+    assert posted["ticker"] == "AAPL_US_EQ"
+
+
+def test_uk_client_sell_uses_l_eq_suffix(uk_client):
+    uk_client._session.post.return_value = _mock_response(
+        {"id": "1", "ticker": "VODL_EQ", "status": "CONFIRMED"}
+    )
+    uk_client.sell_all("VOD.L", 3.0)
+    posted = uk_client._session.post.call_args.kwargs["json"]
+    assert posted["ticker"] == "VODL_EQ"
+    assert posted["quantity"] == -3.0   # sells are negative
 
 
 # ---------------------------------------------------------------------------
