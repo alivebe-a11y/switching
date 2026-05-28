@@ -49,6 +49,47 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+
+def _load_dotenv() -> tuple[Path | None, list[str], list[str]]:
+    """Load KEY=VALUE pairs from .env next to the repo, if present.
+
+    Shell env wins over .env (standard dotenv semantics — lets you still
+    override on the command line). But shadowed keys are reported back so
+    the caller can warn about the gotcha "I changed .env but the bench is
+    still using my old shell value".
+
+    Returns (env_path_or_None, applied_keys, shadowed_keys).
+    """
+    env_path = REPO_ROOT / ".env"
+    if not env_path.exists():
+        return None, [], []
+    applied: list[str] = []
+    shadowed: list[str] = []
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        val = val.strip().strip('"').strip("'")
+        if not key:
+            continue
+        if os.environ.get(key):
+            # Shell already has a non-empty value — shell wins, but flag it
+            # so we can print a visible warning later.
+            if os.environ[key] != val:
+                shadowed.append(key)
+        else:
+            os.environ[key] = val
+            applied.append(key)
+    return env_path, applied, shadowed
+
+
+# Load .env eagerly so subsequent module-level reads (e.g. OllamaBackend._host)
+# pick up the values.
+_DOTENV_LOADED_FROM, _DOTENV_APPLIED, _DOTENV_SHADOWED = _load_dotenv()
+
+
 # Per-call timeouts so a hung backend can't lock the bench
 _HTTP_TIMEOUT = 15.0       # seconds
 _MAX_CALL_ATTEMPTS = 2     # one retry on transient failure
@@ -567,6 +608,17 @@ def main(argv: list[str] | None = None) -> int:
     # Resolve which backends to run
     wanted = {b.strip() for b in args.backends.split(",")} if args.backends != "all" else None
     candidates: list[Backend] = []
+    if _DOTENV_LOADED_FROM:
+        print(f"\nFound .env at {_DOTENV_LOADED_FROM}")
+        if _DOTENV_APPLIED:
+            print(f"  applied:  {', '.join(_DOTENV_APPLIED)}")
+        if _DOTENV_SHADOWED:
+            print(f"  SHADOWED by shell (shell value wins): {', '.join(_DOTENV_SHADOWED)}")
+            print("  To use the .env value instead, clear the shell var first:")
+            for k in _DOTENV_SHADOWED:
+                print(f"      PowerShell:  Remove-Item Env:{k}")
+                print(f"      bash:        unset {k}")
+            print("  …then re-run.")
     print("\nBackend availability:")
     for cls in BACKENDS:
         b = cls()

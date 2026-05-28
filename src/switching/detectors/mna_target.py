@@ -26,6 +26,48 @@ from switching.sources import rss
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Exclusion regex — kills obvious non-M&A noise before classification
+# ---------------------------------------------------------------------------
+# Patterns identified from live funnel data (~40% of mna_target drops were
+# debt-tenders / private-real-estate / share-buybacks / law-firm PRs that
+# match acquirer/target keywords but aren't tradeable M&A events).
+# An exclusion match here returns None from classify() — same effect as
+# no pattern matching at all, so the signal never enters the pipeline.
+_EXCLUDE_RX = re.compile(
+    r"(?i)"
+    r"(?:"
+    # ── Debt tender offers (NOT stock takeovers) ──────────────────────
+    # "Cash tender offers for senior secured notes" / "subordinated notes"
+    # are debt refinancing events, not corporate takeovers. The issuer's
+    # stock typically doesn't move on these.
+    r"tender\s+offers?\s+(?:for|on)\s+(?:up\s+to\s+)?(?:[\$£€\d,.]+|six|two|three|four|five|several|a\s+series|certain\s+series|[a-z]+\s+series)\s+(?:of\s+)?(?:its\s+)?(?:debt|notes?|bonds?|securit|subordinated|senior\s+secured)"
+    r"|\bsenior\s+secured\s+notes?\s+due\b"
+    r"|\bsubordinated\s+notes?\b"
+    r"|early\s+results?\s+of\s+(?:its\s+)?cash\s+tender\s+offer"
+    # ── Real-estate / commercial property transactions ────────────────
+    # "Acquires X-square-foot industrial portfolio" / "Acquires Sole Miami"
+    # are commercial real estate sales, not corporate M&A. The acquirer is
+    # typically a private REIT or PE fund.
+    r"|\b\d[\d,.]*[\s-]?(?:square[\s-]?(?:feet|foot|ft)|sf\b|sq\s+ft)\b"
+    r"|\b(?:multi[\s-]?family|industrial|office|commercial|retail)\s+(?:property|portfolio|condominium|complex|facility|building|asset)\b"
+    r"|\bsale[\s-]?lease[\s-]?back\b"
+    r"|\bclass[\s-]?[abc]\s+(?:office|industrial|multi[\s-]?family)\b"
+    # ── Share buybacks (these belong to the buyback detector) ────────
+    r"|\bacquisition\s+of\s+own\s+shares\b"
+    r"|\bshare[\s-]?(?:buy[\s-]?back|repurchase)\s+(?:programme|program|plan)\b"
+    # ── Law-firm announcements (class actions, not M&A) ──────────────
+    r"|\blaw\s+firm\b.{0,40}\b(?:offers|counsel|representing|class\s+action|investigat)"
+    # ── Junior/Canadian-exchange shell games (qualifying transactions
+    # on TSX Venture / CSE — typically junior mining shells, not real M&A)
+    r"|\bqualifying\s+transaction\b"
+    r"|\bbrokered\s+private\s+placement\s+of\s+subscription\s+receipts\b"
+    # ── Hotel/resort property transactions (private real estate) ─────
+    r"|\b(?:hotel|resort)\s+(?:property|portfolio)\b"
+    r")"
+)
+
+
+# ---------------------------------------------------------------------------
 # Core event-type regexes
 # ---------------------------------------------------------------------------
 
@@ -149,6 +191,12 @@ def classify(title: str, summary: str = "") -> dict | None:
     definitive, uncertain, price_per_share, premium_pct — or None if no match.
     """
     text = f"{title}\n{summary}"
+
+    # Filter out obvious non-M&A noise BEFORE running the main classifier.
+    # See _EXCLUDE_RX for the categories — debt tenders, real estate,
+    # buybacks, law-firm PRs, junior-exchange shells.
+    if _EXCLUDE_RX.search(text):
+        return None
 
     target_match = _TARGET_RX.search(text)
     acquirer_match = _ACQUIRER_RX.search(text)

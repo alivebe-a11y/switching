@@ -30,6 +30,14 @@ _service = "us"
 _db_path: Path | None = None
 _insert_count = 0
 
+# Per-process dedup set keyed by (detector, url, reason). Without this, the
+# same headline is re-recorded on EVERY scan cycle (~every 10 min), inflating
+# row counts 5-45x and polluting analytics + the dashboard funnel panel.
+# In-memory only — on restart we may record one extra row per drop, which is
+# fine. Bounded so a runaway misfiring detector can't grow it unboundedly.
+_MAX_SEEN_DROPS_IN_MEMORY = 5000
+_seen_drops: set[tuple[str, str, str]] = set()
+
 
 def configure(service: str, cache_path) -> None:
     """Enable drop capture for this process, tagging rows with *service* and
@@ -40,6 +48,9 @@ def configure(service: str, cache_path) -> None:
     _db_path = storage.db_path_for(Path(cache_path))
     _ensure_table()
     _prune()
+    # Clear the in-memory dedup set on (re)configure so tests / fresh runs
+    # start clean — otherwise a previous service's keys leak into the new one.
+    _seen_drops.clear()
 
 
 def _ensure_table() -> None:
@@ -78,10 +89,37 @@ def _prune() -> None:
     conn.commit()
 
 
+def _dedup_key_seen(detector: str, url: str, reason: str) -> bool:
+    """Return True if we've already recorded this drop in this process.
+
+    Url-keyed: an empty url falls back to (detector, '', reason) which is
+    intentionally a single shared bucket — items without URLs are usually
+    EDGAR drops that have a stable form; if they need finer dedup we can
+    revisit. Bounded at _MAX_SEEN_DROPS_IN_MEMORY: when the cap is hit we
+    drop the oldest behavior is to clear all (cheap, simple); the worst
+    case is a single duplicate after the wrap.
+    """
+    key = (detector, url or "", reason)
+    if key in _seen_drops:
+        return True
+    if len(_seen_drops) >= _MAX_SEEN_DROPS_IN_MEMORY:
+        _seen_drops.clear()
+    _seen_drops.add(key)
+    return False
+
+
 def record_drop(detector: str, item, reason: str = "no_ticker") -> None:
-    """Record a classified-but-dropped headline. No-op until configure()d."""
+    """Record a classified-but-dropped headline. No-op until configure()d.
+
+    Per-process deduplication: the same (detector, url, reason) is recorded
+    at most once for the lifetime of the process. Without this, the same
+    headline is re-recorded on every scan cycle, inflating row counts 5-45x.
+    """
     global _insert_count
     if _db_path is None:
+        return
+    url = getattr(item, "url", "") or ""
+    if _dedup_key_seen(detector, url, reason):
         return
     try:
         from switching import storage
@@ -93,7 +131,7 @@ def record_drop(detector: str, item, reason: str = "no_ticker") -> None:
                 _service, detector, reason,
                 datetime.now(tz=timezone.utc).isoformat(),
                 getattr(item, "title", "") or "",
-                getattr(item, "url", "") or "",
+                url,
                 (getattr(item, "summary", "") or "")[:500],
             ),
         )
@@ -110,9 +148,16 @@ def record_signal_drop(detector: str, signal, reason: str) -> None:
     (yfinance has no price, broker rejected the order, etc.). Same table as
     ``record_drop``; the ``reason`` distinguishes them. The headline is
     prefixed with the ticker so the dashboard shows what we tried to buy.
+
+    Per-process deduplication on (detector, url, reason) — same rationale
+    as record_drop; the retry-cooldown loop in paper_trader can hit this
+    function many times for the same signal and we don't want flood.
     """
     global _insert_count
     if _db_path is None:
+        return
+    url = getattr(signal, "url", "") or ""
+    if _dedup_key_seen(detector, url, reason):
         return
     try:
         from switching import storage
@@ -173,3 +218,4 @@ def _reset() -> None:
     _service = "us"
     _db_path = None
     _insert_count = 0
+    _seen_drops.clear()

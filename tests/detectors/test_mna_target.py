@@ -119,3 +119,133 @@ def test_divestiture_is_acquirer():
     m = classify("FMC Corporation Announces Agreement to Divest India Business to Crystal Crop", "")
     assert m is not None
     assert m["direction"] == "acquirer"
+
+
+# ---------------------------------------------------------------------------
+# Non-M&A exclusions — drawn from real funnel false-positives.
+# When a future commit relaxes _EXCLUDE_RX these tests will catch the regression.
+# ---------------------------------------------------------------------------
+
+class TestNonMnaExclusions:
+    """Patterns that look like M&A but aren't — debt tenders, real estate,
+    buybacks, law-firm PRs, junior-exchange shell games. All sourced from
+    the live funnel data on 2026-05-28 where they were dominating drop volume."""
+
+    # ── Debt tender offers (not stock takeovers) ───────────────────────
+    def test_excludes_debt_tender_senior_secured_notes(self):
+        # DIRECTV: x69 funnel rows
+        assert classify(
+            "DIRECTV Financing, LLC and DIRECTV Financing Co-Obligor, Inc. Announce "
+            "Consideration for Tender Offer for Up to $1,400,000,000 in Aggregate Principal "
+            "Amount of Their 5.875% Senior Secured Notes Due 2027"
+        ) is None
+
+    def test_excludes_debt_tender_six_series(self):
+        # BCE (Bell Canada): x13 funnel rows
+        assert classify(
+            "Bell Announces Cash Tender Offers for Six Series of Debt Securities"
+        ) is None
+
+    def test_excludes_debt_tender_subordinated_notes(self):
+        # SCOR: x8 funnel rows
+        assert classify(
+            "SCOR announces the launch of a cash tender offer and its intention to issue "
+            "new subordinated notes"
+        ) is None
+
+    def test_excludes_early_results_of_tender(self):
+        # Follow-up debt-tender announcement — same DIRECTV refinancing
+        assert classify(
+            "DIRECTV Financing, LLC Announce Early Results of Cash Tender Offer for "
+            "5.875% Senior Secured Notes Due 2027"
+        ) is None
+
+    def test_does_NOT_exclude_stock_tender_offer(self):
+        # Legitimate tender offer for SHARES (not debt) — must still match
+        m = classify("Microsoft Tender Offer for All Outstanding Shares of Activision at $95")
+        assert m is not None
+        assert m["direction"] == "target"
+
+    # ── Real-estate / commercial property transactions ──────────────────
+    def test_excludes_industrial_portfolio(self):
+        # Provident Industrial: x44 funnel rows
+        assert classify(
+            "Provident Industrial Acquires Commerce 45, a 1.5 Million-Square-Foot "
+            "Two-Building Industrial Portfolio in Hutchins, Texas"
+        ) is None
+
+    def test_excludes_office_condominium(self):
+        # REALM/DelShah/CitySpire: x70 funnel rows
+        assert classify(
+            "REALM, DelShah Capital and A.M. Properties Acquire CitySpire, "
+            "156 West 56th Street, a Premier New York Midtown Office Condominium"
+        ) is None
+
+    def test_excludes_sf_industrial_facility(self):
+        # Brennan: x9 funnel rows
+        assert classify(
+            "Brennan Investment Group Acquires 55,000 SF Industrial Facility in "
+            "Bolingbrook, Illinois via Sale-Leaseback"
+        ) is None
+
+    def test_excludes_multifamily_property(self):
+        # Bascom: x4 funnel rows
+        assert classify(
+            "Bascom Arizona Ventures Continues Acquisition Spree, Acquires Off-Market "
+            "Tucson Multifamily Property for $45.5 Million"
+        ) is None
+
+    # ── Share buybacks (belong to the buyback detector, not mna_target) ─
+    def test_excludes_share_buyback_programme(self):
+        # Schouw: x3 funnel rows
+        assert classify("Schouw & Co. share buy-back programme, week 21 2026") is None
+
+    def test_excludes_acquisition_of_own_shares(self):
+        # IBA: x15 funnel rows
+        assert classify("IBA - ACQUISITION OF OWN SHARES") is None
+
+    # ── Law-firm announcements (class actions, not M&A) ────────────────
+    def test_excludes_law_firm_announcement(self):
+        # PARRIS: x7 funnel rows
+        assert classify(
+            "PARRIS Law Firm Offers Counsel to Garden Grove Chemical Leak Survivors"
+        ) is None
+
+    # ── Junior-exchange qualifying transactions (shell-game M&A) ───────
+    def test_excludes_qualifying_transaction(self):
+        # Chicane Capital: x1 row
+        assert classify(
+            "Chicane Capital I Corp. and Elton Resources Corp. Enter Into Definitive "
+            "Merger Agreement with Respect to Qualifying Transaction and Brokered Private "
+            "Placement of Subscription Receipts"
+        ) is None
+
+    # ── Critical: legitimate M&A must still classify after the exclusion regex ─
+    def test_real_pharma_acquisition_still_matches(self):
+        m = classify("Olympus to Acquire BioProtect to Expand Its Portfolio of "
+                     "Urological Technologies and Address Prostate Cancer")
+        assert m is not None
+        assert m["direction"] == "acquirer"
+
+    def test_lilly_target_acquisition_still_matches(self):
+        m = classify("Curevo to be Acquired by Lilly to Advance Next-Generation "
+                     "Shingles Prevention")
+        assert m is not None
+        assert m["direction"] == "target"
+
+    def test_pfizer_seagen_still_matches(self):
+        # The original headline this detector was built for
+        m = classify("Pfizer Acquires Seagen for $43 Billion in All-Cash Deal")
+        assert m is not None
+        assert m["direction"] == "acquirer"
+
+    def test_activision_microsoft_still_matches(self):
+        # The other original headline — confirms target detection survives
+        # the exclusion regex. (all_cash is asserted elsewhere with a
+        # headline that actually contains "all-cash".)
+        m = classify(
+            "Activision Blizzard to Be Acquired by Microsoft for $95 Per Share"
+        )
+        assert m is not None
+        assert m["direction"] == "target"
+        assert m["price_per_share"] == 95.0

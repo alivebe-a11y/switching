@@ -63,8 +63,13 @@ def test_prune_keeps_recent(tmp_path, monkeypatch):
     monkeypatch.setattr(detection_funnel, "_PRUNE_EVERY", 3)
     path = tmp_path / "paper_portfolio.json"
     detection_funnel.configure("us", path)
+    # NOTE: distinct urls so the dedup set doesn't collapse them — we're
+    # asserting prune behavior here, not dedup.
     for i in range(20):
-        detection_funnel.record_drop("ai_pivot", _Item(title=f"drop {i}"))
+        detection_funnel.record_drop("ai_pivot", _Item(
+            title=f"drop {i}",
+            url=f"https://example.com/acme/{i}",
+        ))
     detection_funnel._prune()
     drops = detection_funnel.load_drops(path, limit=100)
     assert len(drops) <= 5
@@ -105,3 +110,75 @@ def test_record_drop_never_raises_on_bad_item(tmp_path):
     drops = detection_funnel.load_drops(tmp_path / "paper_portfolio.json")
     assert len(drops) == 1
     assert drops[0]["headline"] == ""
+
+
+def test_record_drop_deduplicates_same_url_per_process(tmp_path):
+    """Same (detector, url, reason) records AT MOST once per process even
+    if the scan loop re-sees the headline. Live discovery: the funnel was
+    inflated 13-45x because record_drop ran on every scan cycle without
+    dedup. 100 calls with the same URL must produce 1 row."""
+    detection_funnel.configure("us", tmp_path / "paper_portfolio.json")
+    item = _Item(title="Acme announces strategic review",
+                 url="https://example.com/acme-deal")
+    for _ in range(100):
+        detection_funnel.record_drop("mna_target", item)
+    drops = detection_funnel.load_drops(tmp_path / "paper_portfolio.json")
+    assert len(drops) == 1
+
+
+def test_record_drop_different_urls_record_separately(tmp_path):
+    """Genuinely distinct articles must both record — dedup mustn't collapse
+    legitimate distinct catalysts."""
+    detection_funnel.configure("us", tmp_path / "paper_portfolio.json")
+    detection_funnel.record_drop("mna_target", _Item(url="https://example.com/a"))
+    detection_funnel.record_drop("mna_target", _Item(url="https://example.com/b"))
+    drops = detection_funnel.load_drops(tmp_path / "paper_portfolio.json")
+    assert len(drops) == 2
+
+
+def test_dedup_set_clears_on_configure(tmp_path):
+    """configure() must start with a clean dedup set — otherwise stale keys
+    from a previous test/process block new captures."""
+    detection_funnel.configure("us", tmp_path / "paper_portfolio.json")
+    detection_funnel.record_drop("mna_target", _Item(url="https://x.com/1"))
+    # Reconfigure (simulating restart or service switch)
+    detection_funnel.configure("us", tmp_path / "paper_portfolio.json")
+    detection_funnel.record_drop("mna_target", _Item(url="https://x.com/1"))
+    drops = detection_funnel.load_drops(tmp_path / "paper_portfolio.json")
+    # One row from each configure() — the restart "fee" we accept
+    assert len(drops) == 2
+
+
+def test_record_signal_drop_also_deduplicates(tmp_path):
+    """Buy-time failures (price_unavailable, t212_rejected) are also deduped —
+    the retry-cooldown loop hits this repeatedly for the same signal."""
+    detection_funnel.configure("t212", tmp_path / "t212_portfolio.json")
+
+    class Sig:
+        ticker = "RAASY"
+        headline = "RAASY announces strategic review"
+        detector = "mna_target"
+        url = "https://example.com/raasy"
+
+    for _ in range(50):
+        detection_funnel.record_signal_drop("mna_target", Sig(), "price_unavailable")
+    drops = detection_funnel.load_drops(tmp_path / "t212_portfolio.json")
+    assert len(drops) == 1
+    assert drops[0]["reason"] == "price_unavailable"
+
+
+def test_record_signal_drop_different_reasons_record_separately(tmp_path):
+    """Different reasons for the same signal (e.g. price_unavailable then
+    t212_rejected on retry) are legitimately distinct events."""
+    detection_funnel.configure("t212", tmp_path / "t212_portfolio.json")
+
+    class Sig:
+        ticker = "RAASY"
+        headline = "RAASY review"
+        detector = "mna_target"
+        url = "https://example.com/raasy"
+
+    detection_funnel.record_signal_drop("mna_target", Sig(), "price_unavailable")
+    detection_funnel.record_signal_drop("mna_target", Sig(), "t212_rejected: foo")
+    drops = detection_funnel.load_drops(tmp_path / "t212_portfolio.json")
+    assert len(drops) == 2
