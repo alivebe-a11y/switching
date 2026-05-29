@@ -528,6 +528,81 @@ internal paper trader, acquirer filter applied. Compare P&L after 50+ trades.
   and LSE (VODL_EQ, GBX primary). UK client strictly maps `VOD.L → VODL_EQ`
   and never resolves to the US ADR. Tested explicitly.
 
+## Trading 212 API reference (cheat sheet)
+
+Source of truth: `docs/vendor/t212-api.md` — verbatim copy of T212's official
+skill manifest (`trading212-labs/agent-skills`). Refresh with
+`python scripts/refresh_t212_docs.py`. Below is the cheat-sheet view of the
+facts I keep needing when touching `broker_trading212.py` — it loads
+automatically every session so I stop guessing rate-limit numbers and error codes.
+
+### Base URLs
+- DEMO: `https://demo.trading212.com/api/v0`
+- LIVE: `https://live.trading212.com/api/v0`
+- **API keys are environment-scoped** — a DEMO key only works on demo, LIVE only on live. A 401 usually means env mismatch.
+- Only **Invest** and **Stocks ISA** account types are supported. **CFD is NOT exposed via this API** — any instrument that's CFD-only on T212 will refuse to trade through `/equity/orders/*` even though it appears in the catalogue.
+
+### Per-endpoint rate limits (PER ACCOUNT, not per key/IP)
+Both T212 services share one account, so the limit budget is shared too.
+
+| Endpoint | Limit |
+|---|---|
+| `GET /equity/account/summary` | 1 req / 5s |
+| `GET /equity/positions` | 1 req / 1s |
+| `POST /equity/orders/market` | 50 req / min  (≈1.2s) |
+| `POST /equity/orders/limit` | 1 req / 2s |
+| `POST /equity/orders/stop` | 1 req / 2s |
+| `POST /equity/orders/stop_limit` | 1 req / 2s |
+| `GET /equity/orders` (by id) | 1 req / 1s |
+| `DELETE /equity/orders/{id}` | 50 req / min |
+| `GET /equity/metadata/instruments` | 1 req / 50s (~5 MB response) |
+| `GET /equity/metadata/exchanges` | 1 req / 30s |
+| `GET /equity/history/orders` | 50 req / min |
+| `GET /equity/history/dividends` | 50 req / min |
+| `GET /equity/history/transactions` | 50 req / min |
+| `POST /equity/history/exports` | 1 req / 30s |
+| `GET /equity/history/exports` | 1 req / min |
+
+### Ticker / instrument format
+Catalogue ticker = `{SYMBOL}_{EXCHANGE}_{TYPE}` — but in practice T212 uses these conventional suffixes:
+
+| Market | Suffix | Example |
+|---|---|---|
+| US (NYSE / NASDAQ) | `_US_EQ` | `AAPL_US_EQ` |
+| UK (LSE) | `L_EQ`  (NO underscore before L) | `MKSL_EQ`, `VODL_EQ`, `BARCL_EQ` |
+| Germany (Xetra) | `_DE_EQ` | `SAP_DE_EQ` |
+| France (Euronext Paris) | `_FR_EQ` | `MC_FR_EQ` |
+| Netherlands (Euronext Amsterdam) | `_NL_EQ` | `ASML_NL_EQ` |
+
+⚠️ **`ASML_NL_EQ` ends with `L_EQ`** — UK detection must require *no underscore* in the ticker portion (the bulkhead in `_matches_market` does this; tested).
+
+### Instrument metadata (catalogue) — useful fields
+`GET /equity/metadata/instruments` returns each instrument as:
+- `ticker` — the ID above
+- `name`, `shortName`, `isin`
+- `currencyCode`
+- `type` — **`STOCK | ETF | CRYPTOCURRENCY | FUTURES | INDEX | WARRANT | CVR | CORPACT`**
+- `maxOpenQuantity`, `extendedHours`, `workingScheduleId`, `addedOn`
+
+⚠️ **No `tradeable` / `disabled` flag exists.** The catalogue lists *known-to-T212* instruments, not *orderable* ones. The `type` field is our best preflight filter (`STOCK`/`ETF` are normally orderable; `CORPACT`/`WARRANT` may not be).
+
+### Documented order errors
+Only these are in the spec — anything else (e.g. `404 InstrumentNotFound` we saw for `CPI.L`) is undocumented and usually means "CFD-only on T212" or "instrument suspended":
+
+| Code | Meaning |
+|---|---|
+| `InsufficientFreeForStocksBuy` | Not enough cash |
+| `SellingEquityNotOwned` | Selling more than owned |
+| `MarketClosed` | Outside trading hours |
+
+### Order semantics
+- `POST /equity/orders/market` — positive `quantity` = BUY, negative = SELL. Optional `extendedHours` for pre/after-hours.
+- `POST /equity/orders/limit` — needs `limitPrice` + optional `timeValidity` (`DAY` / `GOOD_TILL_CANCEL`).
+- `POST /equity/orders/stop` — needs `stopPrice`; fires market order on trigger.
+- `POST /equity/orders/stop_limit` — needs both `stopPrice` and `limitPrice`.
+
+---
+
 **T212 client rate limiting (`broker_trading212.py`)**:
 - T212's API is rate-limited PER ENDPOINT (not a flat req/s). The client throttles
   each endpoint to a conservative min interval (`_ENDPOINT_MIN_INTERVAL`: positions 5s,
