@@ -58,7 +58,7 @@ services:
     volumes:
       - ${SWITCHING_DATA_DIR:-./data/cache}:/app/.cache
     entrypoint: ["switching"]
-    command: ["trade-t212", "--market", "us", "--interval", "10", "--stop-loss", "0.026", "--hold-days", "5", "--max-position", "0.01", "--max-positions", "0"]
+    command: ["trade-t212", "--market", "us", "--interval", "10", "--stop-loss", "0.026", "--hold-days", "5", "--max-position", "0.01", "--max-positions", "0", "--log-level", "INFO"]
     restart: unless-stopped
 
   # UK sibling of trade-t212. Same image, same T212 credentials, same
@@ -88,7 +88,7 @@ services:
     volumes:
       - ${SWITCHING_DATA_DIR:-./data/cache}:/app/.cache
     entrypoint: ["switching"]
-    command: ["trade-t212", "--market", "uk", "--interval", "10", "--stop-loss", "0.026", "--hold-days", "5", "--max-position", "0.01", "--max-positions", "0"]
+    command: ["trade-t212", "--market", "uk", "--interval", "10", "--stop-loss", "0.026", "--hold-days", "5", "--max-position", "0.01", "--max-positions", "0", "--log-level", "INFO"]
     restart: unless-stopped
 
   paper-trade-uk:

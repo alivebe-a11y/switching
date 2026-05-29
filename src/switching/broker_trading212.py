@@ -271,7 +271,11 @@ class Trading212Client:
                 unrealized_pnl_pct=pnl_pct,
             ))
         if filtered_other_market:
-            log.debug(
+            # INFO not DEBUG — this is the bulkhead announcing it did its job.
+            # We want it visible in the default service log level so we can
+            # confirm the US and UK T212 services aren't seeing each other's
+            # positions.
+            log.info(
                 "T212 get_positions(market=%s): kept %d, filtered %d (other market)",
                 self.market, len(result), filtered_other_market,
             )
@@ -399,7 +403,7 @@ class Trading212Client:
                 self._last_call[path] = time.monotonic()
                 continue
 
-            _check_response(resp, path)
+            _check_response(resp, path, method=method, payload=json_body, market=self.market)
             return resp.json()
         # Loop always returns or raises above; this is unreachable.
         raise T212RateLimitError(f"T212 rate limit on {path}")  # pragma: no cover
@@ -416,24 +420,84 @@ class Trading212Client:
 # ---------------------------------------------------------------------------
 
 
-def _check_response(resp: requests.Response, path: str) -> None:
+# Response headers we surface in error logs. Allowlist (not allowing through
+# anything we don't recognise) so we never accidentally log auth-bearing
+# request echoes or cookies T212 might one day return.
+_LOG_RESPONSE_HEADERS = (
+    "Content-Type", "Content-Length", "Retry-After",
+    "X-Request-Id", "X-Correlation-Id", "X-Trace-Id",
+    "Date", "Server",
+)
+
+# Max body length to surface — bigger than before (200) so the FULL T212 error
+# response makes it into logs. Order-rejection bodies are usually small JSON
+# objects ({"code": "...", "context": {...}}) — clipping them was killing the
+# whole point of "tell me why it failed".
+_ERROR_BODY_MAX_LEN = 4000
+
+
+def _check_response(
+    resp: requests.Response,
+    path: str,
+    *,
+    method: str = "GET",
+    payload: dict | None = None,
+    market: str = "us",
+) -> None:
+    """Inspect a T212 response and raise the right exception on failure.
+
+    On any 4xx/5xx we log.error a structured diagnostic line FIRST (so it
+    lands in Dockge logs even if the caller swallows the exception), then
+    raise. The diagnostic includes:
+      - market scope (us/uk) — which client made the call
+      - HTTP method + path + status
+      - the request payload we sent (for order failures, this is the most
+        useful field — tells us the T212 ticker we tried to trade)
+      - response headers from the allowlist (Retry-After, X-Request-Id,
+        Content-Type, etc.)
+      - full response body, sanitised (auth tokens stripped) and capped at
+        _ERROR_BODY_MAX_LEN (4000 chars — generous, T212 error bodies are
+        normally ~100 chars of JSON).
+
+    The exception message keeps the salient info inline so existing
+    handlers and Telegram alerts still get useful text without grepping
+    container logs.
+    """
+    if 200 <= resp.status_code < 300:
+        return
+
+    body = _sanitise_error_body(resp.text or "", max_len=_ERROR_BODY_MAX_LEN)
+    headers = {k: v for k, v in resp.headers.items() if k in _LOG_RESPONSE_HEADERS}
+    payload_str = _sanitise_payload(payload) if payload is not None else None
+
+    # One structured line that captures everything we know about the failure.
+    log.error(
+        "T212 FAIL [%s] %s %s -> %s %s | headers=%s | payload=%s | body=%s",
+        market.upper(),
+        method,
+        path,
+        resp.status_code,
+        resp.reason or "",
+        headers,
+        payload_str,
+        body,
+    )
+
     if resp.status_code == 401:
         raise T212AuthError(
             "Trading 212 API key invalid or expired. "
-            "Regenerate at Settings → API in the app."
+            "Regenerate at Settings → API in the app. "
+            f"(body: {body[:200]})"
         )
-    if resp.status_code == 400:
-        # Sanitise response body before surfacing — T212 may echo request
-        # fields (including auth headers) in error responses.
-        body = _sanitise_error_body(resp.text, max_len=200)
-        raise T212OrderError(f"T212 bad request [{path}]: {body}")
-    try:
-        resp.raise_for_status()
-    except requests.HTTPError as exc:
-        body = _sanitise_error_body(resp.text, max_len=150)
-        raise T212OrderError(
-            f"T212 HTTP error [{path}] {resp.status_code}: {body}"
-        ) from exc
+
+    # 4xx/5xx — surface as T212OrderError with the request payload inline so
+    # downstream handlers (BUY FAILED log in run_loop_t212, detection_funnel
+    # drop record, Telegram alert) all carry the diagnostic data without
+    # having to dig through container logs.
+    payload_inline = f" payload={payload_str}" if payload_str else ""
+    raise T212OrderError(
+        f"T212 HTTP {resp.status_code} {resp.reason or ''} [{path}]:{payload_inline} body={body}"
+    )
 
 
 def _retry_after_seconds(resp: requests.Response) -> float | None:
@@ -454,11 +518,41 @@ def _retry_after_seconds(resp: requests.Response) -> float | None:
 
 
 def _sanitise_error_body(text: str, max_len: int = 200) -> str:
-    """Strip any line that looks like an auth header before logging."""
+    """Strip any auth-bearing line before logging.
+
+    Previous regex only matched ONE token after the keyword, leaving
+    multi-token auth values exposed (e.g. "Authorization: Basic <base64>"
+    matched only "Basic", leaving the base64 in the log). The new regex
+    redacts everything from the keyword to end-of-line — auth values
+    don't legitimately span newlines, so this is safe.
+    """
     import re
-    # Remove any "Authorization: ..." or "Bearer ..." fragments
-    cleaned = re.sub(r"(?i)(authorization|bearer)\s*[:\s]\s*\S+", "[REDACTED]", text)
+    # Greedy to end-of-line (. doesn't match \n by default).
+    cleaned = re.sub(
+        r"(?i)\b(authorization|bearer|api[_-]?key|api[_-]?secret|x-api-key)\b[:\s].*",
+        "[REDACTED]",
+        text,
+    )
     return cleaned[:max_len]
+
+
+# Payload keys that are safe to log. The only thing we ever POST to T212 is
+# order JSON: {"ticker": ..., "quantity": ...} — both safe. The allowlist
+# stops a future caller from accidentally smuggling a secret through the
+# request payload into logs (defence in depth — the Basic Auth credentials
+# travel in headers, never the body, so this is paranoia not necessity).
+_LOG_PAYLOAD_KEYS = ("ticker", "quantity", "limitPrice", "stopPrice", "timeValidity")
+
+
+def _sanitise_payload(payload: dict | None) -> str | None:
+    """Format a request payload for logging, allowlisting safe keys."""
+    if not payload:
+        return None
+    safe = {k: payload.get(k) for k in _LOG_PAYLOAD_KEYS if k in payload}
+    extras = sorted(k for k in payload if k not in _LOG_PAYLOAD_KEYS)
+    if extras:
+        safe["_extra_keys"] = extras    # surface presence without values
+    return str(safe)
 
 
 def _to_t212_ticker(symbol: str, market: str = "us") -> str:

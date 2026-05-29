@@ -245,11 +245,13 @@ def client(monkeypatch):
     return c
 
 
-def _mock_response(json_data, status_code=200):
+def _mock_response(json_data, status_code=200, *, reason="", headers=None):
     resp = MagicMock(spec=requests.Response)
     resp.status_code = status_code
     resp.json.return_value = json_data
     resp.text = str(json_data)
+    resp.reason = reason
+    resp.headers = headers or {}
     resp.raise_for_status = MagicMock()
     return resp
 
@@ -447,6 +449,80 @@ def test_400_raises_order_error(client):
     client._session.post.return_value = resp
     with pytest.raises(T212OrderError):
         client.buy_market("AAPL", 1.0)
+
+
+def test_error_includes_payload_and_body(client):
+    """4xx errors must surface the T212 ticker we sent AND the response body.
+
+    This is the diagnostic data we were flying blind on for the CPI.L 404 —
+    the exception message alone needs to tell us:
+      - which T212 instrument ID was rejected (so we can grep the catalogue)
+      - what T212 said back (so we know if it's 'instrument not found',
+        'market closed', 'cash too small', etc.)
+    """
+    resp = _mock_response(
+        {"code": "InstrumentNotFound", "message": "No such instrument"},
+        status_code=404,
+        reason="Not Found",
+    )
+    client._session.post.return_value = resp
+    with pytest.raises(T212OrderError) as excinfo:
+        client.buy_market("CPI", 5.0)
+    msg = str(excinfo.value)
+    assert "404" in msg
+    assert "Not Found" in msg
+    # Payload — must include the T212 ticker so we can disambiguate mapping
+    # bugs (CPI -> CPIL_EQ vs CPI_LN_EQ etc.).
+    assert "CPI_US_EQ" in msg
+    # Body — must include the T212 error code so we know what was wrong
+    assert "InstrumentNotFound" in msg
+
+
+def test_error_includes_market_scope(uk_client):
+    """The UK client must surface CPIL_EQ (LSE), not CPI_US_EQ (US)."""
+    resp = _mock_response({"code": "InstrumentNotFound"}, status_code=404, reason="Not Found")
+    uk_client._session.post.return_value = resp
+    with pytest.raises(T212OrderError) as excinfo:
+        uk_client.buy_market("CPI.L", 5.0)
+    msg = str(excinfo.value)
+    assert "CPIL_EQ" in msg
+    assert "CPI_US_EQ" not in msg
+
+
+def test_error_sanitises_authorization_in_body(client):
+    """Even though T212 shouldn't echo our auth, defence in depth: strip it."""
+    leaky = "401 Unauthorized\nAuthorization: Basic abc123XYZ_DO_NOT_LEAK\n"
+    resp = _mock_response("ignored", status_code=400, reason="Bad Request")
+    resp.text = leaky
+    client._session.post.return_value = resp
+    with pytest.raises(T212OrderError) as excinfo:
+        client.buy_market("AAPL", 1.0)
+    msg = str(excinfo.value)
+    assert "DO_NOT_LEAK" not in msg
+    assert "[REDACTED]" in msg
+
+
+def test_error_logs_diagnostic_line(client, caplog):
+    """log.error must fire once on 4xx so Dockge logs capture the full picture
+    even when the exception is caught and shortened upstream."""
+    import logging as _logging
+    caplog.set_level(_logging.ERROR, logger="switching.broker_trading212")
+    resp = _mock_response(
+        {"code": "InstrumentNotFound"}, status_code=404, reason="Not Found",
+        headers={"X-Request-Id": "abc-123", "Content-Type": "application/json"},
+    )
+    client._session.post.return_value = resp
+    with pytest.raises(T212OrderError):
+        client.buy_market("ZZZZ", 1.0)
+    records = [r for r in caplog.records if "T212 FAIL" in r.getMessage()]
+    assert records, "expected a T212 FAIL log.error entry"
+    rec_msg = records[0].getMessage()
+    assert "POST" in rec_msg
+    assert "/equity/orders/market" in rec_msg
+    assert "404" in rec_msg
+    assert "ZZZZ_US_EQ" in rec_msg
+    assert "InstrumentNotFound" in rec_msg
+    assert "abc-123" in rec_msg   # X-Request-Id surfaces from allowlist
 
 
 # ---------------------------------------------------------------------------
