@@ -1813,6 +1813,24 @@ def run_loop_t212(
                 _mark_seen(portfolio.seen_signals, key)
                 continue
 
+            # Preflight: is this instrument actually orderable on T212? The
+            # broker bulkhead + ticker mapping produce a syntactically valid
+            # T212 ID, but the catalogue / order endpoints can still disagree
+            # (e.g. CPI.L resolves to CPIL_EQ which IS in the catalogue but
+            # whose orderable form on T212 is CFD-only — not exposed via the
+            # equity API, so the order endpoint returns 404). The catalogue's
+            # `type` field is the documented preflight signal (STOCK/ETF are
+            # orderable; CORPACT/WARRANT/etc. are not). Fails OPEN on cache
+            # outage — see Trading212Client.can_buy.
+            tradeable, reason = client.can_buy(sig.ticker)
+            if not tradeable:
+                console.print(
+                    f"  [dim]SKIP {sig.ticker}: {reason}[/dim]"
+                )
+                detection_funnel.record_signal_drop(sig.detector, sig, reason)
+                _mark_seen(portfolio.seen_signals, key)
+                continue
+
             # Get price to calculate quantity.  Transient failure (yfinance hole)
             # — DON'T mark seen; retry after the cooldown.
             price = get_current_price(sig.ticker)

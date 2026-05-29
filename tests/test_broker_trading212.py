@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -714,6 +715,138 @@ def test_uk_client_sell_uses_l_eq_suffix(uk_client):
 
 
 # ---------------------------------------------------------------------------
+# Preflight tradability check (catalogue cache + can_buy)
+# ---------------------------------------------------------------------------
+
+
+def _catalogue(*entries: dict) -> list[dict]:
+    """Build a minimal catalogue response."""
+    return list(entries)
+
+
+def test_can_buy_passes_for_stock_in_catalogue(client):
+    client._session.get.return_value = _mock_response(_catalogue(
+        {"ticker": "AAPL_US_EQ", "type": "STOCK", "name": "Apple"},
+        {"ticker": "VOO_US_EQ", "type": "ETF", "name": "Vanguard S&P 500"},
+    ))
+    ok, reason = client.can_buy("AAPL")
+    assert ok is True
+    assert reason is None
+    ok, reason = client.can_buy("VOO")
+    assert ok is True
+
+
+def test_can_buy_rejects_when_not_in_catalogue(client):
+    """The CPI.L scenario: T212 ID isn't even in the catalogue → skip cleanly."""
+    client._session.get.return_value = _mock_response(_catalogue(
+        {"ticker": "AAPL_US_EQ", "type": "STOCK"},
+    ))
+    ok, reason = client.can_buy("ZZZZ")
+    assert ok is False
+    assert "not_in_t212_catalogue" in reason
+    assert "ZZZZ_US_EQ" in reason
+
+
+def test_can_buy_rejects_non_tradeable_type(client):
+    """CORPACT / WARRANT / etc. are in the catalogue but not orderable."""
+    client._session.get.return_value = _mock_response(_catalogue(
+        {"ticker": "XXX_US_EQ", "type": "CORPACT"},
+        {"ticker": "WAR_US_EQ", "type": "WARRANT"},
+        {"ticker": "FUT_US_EQ", "type": "FUTURES"},
+    ))
+    ok, reason = client.can_buy("XXX")
+    assert ok is False
+    assert "type=CORPACT" in reason
+    ok, reason = client.can_buy("WAR")
+    assert ok is False
+    assert "type=WARRANT" in reason
+
+
+def test_can_buy_uses_market_aware_lookup(uk_client):
+    """UK client looks up VODL_EQ, NOT VOD_US_EQ. The US ADR may be present
+    in the catalogue but is irrelevant to the LSE service."""
+    uk_client._session.get.return_value = _mock_response(_catalogue(
+        {"ticker": "VOD_US_EQ", "type": "STOCK", "name": "Vodafone ADR (USD)"},
+        {"ticker": "VODL_EQ",   "type": "STOCK", "name": "Vodafone (LSE)"},
+    ))
+    ok, reason = uk_client.can_buy("VOD.L")
+    assert ok is True
+
+
+def test_can_buy_uk_rejects_when_only_us_listed(uk_client):
+    """If a name is US-only on T212 (no L_EQ variant), UK service must skip."""
+    uk_client._session.get.return_value = _mock_response(_catalogue(
+        {"ticker": "AAPL_US_EQ", "type": "STOCK"},
+    ))
+    ok, reason = uk_client.can_buy("AAPL.L")
+    assert ok is False
+    assert "AAPLL_EQ" in reason   # the ID it tried
+
+
+def test_can_buy_fails_open_on_catalogue_error(client, caplog):
+    """Catalogue fetch failure must NOT block buys — release-it 'preserve
+    core service in degraded mode'. We log and let the order endpoint be
+    the final arbiter."""
+    import logging as _logging
+    caplog.set_level(_logging.WARNING, logger="switching.broker_trading212")
+
+    def boom(*a, **kw):
+        raise requests.ConnectionError("DNS fail")
+    client._session.get.side_effect = boom
+
+    ok, reason = client.can_buy("AAPL")
+    assert ok is True   # fail OPEN
+    assert reason is None
+    assert any("catalogue fetch failed" in r.getMessage().lower() for r in caplog.records)
+
+
+def test_can_buy_rejects_invalid_ticker_format(client):
+    """Path-traversal-y input never reaches the catalogue lookup."""
+    ok, reason = client.can_buy("../etc/passwd")
+    assert ok is False
+    assert "invalid_ticker_format" in reason
+
+
+def test_catalogue_is_cached_across_calls(client):
+    client._session.get.return_value = _mock_response(_catalogue(
+        {"ticker": "AAPL_US_EQ", "type": "STOCK"},
+    ))
+    client.can_buy("AAPL")
+    client.can_buy("AAPL")
+    client.can_buy("AAPL")
+    assert client._session.get.call_count == 1   # only ONE catalogue fetch
+
+
+def test_catalogue_cache_refresh_after_ttl(client, monkeypatch):
+    """After TTL expires we refetch."""
+    client._session.get.return_value = _mock_response(_catalogue(
+        {"ticker": "AAPL_US_EQ", "type": "STOCK"},
+    ))
+    # Force the cache to look stale by reaching in
+    from switching import broker_trading212
+    monkeypatch.setattr(broker_trading212, "_INSTRUMENT_CACHE_TTL_SECONDS", 0.001)
+    client.can_buy("AAPL")
+    time.sleep(0.01)
+    client.can_buy("AAPL")
+    assert client._session.get.call_count == 2
+
+
+def test_us_and_uk_clients_have_independent_caches(client, uk_client):
+    """Each client has its own catalogue cache — they don't share."""
+    client._session.get.return_value = _mock_response(_catalogue(
+        {"ticker": "AAPL_US_EQ", "type": "STOCK"},
+    ))
+    uk_client._session.get.return_value = _mock_response(_catalogue(
+        {"ticker": "MKSL_EQ", "type": "STOCK"},
+    ))
+    client.can_buy("AAPL")
+    uk_client.can_buy("MKS.L")
+    # Both clients fetched once; neither benefited from the other's cache.
+    assert client._session.get.call_count == 1
+    assert uk_client._session.get.call_count == 1
+
+
+# ---------------------------------------------------------------------------
 # Rate limiting: Retry-After parsing
 # ---------------------------------------------------------------------------
 
@@ -761,14 +894,22 @@ def test_throttle_first_call_no_sleep(client):
 
 
 def test_throttle_staggers_same_endpoint(client):
-    # Two rapid calls to the same endpoint: the second must sleep ~min_interval (5s).
-    with patch("switching.broker_trading212.time.monotonic", side_effect=[100.0, 100.0, 105.0]), \
+    """Two rapid calls to the same endpoint: the second must sleep ~min_interval.
+
+    /equity/positions is 1 req/s per T212's published rate-limit table —
+    refresh docs with `scripts/refresh_t212_docs.py` if it ever changes.
+    """
+    # monotonic() is called once per _throttle: once for the timestamp write
+    # on the first call (100.0), once for the elapsed check on the second
+    # call (100.3 — 0.3s passed), once for the timestamp write after sleep.
+    with patch("switching.broker_trading212.time.monotonic", side_effect=[100.0, 100.3, 100.3]), \
          patch("switching.broker_trading212.time.sleep") as msleep:
         client._throttle("/equity/positions")   # first — sets timestamp, no sleep
-        client._throttle("/equity/positions")   # second — must wait
+        client._throttle("/equity/positions")   # second — must wait ~0.7s
     msleep.assert_called_once()
     waited = msleep.call_args[0][0]
-    assert 4.9 <= waited <= 5.1
+    # /equity/positions = 1.0s min interval; we burned 0.3s, so ~0.7s expected.
+    assert 0.6 <= waited <= 0.8, f"expected ~0.7s wait, got {waited}"
 
 
 def test_throttle_per_endpoint_independent(client):

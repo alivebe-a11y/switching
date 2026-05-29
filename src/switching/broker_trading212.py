@@ -53,15 +53,25 @@ _LIVE_BASE = "https://live.trading212.com/api/v0"
 # ---------------------------------------------------------------------------
 # Client-side rate limiting
 # ---------------------------------------------------------------------------
-# T212's public API is rate-limited PER ENDPOINT and is much stricter than a
-# flat "10 req/s". We throttle each endpoint to a conservative minimum interval
-# so bursts (e.g. several position lookups in one buy cycle) get staggered
-# instead of fired at once. Verify the live numbers at docs.trading212.com —
-# these are deliberately conservative.
+# T212's public API is rate-limited PER ENDPOINT and PER ACCOUNT (not per key
+# or IP) — so the US + UK T212 services share one budget. The numbers below
+# are taken directly from the official skill manifest vendored at
+# docs/vendor/t212-api.md. We add a small ~+10% safety margin on the strict
+# endpoints to absorb scheduling jitter without crossing the line.
+#
+# When the limit changes upstream, `python scripts/refresh_t212_docs.py
+# --check` flags the diff and we update this table to match.
 _ENDPOINT_MIN_INTERVAL: dict[str, float] = {
-    "/equity/account/summary": 2.0,
-    "/equity/positions": 5.0,
-    "/equity/orders/market": 2.0,
+    # GETs
+    "/equity/account/summary":        5.0,    # 1 req/5s
+    "/equity/positions":              1.0,    # 1 req/1s
+    "/equity/metadata/instruments":  50.0,    # 1 req/50s (~5 MB response)
+    "/equity/metadata/exchanges":    30.0,    # 1 req/30s
+    # Orders — POSTs
+    "/equity/orders/market":          1.3,    # 50 req/min (~1.2s) + margin
+    "/equity/orders/limit":           2.0,    # 1 req/2s
+    "/equity/orders/stop":            2.0,    # 1 req/2s
+    "/equity/orders/stop_limit":      2.0,    # 1 req/2s
 }
 _DEFAULT_MIN_INTERVAL = 1.0      # any endpoint not listed above
 
@@ -69,6 +79,19 @@ _DEFAULT_MIN_INTERVAL = 1.0      # any endpoint not listed above
 # an escalating backoff. After this many retries we give up and raise.
 _MAX_RETRIES_429 = 4
 _DEFAULT_BACKOFF_SECONDS = 5.0
+
+# Catalogue cache TTL — the instruments endpoint is rate-limited to 1 req/50s
+# and returns ~5MB. New instruments appear infrequently, so a long cache is
+# safe. 1 hour gives the preflight check sub-millisecond lookups after a
+# single cold fetch.
+_INSTRUMENT_CACHE_TTL_SECONDS = 3600.0
+
+# Instrument types that T212's /equity/orders/* endpoints will accept. From
+# the catalogue field `type` documented in T212's skill manifest. We only
+# trade STOCK and ETF — everything else (CRYPTOCURRENCY / FUTURES / INDEX /
+# WARRANT / CVR / CORPACT) either isn't a real position the bot supports or
+# isn't orderable via the equity API (the CFD side is not exposed at all).
+_TRADEABLE_INSTRUMENT_TYPES = frozenset({"STOCK", "ETF"})
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +212,11 @@ class Trading212Client:
         self._session.headers.update({"Content-Type": "application/json"})
         # Per-endpoint last-call timestamps (monotonic) for client-side throttling
         self._last_call: dict[str, float] = {}
+        # Instrument-catalogue cache: (monotonic_timestamp, {t212_ticker: entry}).
+        # Populated lazily on first can_buy() / get_instrument_catalogue() call.
+        # Per-instance, so each service does ONE 5MB fetch per hour — fits the
+        # 1 req/50s endpoint limit comfortably for the two US+UK services.
+        self._instrument_cache: tuple[float, dict[str, dict]] | None = None
         # Never log the key itself — only mode, market, and base URL
         mode = "DEMO" if self.demo else "LIVE"
         log.info(
@@ -287,6 +315,99 @@ class Trading212Client:
             if pos.symbol == symbol.upper():
                 return pos
         return None
+
+    # ------------------------------------------------------------------
+    # Instrument catalogue (preflight tradability check)
+    # ------------------------------------------------------------------
+
+    def get_instrument_catalogue(self) -> dict[str, dict]:
+        """Return the full T212 catalogue keyed by ``ticker``.
+
+        Cached for ``_INSTRUMENT_CACHE_TTL_SECONDS`` (default 1h). The
+        catalogue is ~5MB / ~17k instruments and the endpoint is rate-limited
+        to 1 req/50s, so the cache is a hard requirement — we want to look
+        up every buy candidate against it without hitting T212 each time.
+
+        Failure modes (release-it: "preserve core service in degraded mode"):
+          - Network/HTTP error → log warning, return empty dict. Callers
+            using ``can_buy`` will then fail OPEN (allow the buy attempt),
+            which is the right default: better to attempt a real order and
+            learn from the order endpoint's response than to block trading
+            because the catalogue is briefly unreachable.
+          - Bad shape → same as above.
+        """
+        now = time.monotonic()
+        cache = self._instrument_cache
+        if cache is not None:
+            cached_at, by_ticker = cache
+            if now - cached_at < _INSTRUMENT_CACHE_TTL_SECONDS:
+                return by_ticker
+
+        log.info("T212[%s] fetching instrument catalogue (~5MB, cold cache)", self.market)
+        try:
+            data = self._get("/equity/metadata/instruments")
+        except Exception as exc:
+            log.warning(
+                "T212[%s] catalogue fetch failed (%s) — preflight checks "
+                "will fail OPEN until next retry",
+                self.market, exc,
+            )
+            return {}
+
+        items = data if isinstance(data, list) else data.get("instruments", [])
+        if not isinstance(items, list):
+            log.warning(
+                "T212[%s] catalogue returned unexpected shape %s — failing open",
+                self.market, type(items).__name__,
+            )
+            return {}
+
+        by_ticker: dict[str, dict] = {}
+        for entry in items:
+            if not isinstance(entry, dict):
+                continue
+            tkr = entry.get("ticker")
+            if isinstance(tkr, str) and tkr:
+                by_ticker[tkr.upper()] = entry
+
+        log.info(
+            "T212[%s] catalogue cached: %d instruments (TTL %.0fs)",
+            self.market, len(by_ticker), _INSTRUMENT_CACHE_TTL_SECONDS,
+        )
+        self._instrument_cache = (now, by_ticker)
+        return by_ticker
+
+    def can_buy(self, symbol: str) -> tuple[bool, str | None]:
+        """Preflight: is *symbol* orderable via this client's market?
+
+        Returns ``(True, None)`` if the resulting T212 instrument ID is in
+        the catalogue and has a tradeable ``type`` (STOCK or ETF). Returns
+        ``(False, reason)`` for anything we recognise as non-orderable —
+        the reason is suitable for a SKIP log + detection_funnel record.
+
+        Fails OPEN on catalogue-fetch failure (returns ``(True, None)``)
+        so a brief T212 outage can't grind buys to a halt; the order
+        endpoint becomes the final arbiter.
+        """
+        try:
+            t212_id = _to_t212_ticker(symbol, self.market)
+        except ValueError as exc:
+            # Bad ticker format — never going to work; surface and skip.
+            return False, f"invalid_ticker_format: {exc}"
+
+        catalogue = self.get_instrument_catalogue()
+        if not catalogue:
+            return True, None    # fail open — catalogue temporarily unavailable
+
+        entry = catalogue.get(t212_id)
+        if entry is None:
+            return False, f"not_in_t212_catalogue: {t212_id}"
+
+        itype = (entry.get("type") or "").upper()
+        if itype in _TRADEABLE_INSTRUMENT_TYPES:
+            return True, None
+
+        return False, f"t212_type_not_tradeable: {t212_id} type={itype or 'UNKNOWN'}"
 
     # ------------------------------------------------------------------
     # Orders
