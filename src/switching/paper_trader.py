@@ -1815,13 +1815,17 @@ def run_loop_t212(
 
             # Preflight: is this instrument actually orderable on T212? The
             # broker bulkhead + ticker mapping produce a syntactically valid
-            # T212 ID, but the catalogue / order endpoints can still disagree
-            # (e.g. CPI.L resolves to CPIL_EQ which IS in the catalogue but
-            # whose orderable form on T212 is CFD-only — not exposed via the
-            # equity API, so the order endpoint returns 404). The catalogue's
-            # `type` field is the documented preflight signal (STOCK/ETF are
-            # orderable; CORPACT/WARRANT/etc. are not). Fails OPEN on cache
-            # outage — see Trading212Client.can_buy.
+            # T212 ID, but it may still be non-orderable. This check catches
+            # TWO of the three buckets: (a) not in the catalogue at all, and
+            # (b) in the catalogue but a non-tradeable `type` (CORPACT /
+            # WARRANT / etc.) — `type` is the documented preflight signal,
+            # STOCK/ETF are orderable. It does NOT catch the third bucket:
+            # an instrument catalogued as STOCK whose only orderable form on
+            # T212 is CFD-only (the suspected CPI.L case) — can_buy() passes
+            # it and the order endpoint still 404s, now surfaced by the
+            # verbose error logging in _check_response. That residual is the
+            # deferred "persistent rejected-instruments list" roadmap item.
+            # Fails OPEN on catalogue-cache outage — see Trading212Client.can_buy.
             tradeable, reason = client.can_buy(sig.ticker)
             if not tradeable:
                 console.print(

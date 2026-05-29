@@ -11,7 +11,7 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `main`
-- **708 tests**, run with: `pytest tests/`
+- **752 tests**, run with: `pytest tests/`
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path (Dockge UI): `/Pool_1/Configs/dockge2/Stacks/stocks`
@@ -37,8 +37,10 @@ recreate all four services), **(4) tail logs**. No Dockge shell needed. Flags:
 `-Services dashboard` (subset), `-SkipPush`, `-SkipBackup` (emergency hotfix when the
 backup itself is broken — prints loud warning), `-Snapshot Pool_1/Configs` (also take a
 ZFS snapshot in the backup step), `-Force`, `-NoLogs`. Requires one-time
-`ssh-copy-id root@<truenas-ip>`. The launcher lives at `switch\deploy.ps1`; an identical
-version-controlled copy is in the repo at `scripts/deploy.ps1`.
+`ssh-copy-id root@<truenas-ip>`. **Single source of truth: `scripts/deploy.ps1`** (under
+git). The launcher at `switch\deploy.ps1` is a **thin shim** that just forwards its args
+to `switching\scripts\deploy.ps1`, so it can never go stale — there is no copy to keep in
+sync. Put ALL deploy logic in `scripts/deploy.ps1`; never add logic to the launcher shim.
 
 ### Deploy — on TrueNAS directly (fallback)
 From the Dockge stack dir:
@@ -605,16 +607,18 @@ Only these are in the spec — anything else (e.g. `404 InstrumentNotFound` we s
 
 **T212 client rate limiting (`broker_trading212.py`)**:
 - T212's API is rate-limited PER ENDPOINT (not a flat req/s). The client throttles
-  each endpoint to a conservative min interval (`_ENDPOINT_MIN_INTERVAL`: positions 5s,
-  account 2s, orders 2s) via `_throttle()` — bursts get staggered automatically, so the
-  loop doesn't have to manage spacing.
+  each endpoint to a conservative min interval (`_ENDPOINT_MIN_INTERVAL`: positions 1s,
+  account/summary 5s, orders/market 1.3s, limit/stop/stop_limit 2s, instruments 50s,
+  exchanges 30s; everything else `_DEFAULT_MIN_INTERVAL` 1s) via `_throttle()` — bursts
+  get staggered automatically, so the loop doesn't have to manage spacing. (These match
+  the cheat-sheet table above and are the source of truth in the code.)
 - HTTP 429 is retried with `Retry-After` (or escalating 5/10/15/20s backoff), up to
   `_MAX_RETRIES_429 = 4`, then raises `T212RateLimitError` (a `T212OrderError` subclass,
   so existing handlers still catch it). Previously a 429 silently dropped that cycle's
   exit checks.
 - Buy loop fetches `/equity/positions` ONCE after placing all orders (was one call per
   buy) to resolve fill prices — big reduction in burst calls on busy cycles.
-- Practical poll floor: ~10s (positions endpoint is 1/5s and the loop makes 2 calls/poll).
+- Practical poll floor: ~2s (positions endpoint is 1/1s and the loop makes 2 calls/poll).
   `_T212_EXIT_POLL_SECONDS = 60` has huge headroom; 15–30s is safe if tighter exits wanted.
 
 ### ADR-006: IBKR as broker (not Alpaca)
@@ -1104,7 +1108,7 @@ edge* from bullish-catalyst momentum. Worth trying on the paper trader, NOT a co
 Naturally pairs with the regime filter we need for the kill-switch anyway.
 
 ### Completed
-- [x] 13 detectors live: ai_pivot, earnings_surprise, buyback, activist_13d, insider_cluster, index_inclusion, spinoff, analyst_upgrade, fda_decision, mna_target, guidance_raise, dividend_surprise, contract_win
+- [x] 16 detectors live: ai_pivot, earnings_surprise, buyback, activist_13d, insider_cluster, index_inclusion, spinoff, analyst_upgrade, fda_decision, mna_target, guidance_raise, dividend_surprise, contract_win, stock_split, crypto_treasury, uk_director_dealing
 - [x] Paper trading on TrueNAS via Docker (Dockge), 10-minute scan interval
 - [x] Trade memory — per-detector/per-price-tier/per-exit-reason stats
 - [x] Haiku AI scoring (log-only mode, $0.30/month)

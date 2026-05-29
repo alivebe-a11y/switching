@@ -266,7 +266,7 @@ def paper_trade(
     seed_cash: float = typer.Option(1000.0, "--seed", help="Starting cash."),
     detectors: list[str] = typer.Option(
         None, "--detector", "-d",
-        help="Detector(s) to trade. Omit for recommended set (excludes spinoff).",
+        help="Detector(s) to trade. Omit for the recommended US set (_DEFAULT_DETECTORS).",
     ),
     stop_loss: float = typer.Option(0.05, "--stop-loss", help="Stop-loss fraction (e.g. 0.05 = 5%)."),
     hold_days: int = typer.Option(5, "--hold-days", help="Max hold window in trading days."),
