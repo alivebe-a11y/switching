@@ -121,15 +121,27 @@ if ($SkipPush) {
     Write-Host ""
     Write-Host "[2/4] Checking GitHub sync state..." -ForegroundColor Cyan
 
-    # Check for uncommitted local changes
-    $dirty = git -C $RepoDir status --porcelain
-    if ($dirty -and -not $Force) {
-        Write-Host "Uncommitted changes detected:" -ForegroundColor Yellow
-        git -C $RepoDir status --short
+    # Uncommitted-change gate. Distinguish TRACKED modifications (real work a
+    # GitHub deploy would silently leave behind) from UNTRACKED files (local-only
+    # noise like .claude/ or scratch files - never part of a commit, so they must
+    # NOT block a deploy). Only tracked changes abort.
+    $trackedDirty = git -C $RepoDir status --porcelain --untracked-files=no
+    if ($trackedDirty -and -not $Force) {
+        Write-Host "Uncommitted changes to TRACKED files detected:" -ForegroundColor Yellow
+        git -C $RepoDir status --short --untracked-files=no
         throw "Commit your changes first - a GitHub deploy only ships PUSHED commits. Re-run with -Force to deploy the last pushed commit anyway."
     }
-    if ($dirty -and $Force) {
-        Write-Host "  -Force: uncommitted changes above will NOT ship; deploying last commit." -ForegroundColor Yellow
+    if ($trackedDirty -and $Force) {
+        Write-Host "  -Force: tracked changes above will NOT ship; deploying last commit." -ForegroundColor Yellow
+    }
+
+    # Untracked files are informational only - they never ship (not committed),
+    # so a permanent local folder (.claude/, etc.) won't block future deploys.
+    $untracked = @(git -C $RepoDir ls-files --others --exclude-standard)
+    if ($untracked.Count -gt 0) {
+        Write-Host "  Note: $($untracked.Count) untracked file(s) present - these will not ship (not committed):" -ForegroundColor Gray
+        $untracked | Select-Object -First 5 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        if ($untracked.Count -gt 5) { Write-Host "    ... and $($untracked.Count - 5) more" -ForegroundColor DarkGray }
     }
 
     # Fetch remote state so we can compare accurately
