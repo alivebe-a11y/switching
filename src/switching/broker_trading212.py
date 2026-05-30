@@ -117,6 +117,19 @@ def currency_symbol(code: str | None) -> str:
     return _CURRENCY_SYMBOLS.get((code or "").upper(), code or "$")
 
 
+def _to_major_units(price: float, market: str) -> float:
+    """Convert a T212 instrument price to its MAJOR currency unit.
+
+    T212 quotes LSE (UK) instruments in GBX (pence) — the same convention as
+    yfinance — so divide by 100 to get GBP. Doing this once at the broker
+    boundary means every downstream consumer (position sizing, stored entry/
+    exit prices, the dashboard's cached prices, ghost-reconciliation P&L) works
+    in major units, exactly like the internal paper trader's `_normalise_price`.
+    US prices are already in their major unit (USD) and pass through untouched.
+    """
+    return price / 100.0 if (market or "").lower() == "uk" else price
+
+
 @dataclass
 class T212Position:
     """A single open position returned by the positions endpoint."""
@@ -288,7 +301,16 @@ class Trading212Client:
             # P&L is nested: item["walletImpact"]["unrealizedProfitLoss"]
             wallet = item.get("walletImpact") or {}
             ppl = _safe_float(wallet.get("unrealizedProfitLoss"))
+            # pnl_pct from RAW prices — a ratio, so unit-invariant (pence or
+            # major, the % is the same). Compute it BEFORE converting units.
             pnl_pct = (cur - avg) / avg if avg > 0 else 0.0
+            # Convert GBX (pence) -> GBP for UK so callers see major units.
+            avg = _to_major_units(avg, self.market)
+            cur = _to_major_units(cur, self.market)
+            log.debug(
+                "T212[%s] position %s qty=%.4f avg=%.4f cur=%.4f ppl=%.2f pct=%+.4f",
+                self.market, symbol, qty, avg, cur, ppl, pnl_pct,
+            )
             result.append(T212Position(
                 symbol=symbol,
                 t212_ticker=t212_ticker,
@@ -428,9 +450,14 @@ class Trading212Client:
         if qty < 0.0001:
             raise T212OrderError(f"Quantity too small to buy: {qty} {symbol}")
         payload = {"ticker": t212_ticker, "quantity": qty}
-        log.info("T212[%s] BUY %s qty=%.4f", self.market, t212_ticker, qty)
+        log.info("T212[%s] BUY submit %s qty=%.4f", self.market, t212_ticker, qty)
         data = self._post("/equity/orders/market", payload)
-        return _parse_order(data, t212_ticker)
+        order = _parse_order(data, t212_ticker)
+        log.info(
+            "T212[%s] BUY accepted %s id=%s status=%s",
+            self.market, t212_ticker, order.id, order.status,
+        )
+        return order
 
     def sell_all(self, symbol: str, quantity: float) -> T212Order:
         """Place a market sell order liquidating the full position.
@@ -449,9 +476,14 @@ class Trading212Client:
         if qty < 0.0001:
             raise T212OrderError(f"Quantity too small to sell: {qty} {symbol}")
         payload = {"ticker": t212_ticker, "quantity": -qty}
-        log.info("T212[%s] SELL %s qty=%.4f", self.market, t212_ticker, qty)
+        log.info("T212[%s] SELL submit %s qty=%.4f", self.market, t212_ticker, qty)
         data = self._post("/equity/orders/market", payload)
-        return _parse_order(data, t212_ticker)
+        order = _parse_order(data, t212_ticker)
+        log.info(
+            "T212[%s] SELL accepted %s id=%s status=%s",
+            self.market, t212_ticker, order.id, order.status,
+        )
+        return order
 
     # ------------------------------------------------------------------
     # Market hours

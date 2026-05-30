@@ -6,8 +6,8 @@ next-day open with detector-specific exit profiles.
 
 `switching` is built around a pluggable detector framework:
 
-1. **Scans** public data sources (press-release RSS, SEC filings) for events
-   matching registered **detectors** (13 live),
+1. **Scans** public data sources (press-release RSS, SEC filings, UK RNS) for events
+   matching registered **detectors** (16 live),
 2. **Scores** each signal with regex classifiers + optional Claude Haiku AI scoring,
 3. **Paper-trades** automatically with tiered stop-losses and first-green exits, and
 4. **Backtests** detectors against curated historical events for win rate validation.
@@ -17,7 +17,7 @@ next-day open with detector-specific exit profiles.
 
 ## Detectors
 
-13 detectors live, each plugging into the same scan/score/trade pipeline:
+16 detectors live, each plugging into the same scan/score/trade pipeline:
 
 | Detector | Source | Thesis |
 |---|---|---|
@@ -32,8 +32,11 @@ next-day open with detector-specific exit profiles.
 | `index_inclusion` | RSS default + corporate | S&P 500 / Russell 1000 additions |
 | `spinoff` | RSS default + corporate | Spinoffs, split-offs, carve-outs |
 | `ai_pivot` | RSS default | AI rebrands and pivots |
-| `activist_13d` | SEC EDGAR (13D) | Activist investor 5%+ stakes |
-| `insider_cluster` | SEC EDGAR (Form 4) | ≥3 insiders buying within 30 days |
+| `stock_split` | RSS default + corporate | Forward split announcements (pre-split run-up) |
+| `crypto_treasury` | RSS default + corporate | Bitcoin/crypto treasury adoption (MicroStrategy pattern) |
+| `activist_13d` | SEC EDGAR (13D) | Activist investor 5%+ stakes (US only) |
+| `insider_cluster` | SEC EDGAR (Form 4) | ≥3 insiders buying within 30 days (US only) |
+| `uk_director_dealing` | UK RNS (Investegate) | PDMR / director share dealings (UK only) |
 
 Each detector is a single file under `src/switching/detectors/`. The shared
 framework handles RSS fetching, ticker resolution, price correlation,
@@ -49,7 +52,7 @@ pip install -e .
 ## CLI
 
 ```bash
-# List all 13 registered detectors.
+# List all 16 registered detectors.
 switching list-detectors
 
 # Scan the last 7 days across all detectors; write JSON + CSV.
@@ -91,7 +94,7 @@ Backtest — ai_pivot (hold=5d, events=10, trades=10)
 ```
 ┌─────────────┐   ┌──────────────┐   ┌──────────────────┐   ┌──────────────┐
 │  Detectors  │ → │  Signal[]    │ → │ Price correlator │ → │ Reporter     │
-│ (13 live)   │   │ (dataclass)  │   │   (yfinance)     │   │ CLI/JSON/CSV │
+│ (16 live)   │   │ (dataclass)  │   │   (yfinance)     │   │ CLI/JSON/CSV │
 └─────────────┘   └──────────────┘   └──────────────────┘   └──────────────┘
        │                                    │
        │             ┌──────────────────────┘
@@ -174,7 +177,7 @@ Required environment variables in Dockge `.env`:
 pytest
 ```
 
-319 tests, all offline — pricing, backtest, RSS, and EDGAR tests use in-memory
+752 tests, all offline — pricing, backtest, RSS, and EDGAR tests use in-memory
 fixtures. Live yfinance / RSS / SEC calls only happen when running
 `switching scan`, `switching backtest`, or `switching paper-trade` against
 real data.

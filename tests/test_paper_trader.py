@@ -18,6 +18,7 @@ from switching.paper_trader import (
     _calendar_days_since,
     _exit_profile,
     _MAX_SINGLE_POSITION_PCT,
+    _check_peak_exits_only,
     _make_edgar_client,
     _minutes_since,
     _position_weight,
@@ -746,6 +747,51 @@ class TestRideMode:
             closed = check_exits(p)
         assert closed == []
         assert len(p.positions) == 1
+
+
+class TestPeakPollUKNormalisation:
+    """`_check_peak_exits_only` must normalise UK (GBX/pence) prices to GBP
+    before the trailing-stop maths. `get_current_price` returns raw yfinance
+    pence for LSE tickers, while `peak_price`/`entry_price` are stored in GBP.
+    Regression: without normalisation the pence price clobbered the GBP peak
+    (~100x), recording a ~+9000% phantom trade or force-closing next cycle.
+    """
+
+    def test_uk_peak_exit_normalises_pence(self):
+        # Entry £4.00, peak £4.30 (both GBP). yfinance returns 425.0 pence
+        # (= £4.25), which is 1.16% below the £4.30 peak -> trailing exit.
+        pos = _make_position(
+            datetime.now(tz=timezone.utc) - timedelta(days=1),
+            ticker="VOD.L", detector="mna_target", entry_price=4.0,
+            shares=10.0, peak_tracking=True, peak_price=4.30,
+        )
+        p = Portfolio(cash=100.0, positions=[pos])
+        with patch("switching.paper_trader.get_current_price", return_value=425.0):
+            closed = _check_peak_exits_only(p, market="uk")
+        assert len(closed) == 1
+        t = closed[0]
+        assert t.exit_reason == "peak_trailing"
+        # Exit price is GBP (~£4.25), NOT raw pence (425) -> no 100x blow-up.
+        assert t.exit_price == pytest.approx(4.25, abs=0.01)
+        # Return is a sane single-digit %, not ~+10,000%.
+        assert t.pct_return == pytest.approx(0.0625, abs=0.001)
+
+    def test_uk_peak_updates_in_gbp_no_exit(self):
+        # Price ticks UP to £4.40 (440 pence), a new high above the £4.30 peak,
+        # so it keeps riding. Critically the peak must update to £4.40 (GBP),
+        # NOT 440 (pence) — the pre-fix bug clobbered it to the raw pence value.
+        pos = _make_position(
+            datetime.now(tz=timezone.utc) - timedelta(days=1),
+            ticker="VOD.L", detector="mna_target", entry_price=4.0,
+            shares=10.0, peak_tracking=True, peak_price=4.30,
+        )
+        p = Portfolio(cash=100.0, positions=[pos])
+        with patch("switching.paper_trader.get_current_price", return_value=440.0):
+            closed = _check_peak_exits_only(p, market="uk")
+        assert closed == []
+        assert len(p.positions) == 1
+        # New peak is in GBP units (£4.40), never clobbered to 440 pence.
+        assert p.positions[0].peak_price == pytest.approx(4.40, abs=0.01)
 
 
 class TestRichMarkupEscapedExceptions:

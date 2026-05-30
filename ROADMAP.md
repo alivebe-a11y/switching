@@ -1,15 +1,27 @@
 # Switching — Roadmap
 
 ## Current Status
-- 13 detectors live (ai_pivot, earnings_surprise, buyback, activist_13d, insider_cluster, index_inclusion, spinoff, analyst_upgrade, fda_decision, mna_target, guidance_raise, dividend_surprise, contract_win)
-- Paper trading on TrueNAS via Docker (Dockge), 10-minute scan interval, $20K seed, $200/trade, unlimited positions
+- 16 detectors live (ai_pivot, earnings_surprise, buyback, activist_13d, insider_cluster,
+  index_inclusion, spinoff, analyst_upgrade, fda_decision, mna_target, guidance_raise,
+  dividend_surprise, contract_win, stock_split, crypto_treasury, uk_director_dealing)
+- Five services on TrueNAS via Docker (Dockge), all on one shared image:
+  US paper, UK (LSE) paper, US T212 demo, UK T212 demo, Flask dashboard
+- SQLite storage (`switching.db`, WAL, service-tagged us/uk/t212/t212_uk) — services share
+  one file without collision; auto-migrated from the legacy per-service JSON
+- 10-minute scan interval (1-min fast-scan for the first 15 min after open); T212 exits
+  poll every 60s
+- Conviction-weighted position sizing (guidance_raise ×7, etc.); 1.5% base, 12% per-position cap
+- Ride-mode (peak-trailing) exits for momentum detectors (ai_pivot, mna_target)
+- Out-of-hours signal queue — drains back into the buy pipeline at next market open
 - Trade memory + Haiku AI scoring (log-only)
-- Telegram notifications: buys batched 2h, sells/stops immediate, daily summary at close
+- Telegram notifications: market-tagged (US / LSE / T212), buys batched 2h, sells/stops
+  immediate, daily summary at close, Saturday weekly report
 - 2.6% tiered stop-loss, detector-specific exit profiles
-- Flask web dashboard reads cached prices from portfolio JSON (no live yfinance polling)
-- SEC EDGAR integration (13D filings, Form 4)
-- Post-exit price tracker (20 days) for detector refinement
-- 309 tests passing
+- Flask web dashboard reads cached prices from SQLite (no live yfinance polling)
+- SEC EDGAR integration (13D filings, Form 4); UK ingestion via Investegate RNS scrape
+  + Google News fallback
+- Post-exit price tracker (20 days) + skipped-signal tracker + detection funnel
+- 752 tests passing
 
 ## Phase 1 — Prove the Strategy (Now → Month 3)
 - [ ] Collect 50+ live trades with AI scores attached
@@ -76,7 +88,7 @@
 - [ ] day_trading — intraday momentum signals (separate project likely)
 
 ## Completed
-- [x] 13 detectors built and registered with seed data and tests
+- [x] 16 detectors built and registered with seed data and tests
 - [x] Paper trading engine with $1K simulated portfolio
 - [x] Trade memory (Phase 1) — per-detector/per-price-tier/per-exit-reason stats
 - [x] Haiku AI signal scoring (log-only mode)
@@ -91,7 +103,7 @@
 - [x] fda_decision detector (was FDA_approval idea — now built)
 - [x] Diagnostic logging: all 11 RSS detectors log items/classified/with_ticker per scan
 - [x] SEC company-name-to-ticker fallback — extract_ticker() now resolves company names via SEC data
-- [x] 319 tests passing
+- [x] 752 tests passing
 - [x] Post-exit price tracker — 20-day post-close monitoring for detector refinement
 - [x] Dashboard "Post-Exit Tracker" panel with per-detector insights and left-on-table metrics
 - [x] Telegram buy notifications batched every 2 hours (digest format) — sells/stops still immediate

@@ -370,11 +370,15 @@ def _drain_pending_orders(
     return drained
 
 
-def _record_t212_skip(skipped_tracker, sig, reason: str, base_stop: float, price: float | None = None) -> None:
+def _record_t212_skip(skipped_tracker, sig, reason: str, base_stop: float, price: float | None = None, market: str = "us") -> None:
     """Record a skipped T212 signal for would-have-been P&L analysis.
 
     Mirrors the internal paper trader's skipped-signal tracking so T212's
-    opportunity cost (max-positions / low-cash skips) is measured too.
+    opportunity cost (max-positions / low-cash skips) is measured too. The
+    would-have-been sim runs on yfinance prices (``get_intraday_data``), so the
+    stored ``price`` stays in raw yfinance units (GBX/pence for UK) — exactly
+    like the paper loop — and ``market`` is only threaded into the tiered-stop
+    tier selection so a UK penny stock gets the right (wider) stop band.
     """
     if price is None:
         price = get_current_price(sig.ticker)
@@ -391,7 +395,7 @@ def _record_t212_skip(skipped_tracker, sig, reason: str, base_stop: float, price
         hold_days=profile["hold_days"],
         first_green=profile.get("first_green", True),
         first_green_pct=profile.get("first_green_pct", 0.0),
-        stop_loss_pct=_tiered_stop_loss(base_stop, price) + profile.get("stop_loss_extra", 0.0),
+        stop_loss_pct=_tiered_stop_loss(base_stop, price, market) + profile.get("stop_loss_extra", 0.0),
     )
 
 
@@ -592,7 +596,10 @@ def open_position(
     portfolio.cash -= cost
 
     profile = _exit_profile(signal.detector, effective_price)
-    actual_sl = _tiered_stop_loss(stop_loss, effective_price, market) + profile.get("stop_loss_extra", 0.0)
+    # effective_price is ALREADY normalised to GBP above, so do NOT pass market
+    # here (that would normalise a second time and mis-tier UK large-caps as
+    # penny stocks — a £40 share became £0.40 -> base+2% instead of base).
+    actual_sl = _tiered_stop_loss(stop_loss, effective_price) + profile.get("stop_loss_extra", 0.0)
 
     pos = Position(
         ticker=signal.ticker,
@@ -776,9 +783,15 @@ def scan_for_signals(
     return signals
 
 
-def _check_peak_exits_only(portfolio: Portfolio) -> list[ClosedTrade]:
+def _check_peak_exits_only(portfolio: Portfolio, market: str = "us") -> list[ClosedTrade]:
     """Check ONLY peak-tracking positions for the 0.5%-drop trailing exit.
     Never touches non-peak positions.
+
+    ``market`` is required so UK prices are normalised to GBP before being
+    compared with ``peak_price``/``entry_price`` (which are stored in GBP).
+    ``get_current_price`` returns raw yfinance values — pence (GBX) for LSE —
+    so without this the pence price would clobber the GBP peak (~100x), either
+    recording a ~+9000% phantom trade or force-closing the position next cycle.
     """
     closed: list[ClosedTrade] = []
     remaining: list[Position] = []
@@ -790,6 +803,7 @@ def _check_peak_exits_only(portfolio: Portfolio) -> list[ClosedTrade]:
         if price is None:
             remaining.append(pos)
             continue
+        price = _normalise_price(price, market)
         if price > pos.peak_price:
             pos.peak_price = price
         drop = (pos.peak_price - price) / pos.peak_price if pos.peak_price > 0 else 0
@@ -827,16 +841,20 @@ def _poll_peak_positions(
     exit_tracker,
     tracker_path: Path,
     state_path: Path,
+    market: str = "us",
 ) -> None:
     """1-second poll loop for peak-tracking positions only.
     Runs until `until` (epoch time) or all peak-tracking positions have exited.
+
+    ``market`` is threaded into ``_check_peak_exits_only`` so UK (GBX) prices
+    are normalised to GBP before the trailing-stop maths.
     """
     import time as _time
     while _time.time() < until:
         if not any(p.peak_tracking for p in portfolio.positions):
             break
         _time.sleep(1)
-        closed = _check_peak_exits_only(portfolio)
+        closed = _check_peak_exits_only(portfolio, market=market)
         for t in closed:
             notifications.notify_sell(
                 ticker=t.ticker,
@@ -1226,6 +1244,7 @@ def run_loop(
                 exit_tracker=exit_tracker,
                 tracker_path=tracker_path,
                 state_path=state_path,
+                market=market,
             )
         remaining = next_scan_at - time.time()
         if remaining > 0:
@@ -1532,14 +1551,21 @@ def run_loop_t212(
             time.sleep(_T212_EXIT_POLL_SECONDS)
             continue
 
-        # Use the actual T212 account currency (e.g. GBP for UK demo) for
-        # account-level + pnl values. Per-position stock prices stay $ since
-        # they're quoted in the instrument's currency (USD for US tickers).
+        # Use the actual T212 account currency (e.g. GBP for UK demo) for ALL
+        # money values. Per-position prices are normalised to their major unit
+        # at the broker boundary (GBX->GBP for UK), so they share the same
+        # symbol now (US prices were already USD major).
         from switching.broker_trading212 import currency_symbol
         cs = currency_symbol(acct.currency)
         console.print(
             f"Free: {cs}{acct.free:.2f} | Invested: {cs}{acct.invested:.2f} | "
             f"Total: {cs}{acct.total:.2f} | P&L: {cs}{acct.ppl:+.2f}"
+        )
+        # Structured per-poll heartbeat — a greppable anchor (market-tagged) for
+        # diagnosing the loop after the fact without parsing Rich console output.
+        log.info(
+            "T212[%s] poll account: free=%.2f invested=%.2f total=%.2f ppl=%+.2f ccy=%s",
+            market, acct.free, acct.invested, acct.total, acct.ppl, acct.currency,
         )
 
         # ----------------------------------------------------------------
@@ -1560,7 +1586,7 @@ def run_loop_t212(
             for sym, tp in t212_map.items():
                 color = "green" if tp.unrealized_pnl_pct >= 0 else "red"
                 console.print(
-                    f"    {sym}: {tp.quantity:.4f} @ ${tp.avg_entry_price:.2f} "
+                    f"    {sym}: {tp.quantity:.4f} @ {cs}{tp.avg_entry_price:.2f} "
                     f"[{color}]{tp.unrealized_pnl_pct*100:+.1f}% "
                     f"({cs}{tp.unrealized_pnl:+.2f})[/{color}]"
                 )
@@ -1644,6 +1670,18 @@ def run_loop_t212(
             first_green = profile.get("first_green", True)
             first_green_pct = profile.get("first_green_pct", 0.0)
             max_hold = profile.get("hold_days", hold_days)
+            # Ride-mode / peak-tracking — mirrors check_exits() so the T212
+            # execution layer rides momentum detectors (ai_pivot, mna_target)
+            # the SAME way the internal paper trader does. Without this the
+            # T212 loop took the small first-green win while paper rode to the
+            # peak, making the paper-vs-T212 slippage comparison invalid for
+            # exactly the detectors where it matters most. Peak state lives on
+            # the local tracker (persists with the portfolio); price tracking
+            # uses tp.current_price (T212's own feed) so it's unit-consistent
+            # with ret/peak_price regardless of the account currency.
+            ride = profile.get("ride", False)
+            trail_pct = profile.get("trail_pct", 0.005)
+            cur_price = tp.current_price
 
             should_sell = False
             reason = ""
@@ -1651,12 +1689,34 @@ def run_loop_t212(
             if ret <= -effective_sl:
                 should_sell = True
                 reason = "stop_loss"
-            elif first_green and ret >= first_green_pct:
-                should_sell = True
-                reason = "first_green"
-            elif not first_green and days >= max_hold:
-                should_sell = True
-                reason = "hold_expiry"
+            elif tracker and tracker.peak_tracking:
+                # Already riding: trail the peak, with a hold-days backstop so
+                # we don't ride indefinitely.
+                if cur_price > tracker.peak_price:
+                    tracker.peak_price = cur_price
+                drop_from_peak = (
+                    (tracker.peak_price - cur_price) / tracker.peak_price
+                    if tracker.peak_price > 0 else 0.0
+                )
+                if drop_from_peak >= trail_pct:
+                    should_sell = True
+                    reason = "peak_trailing"
+                elif days >= max_hold:
+                    should_sell = True
+                    reason = "hold_expiry"
+            elif tracker and first_green and ret >= 0.08 and days == 0:
+                # Day-0 spike (+8%): flip into peak-tracking instead of holding
+                # to first_green (same as the internal paper trader).
+                tracker.peak_tracking = True
+                tracker.peak_price = cur_price
+            elif first_green and ret >= first_green_pct and days >= 1:
+                if ride and tracker:
+                    # Ride toward the peak instead of taking the small win.
+                    tracker.peak_tracking = True
+                    tracker.peak_price = cur_price
+                else:
+                    should_sell = True
+                    reason = "first_green"
             elif days >= max_hold:
                 should_sell = True
                 reason = "hold_expiry"
@@ -1697,7 +1757,7 @@ def run_loop_t212(
                 if tracker:
                     tracker.days_held = days
                 console.print(
-                    f"    {sym}: {tp.quantity:.4f} @ ${tp.avg_entry_price:.2f} "
+                    f"    {sym}: {tp.quantity:.4f} @ {cs}{tp.avg_entry_price:.2f} "
                     f"[{color}]{ret*100:+.1f}%[/{color}] day {days}/{max_hold}"
                 )
 
@@ -1809,7 +1869,7 @@ def run_loop_t212(
 
             if max_positions > 0 and active_count >= max_positions:
                 console.print(f"  [dim]SKIP {sig.ticker}: max positions ({max_positions})[/dim]")
-                _record_t212_skip(skipped_tracker, sig, "max_positions", stop_loss)
+                _record_t212_skip(skipped_tracker, sig, "max_positions", stop_loss, market=market)
                 _mark_seen(portfolio.seen_signals, key)
                 continue
 
@@ -1851,11 +1911,24 @@ def run_loop_t212(
             alloc = min(alloc, acct.free, acct.total * _MAX_SINGLE_POSITION_PCT)
             if alloc < 1.0:
                 console.print(f"  [yellow]SKIP {sig.ticker}: insufficient buying power ({cs}{acct.free:.2f})[/yellow]")
-                _record_t212_skip(skipped_tracker, sig, "insufficient_cash", stop_loss, price=price)
+                _record_t212_skip(skipped_tracker, sig, "insufficient_cash", stop_loss, price=price, market=market)
                 _mark_seen(portfolio.seen_signals, key)
                 continue
 
-            quantity = alloc / price
+            # alloc is in the account's currency (GBP on the demo); `price` must
+            # be in the SAME currency before dividing or the share count is off
+            # by the price's currency factor. UK (LSE) yfinance prices are
+            # GBX/pence -> normalise to GBP first. This was the ~100x-too-few-
+            # shares bug for UK. (US prices are USD; the residual GBP-account /
+            # USD-price FX gap is a smaller, separate issue — see CLAUDE.md.)
+            price_acct = _normalise_price(price, market)
+            quantity = alloc / price_acct
+            log.info(
+                "T212[%s] SIZE %s: alloc=%s%.2f price_raw=%.4f price_norm=%.4f "
+                "weight=%.1f -> qty=%.4f (free=%s%.2f total=%s%.2f)",
+                market, sig.ticker, cs, alloc, price, price_acct, weight,
+                quantity, cs, acct.free, cs, acct.total,
+            )
 
             try:
                 order = client.buy_market(sig.ticker, quantity)
@@ -1866,7 +1939,9 @@ def run_loop_t212(
                 )
                 # Defer the fill-price lookup — collect now, fetch positions ONCE
                 # after all orders so we don't fire a /equity/positions call per buy.
-                pending_buys.append((sig, price, quantity))
+                # Store the NORMALISED price as the fallback fill so it's already
+                # in major units (consistent with the broker-normalised tp prices).
+                pending_buys.append((sig, price_acct, quantity))
                 held_symbols.add(sig.ticker)
                 active_count += 1
                 _mark_seen(portfolio.seen_signals, key)
@@ -1896,6 +1971,9 @@ def run_loop_t212(
                 fills = {}
             for sig, fb_price, fb_qty in pending_buys:
                 tp = fills.get(sig.ticker)
+                # Both branches are now in major units: tp.avg_entry_price is
+                # broker-normalised (GBP for UK), and fb_price was normalised
+                # before being queued — so no per-call market arg is needed.
                 actual_price = tp.avg_entry_price if tp else fb_price
                 qty = tp.quantity if tp else fb_qty
                 profile = _exit_profile(sig.detector, actual_price)

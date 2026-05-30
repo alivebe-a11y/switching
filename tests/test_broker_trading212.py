@@ -358,6 +358,35 @@ def test_get_positions_paginated_format(client):
     assert positions[0].symbol == "MSFT"
 
 
+def test_get_positions_uk_normalises_gbx_to_gbp(uk_client):
+    """T212 quotes LSE instruments in GBX (pence); the UK client must convert
+    avg/current to GBP (major units) so downstream sizing, stored prices, and
+    the dashboard work in pounds. P&L (account currency) and the % return are
+    unaffected (a ratio is unit-invariant)."""
+    uk_client._session.get.return_value = _mock_response([
+        _make_position_item("VODL_EQ", 100.0, 80.0, 90.0, 10.0)  # 80p, 90p
+    ])
+    positions = uk_client.get_positions()
+    assert len(positions) == 1
+    p = positions[0]
+    assert p.symbol == "VOD.L"
+    assert p.avg_entry_price == pytest.approx(0.80)   # 80p -> £0.80
+    assert p.current_price == pytest.approx(0.90)     # 90p -> £0.90
+    assert p.unrealized_pnl == 10.0                    # account ccy, unchanged
+    assert p.unrealized_pnl_pct == pytest.approx((90 - 80) / 80)  # ratio invariant
+
+
+def test_get_positions_us_prices_unchanged(client):
+    """US prices are already in their major unit (USD) and must pass through
+    the boundary untouched (regression guard for the UK GBX conversion)."""
+    client._session.get.return_value = _mock_response([
+        _make_position_item("AAPL_US_EQ", 5.0, 180.0, 190.0, 50.0)
+    ])
+    p = client.get_positions()[0]
+    assert p.avg_entry_price == 180.0
+    assert p.current_price == 190.0
+
+
 def test_get_positions_empty(client):
     client._session.get.return_value = _mock_response([])
     assert client.get_positions() == []
