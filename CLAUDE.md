@@ -11,7 +11,17 @@ Ltd company structure at 25% corp tax being evaluated vs 40% personal rate.
 ## Repository
 - **GitHub**: `alivebe-a11y/switching` (PUBLIC repo — no secrets)
 - **Branch**: `main`
-- **752 tests**, run with: `pytest tests/`
+- **766 tests**, run with: `pytest tests/`
+
+> ⚠️ **WORKING DIRECTORY GOTCHA (read before any `git`/`pytest`).** The git repo
+> lives in the **`switching/` subfolder**, NOT the shell's default cwd. The
+> default cwd is the parent `…\switch` folder (it holds only the `deploy.ps1`
+> launcher + the `switching/` checkout) and is **not a git repository** — running
+> `git add/commit/log` there fails with *"fatal: not a git repository"*.
+> **Always operate inside the repo**: prefix shell calls with
+> `cd /c/Users/berna/Desktop/switch/switching && …` (or use `git -C
+> /c/Users/berna/Desktop/switch/switching …`). This bit a commit once; don't
+> repeat it.
 
 ## Deployment (TrueNAS via Dockge)
 - Stack path (Dockge UI): `/Pool_1/Configs/dockge2/Stacks/stocks`
