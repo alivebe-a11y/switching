@@ -55,6 +55,44 @@ def _config() -> tuple[str, str] | None:
     return token, chat_id
 
 
+def _html_to_plain(text: str) -> str:
+    """Strip HTML tags and unescape entities for a plain-text fallback send."""
+    import html
+    import re
+    return html.unescape(re.sub(r"<[^>]+>", "", text))
+
+
+def _post_message(token: str, chat_id: str, text: str, parse_mode: str | None) -> tuple[bool, int | None]:
+    """POST a single message. Returns (ok, http_status).
+
+    http_status is the HTTP code on an HTTPError (so the caller can react to a
+    400), or None for non-HTTP failures (network/timeout).
+    """
+    body: dict[str, Any] = {
+        "chat_id": chat_id,
+        "text": text,
+        "disable_web_page_preview": True,
+    }
+    if parse_mode:
+        body["parse_mode"] = parse_mode
+    payload = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        f"{_API_BASE.format(token=token)}/sendMessage",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status == 200, resp.status
+    except urllib.error.HTTPError as exc:
+        log.warning("Telegram send failed: HTTP %s %s", exc.code, exc.reason)
+        return False, exc.code
+    except Exception as exc:
+        log.warning("Telegram send failed: %s", exc)
+        return False, None
+
+
 def _send(text: str, parse_mode: str = "HTML") -> bool:
     cfg = _config()
     if cfg is None:
@@ -62,25 +100,19 @@ def _send(text: str, parse_mode: str = "HTML") -> bool:
     token, chat_id = cfg
     if _MARKET_PREFIX:
         text = f"<b>[{_MARKET_PREFIX}]</b>\n{text}"
-    url = f"{_API_BASE.format(token=token)}/sendMessage"
-    payload = json.dumps({
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": parse_mode,
-        "disable_web_page_preview": True,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status == 200
-    except Exception as exc:
-        log.warning("Telegram send failed: %s", exc)
-        return False
+    ok, status = _post_message(token, chat_id, text, parse_mode)
+    if ok:
+        return True
+    # HTTP 400 from Telegram in HTML mode almost always means a malformed entity
+    # — a bare '&', '<' or '>' in dynamic text (e.g. "P&L", or a headline like
+    # "Marks & Spencer raises guidance"). Rather than silently drop the message,
+    # degrade to PLAIN TEXT (tags stripped, entities unescaped, no parse_mode) so
+    # delivery still succeeds. Release-it: degrade, don't drop.
+    if status == 400 and parse_mode:
+        log.info("Telegram: retrying as plain text after HTTP 400 (likely bad HTML entity)")
+        ok, _ = _post_message(token, chat_id, _html_to_plain(text), parse_mode=None)
+        return ok
+    return False
 
 
 def notify_text(text: str) -> None:

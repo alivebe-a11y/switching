@@ -264,7 +264,7 @@ def _generate_suggestions(
         if abs(diff) > 50:
             leader = "T212" if diff > 0 else "Paper"
             suggestions.append(
-                f"💱 {leader} is ahead by ${abs(diff):.2f} total P&L — "
+                f"💱 {leader} is ahead by ${abs(diff):.2f} total P&amp;L — "
                 f"{'real fills are better' if diff > 0 else 'theoretical yfinance fills are better, check for adverse T212 execution'}"
             )
 
@@ -431,7 +431,7 @@ def generate_report(state_dir: Path) -> tuple[list[str], dict]:
         (
             f"All-time: {paper_all_stats['count']} trades, "
             f"{paper_all_stats['win_rate']*100:.0f}% WR, "
-            f"${paper_all_stats['total_pnl']:+,.2f} P&L"
+            f"${paper_all_stats['total_pnl']:+,.2f} P&amp;L"
         ),
         "",
         f"📆 <b>This week ({len(paper_week)} trades)</b>",
@@ -440,7 +440,7 @@ def generate_report(state_dir: Path) -> tuple[list[str], dict]:
         m1_lines.append(
             f"Win rate: {paper_week_stats['win_rate']*100:.0f}% "
             f"({paper_week_stats['wins']}/{len(paper_week)})  "
-            f"P&L: ${paper_week_stats['total_pnl']:+,.2f}"
+            f"P&amp;L: ${paper_week_stats['total_pnl']:+,.2f}"
         )
         if best_this_week:
             m1_lines.append(
@@ -464,7 +464,7 @@ def generate_report(state_dir: Path) -> tuple[list[str], dict]:
             f"📊 <b>T212 Demo ({len(t212_trades_all)} trades all-time)</b>",
             (
                 f"Win rate: {t212_all_stats['win_rate']*100:.0f}%  "
-                f"P&L: ${t212_all_stats['total_pnl']:+,.2f}  "
+                f"P&amp;L: ${t212_all_stats['total_pnl']:+,.2f}  "
                 f"Open: {open_t212}"
             ),
             f"This week: {len(t212_week)} trades, ${t212_week_stats['total_pnl']:+,.2f}",
@@ -479,7 +479,7 @@ def generate_report(state_dir: Path) -> tuple[list[str], dict]:
             (
                 f"Cash: £{uk_cash:,.2f} | Open positions: {uk_open}  "
                 f"Win rate: {uk_all_stats['win_rate']*100:.0f}%  "
-                f"P&L: £{uk_all_stats['total_pnl']:+,.2f}"
+                f"P&amp;L: £{uk_all_stats['total_pnl']:+,.2f}"
             ),
             f"This week: {len(uk_week)} trades",
         ]
@@ -578,7 +578,7 @@ def generate_report(state_dir: Path) -> tuple[list[str], dict]:
             (
                 f"  {sk['count']} completed simulations  "
                 f"{sk['would_have_win_rate']*100:.0f}% WR  "
-                f"~${sk['would_have_pnl']:+.0f} est. P&L"
+                f"~${sk['would_have_pnl']:+.0f} est. P&amp;L"
             ),
             "",
         ]

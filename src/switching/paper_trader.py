@@ -266,6 +266,40 @@ def _mark_seen(seen_signals: list[str], key: str) -> None:
         seen_signals.append(key)
 
 
+# Saturday weekly report fires at/after this hour, UTC (== GMT).
+_WEEKLY_REPORT_HOUR_UTC = 9
+
+
+def _should_send_weekly_report(now: datetime, last_sent_iso: str, service: str) -> bool:
+    """True iff the Saturday weekly report should fire on this loop tick.
+
+    Designed to fire **exactly once per calendar Saturday**, robustly:
+
+    - **One service only.** The report is a global cross-service digest
+      (`generate_report` reads the whole DB), so only the ``us`` paper loop
+      sends it — otherwise the ``uk`` paper loop would emit an identical
+      duplicate. (T212 loops never call this.)
+    - **Saturday, 09:00 UTC or later.** ``weekday() == 5`` and hour gate. The
+      ">= 9" (not a tight 09:00–09:59 window) means a bot that was down at 09:00
+      still sends once when it next runs that Saturday, rather than skipping the
+      week entirely.
+    - **Calendar-date dedup, not a rolling window.** We compare the stored
+      date to today's date, so it can fire at most once on any given Saturday.
+
+    The caller MUST stamp ``last_weekly_report_dt = now`` *before* it relies on
+    the Telegram send succeeding — the previous code only stamped on success, so
+    a single flaky/failed send left it unstamped and it re-fired every scan
+    cycle (the "fires every hour" bug). The report is archived to disk
+    regardless, so stamping first only costs a re-send via ``switching
+    weekly-report`` in the rare send-failure case.
+    """
+    if service != "us":
+        return False
+    if now.weekday() != 5 or now.hour < _WEEKLY_REPORT_HOUR_UTC:
+        return False
+    return (last_sent_iso or "")[:10] != now.strftime("%Y-%m-%d")
+
+
 def _hydrate_pending_signal(d: dict) -> Signal | None:
     """Rebuild a Signal from its serialised dict form (queue payload).
 
@@ -1208,26 +1242,23 @@ def run_loop(
                 total_pnl=total_pnl,
             )
 
-        # Weekly report — every Saturday morning (UTC) after market open
-        # Fires once per week; the last-sent timestamp prevents duplicates.
-        if now.weekday() == 5 and now.hour >= 9:   # Saturday, 09:00+ UTC
-            last_wr = portfolio.last_weekly_report_dt
-            already_sent_this_week = False
-            if last_wr:
-                try:
-                    last_wr_dt = datetime.fromisoformat(last_wr)
-                    already_sent_this_week = (now - last_wr_dt).days < 6
-                except ValueError:
-                    pass
-            if not already_sent_this_week:
-                from switching.weekly_report import generate_and_send
-                console.print("  [cyan]Generating weekly report...[/cyan]")
-                ok = generate_and_send(state_path.parent)
-                if ok:
-                    portfolio.last_weekly_report_dt = now.isoformat()
-                    console.print("  [cyan]Weekly report sent via Telegram.[/cyan]")
-                else:
-                    console.print("  [yellow]Weekly report send failed — will retry next cycle.[/yellow]")
+        # Weekly report — once per Saturday at/after 09:00 UTC (GMT), from the
+        # `us` paper loop only (it's a global digest; see _should_send_weekly_report).
+        if _should_send_weekly_report(now, portfolio.last_weekly_report_dt, service):
+            # Stamp the date FIRST (persisted by the save() below) so a flaky or
+            # failed Telegram send can't make it re-fire every scan cycle. The
+            # report is archived to disk regardless; rerun `switching
+            # weekly-report` to resend if delivery failed.
+            portfolio.last_weekly_report_dt = now.isoformat()
+            from switching.weekly_report import generate_and_send
+            console.print("  [cyan]Generating weekly report...[/cyan]")
+            if generate_and_send(state_path.parent):
+                console.print("  [cyan]Weekly report sent via Telegram.[/cyan]")
+            else:
+                console.print(
+                    "  [yellow]Weekly report archived; Telegram send failed "
+                    "(won't retry until next Saturday — run `switching weekly-report`).[/yellow]"
+                )
 
         portfolio.save(state_path)
 

@@ -64,6 +64,44 @@ class TestMarketPrefix:
         assert "T212" in _notif._MARKET_PREFIX
 
 
+class TestSendHtmlFallback:
+    """A bare '&'/'<'/'>' in HTML mode makes Telegram return HTTP 400 and drop
+    the message (the 'P&L' weekly-report bug). _send must degrade to plain text
+    on a 400 so delivery still succeeds."""
+
+    def teardown_method(self):
+        _notif._MARKET_PREFIX = ""
+
+    def _ok_resp(self):
+        r = MagicMock()
+        r.status = 200
+        r.__enter__ = lambda s: s
+        r.__exit__ = MagicMock(return_value=False)
+        return r
+
+    def test_400_falls_back_to_plain_text(self):
+        import urllib.error
+        err = urllib.error.HTTPError("u", 400, "Bad Request", {}, None)
+        with patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "1"}), \
+             patch("urllib.request.urlopen", side_effect=[err, self._ok_resp()]) as mo:
+            result = _send("Total <b>P&amp;L</b>: $5")
+        assert result is True
+        assert mo.call_count == 2          # HTML failed, plain-text retry sent
+        second = mo.call_args_list[1][0][0].data.decode("utf-8")
+        assert "parse_mode" not in second  # plain text, no HTML parsing
+        assert "<b>" not in second         # tags stripped
+        assert "P&L" in second             # &amp; unescaped back to &
+
+    def test_non_400_failure_does_not_retry(self):
+        import urllib.error
+        err = urllib.error.HTTPError("u", 500, "Server Error", {}, None)
+        with patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "1"}), \
+             patch("urllib.request.urlopen", side_effect=[err]) as mo:
+            result = _send("hello")
+        assert result is False
+        assert mo.call_count == 1
+
+
 class TestIsConfigured:
     def test_not_configured_without_env(self):
         with patch.dict("os.environ", {}, clear=True):

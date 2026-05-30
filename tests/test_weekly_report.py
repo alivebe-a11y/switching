@@ -389,3 +389,17 @@ class TestArchive:
             generate_and_send(tmp_path)
         saved = list((tmp_path / "weekly_reports").glob("*.json"))
         assert len(saved) == 1
+
+    def test_messages_are_html_safe(self, tmp_path: Path):
+        """Every '&' in a report message must be an escaped HTML entity. A bare
+        '&' (e.g. the literal "P&L") makes Telegram's HTML parser reject the
+        whole message with HTTP 400 — the bug that stopped the weekly report
+        sending and made it re-fire every scan cycle."""
+        import re
+        from switching.weekly_report import generate_report
+        _paper_portfolio(tmp_path, [_trade(pnl=20.0), _trade(pnl=-5.0)])
+        messages, _ = generate_report(tmp_path)
+        assert messages
+        bad_amp = re.compile(r"&(?!amp;|lt;|gt;|#\d+;|#x[0-9a-fA-F]+;)")
+        for m in messages:
+            assert not bad_amp.search(m), f"unescaped '&' in message: {m!r}"

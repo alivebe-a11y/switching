@@ -24,6 +24,7 @@ from switching.paper_trader import (
     _position_weight,
     _prune_recently_sold,
     _reconcile_t212_ghosts,
+    _should_send_weekly_report,
     _signal_key,
     _tiered_stop_loss,
     check_exits,
@@ -792,6 +793,47 @@ class TestPeakPollUKNormalisation:
         assert len(p.positions) == 1
         # New peak is in GBP units (£4.40), never clobbered to 440 pence.
         assert p.positions[0].peak_price == pytest.approx(4.40, abs=0.01)
+
+
+class TestWeeklyReportSchedule:
+    """The Saturday weekly report must fire exactly once per Saturday, at/after
+    09:00 UTC, from the `us` paper loop only. Regression for the 'fires every
+    hour' bug: the old dedup only stamped on Telegram success (so a flaky send
+    re-fired every scan) and both us+uk loops sent it.
+    """
+
+    # 2026-05-30 is a Saturday (2026-05-29 was a Friday).
+    SAT_0905 = datetime(2026, 5, 30, 9, 5, tzinfo=timezone.utc)
+    SAT_1400 = datetime(2026, 5, 30, 14, 0, tzinfo=timezone.utc)
+    SAT_0859 = datetime(2026, 5, 30, 8, 59, tzinfo=timezone.utc)
+    FRI_0905 = datetime(2026, 5, 29, 9, 5, tzinfo=timezone.utc)
+
+    def test_fires_saturday_morning_us_never_sent(self):
+        assert _should_send_weekly_report(self.SAT_0905, "", "us") is True
+
+    def test_not_before_0900(self):
+        assert _should_send_weekly_report(self.SAT_0859, "", "us") is False
+
+    def test_not_on_a_weekday(self):
+        assert _should_send_weekly_report(self.FRI_0905, "", "us") is False
+
+    def test_only_us_service_sends(self):
+        # uk/t212 loops must NOT emit a duplicate of the global digest.
+        for svc in ("uk", "t212", "t212_uk"):
+            assert _should_send_weekly_report(self.SAT_0905, "", svc) is False
+
+    def test_deduped_when_already_sent_today(self):
+        already = "2026-05-30T09:05:00+00:00"
+        # Same day, later tick -> must not re-fire (the 'every hour' bug).
+        assert _should_send_weekly_report(self.SAT_1400, already, "us") is False
+
+    def test_fires_again_next_saturday(self):
+        last_week = "2026-05-23T09:05:00+00:00"
+        assert _should_send_weekly_report(self.SAT_0905, last_week, "us") is True
+
+    def test_downtime_catchup_same_saturday(self):
+        # Bot was down at 09:00 and first runs at 14:00 — still sends once.
+        assert _should_send_weekly_report(self.SAT_1400, "", "us") is True
 
 
 class TestRichMarkupEscapedExceptions:
