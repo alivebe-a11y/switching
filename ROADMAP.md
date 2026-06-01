@@ -80,6 +80,16 @@
       ghost-position reconciliation proves insufficient. Full trigger conditions and
       rationale in `CLAUDE.md → Roadmap → Triggered / Deferred items` (re-checked on each
       roadmap scan). Reactive fix already shipped (`_reconcile_t212_ghosts`).
+- [ ] **Social-sentiment signal (Reddit / StockTwits)** — DEFERRED. Two directions on one
+      per-ticker sentiment/volume store: **detector→Reddit** (catalyst triggers, Reddit
+      sizes conviction — build first, log-only, lowest risk) and **Reddit→detector**
+      (Reddit spike primes a watchlist, catalyst confirms — Phase 2, higher info but noisiest
+      / most-manipulated). Key is a **credibility layer**: capture author + call history →
+      per-author trust score (the `trade_memory` pattern applied to people) + bot flags, so
+      sentiment is weighted by who said it. **Validate by BACKTEST first** off the Pushshift
+      historical dumps (kills the cold-start — seeds trust scores from history) before any
+      live build; then live log-only confirms out-of-sample. Full pros/cons, capture schema,
+      backtest traps + triggers in `CLAUDE.md → Roadmap → Triggered / Deferred items`.
 
 ## Detector Ideas
 - [ ] stock_split — splits often run up beforehand

@@ -1070,6 +1070,78 @@ direct or a real RNS aggregator with a feed/API; US = evaluate direct exchange/w
 as a real integration, not a quick scrape. Until triggered, the Google-News probe (DONE) keeps
 UK flow alive so we can judge whether UK is worth the deeper build at all.
 
+#### Social-sentiment signal — Reddit / StockTwits  (DEFERRED — discussed 2026-05-30)
+Use retail social chatter (r/wallstreetbets, r/stocks, r/smallstreetbets, StockTwits) as a
+trading input. Cashtags (`$TSLA`) give clean tickers, sidestepping the news ticker-resolution
+hole. The two directions are NOT mutually exclusive — they converge on ONE rolling per-ticker
+`{mention_volume, sentiment, velocity}` store that the buy pipeline consults two ways:
+
+- **Detector → Reddit (confirmation / conviction) — BUILD THIS FIRST.** A news catalyst stays
+  the trigger; the Reddit score only sizes the position up/down via the existing
+  `_position_weight` model. Safe by construction — Reddit can never *initiate* a trade, only
+  modulate one a catalyst already justified. Ship it LOG-ONLY first (like the Haiku filter):
+  record each signal's Reddit score, measure whether high-sentiment catalysts actually
+  outperform, THEN gate. Lowest risk, reuses the whole pipeline. Caveat: positive sentiment on
+  an already-public catalyst can mean "already crowded / priced in" — sometimes a fade, not a
+  confirm. Measure before trusting.
+- **Reddit → detector (discovery / priming) — PHASE 2, only if the data earns it.** A Reddit
+  mention-volume / sentiment spike puts a ticker on a short-lived watchlist and raises its
+  conviction if a catalyst then fires (the operator's "watch the trend, then react when the
+  detector goes off"). This is the higher-*information* direction — it can surface names with
+  no press release and occasionally leads the wire (small-cap / biotech / meme). BUT it's the
+  noisiest, most-manipulated entry (pumps, bots, coordinated posts), "trending" usually means
+  it ALREADY moved (you enter mid-move), and a *pure* social trigger is a different strategy
+  (crowd reflexivity) from the bot's proven catalyst-momentum thesis. Build only after the
+  confirmation direction proves Reddit sentiment correlates with outcomes.
+
+**Credibility layer (what makes this viable vs pure noise).** Capture per post: `author`,
+ticker(s), stance+confidence, engagement (score/comments), subreddit, post_type, timestamp;
+and per author: account age/karma, cadence, and a running CALL HISTORY (ticker, stance, time)
+joined to forward returns. Derive a per-author **trust score** — the `trade_memory.py` pattern
+applied to people ("user X: +4% avg over 26 bullish calls" vs "user Y: noise over 40") — and
+weight each post's sentiment by its author's trust BEFORE it touches conviction sizing.
+**Bot/manipulation flags** collapse trust toward zero: young low-karma accounts, burst cadence,
+duplicate text across accounts, clusters of fresh accounts pushing one ticker. Caveats: thin
+samples for the long tail (only frequent posters score reliably), the reputation score becomes
+a gaming target (patient aged accounts), and storing usernames has ToS/data considerations
+(public data, but don't publish dossiers).
+
+**Validate by BACKTEST first (kills the cold-start).** Don't blind-collect for months —
+reconstruct history. Reddit posts are timestamped (`created_utc`), so (author, ticker, stance,
+time) + price history = retrospective forward returns AND pre-seeded trust scores. Reuses the
+existing `backtest.py` + `sources/historical.py` scaffold.
+- **Data:** the live Reddit API can't reach deep history (shallow, recency-biased) and the live
+  Pushshift endpoint was cut off post-2023; use the **Pushshift data DUMPS** (downloadable
+  monthly r/wsb etc. archives, with timestamps). Confirm current availability before committing.
+- **Backtest traps (social backtests run OPTIMISTIC — discount results):** survivorship/deletion
+  bias (removed pump posts + banned accounts are gone — exactly the noise you need to study);
+  point-in-time engagement (final upvote counts are look-ahead — use the score at decision time);
+  regime dependence (2021 meme mania ≠ now — test out-of-sample); delisted-ticker price
+  survivorship (dead microcaps missing from yfinance flatter returns); same-code rule (extract/
+  score history with the EXACT live pipeline, or the backtest is fiction).
+- **Payoff:** a weekend backtest answers "is there ANY credibility-weighted edge?" before any
+  live infra. No edge ⇒ walk away (months saved). Edge ⇒ launch with trust scores **seeded from
+  history** (no cold start), then run live LOG-ONLY as the true out-of-sample confirmation.
+
+**Architecture:** one `sources/social.py` client (PRAW / StockTwits API) for live + a Pushshift-
+dump loader for the backtest, TTL-cached, keeping the rolling per-ticker store; scored by the
+already-wired Haiku (or VADER/FinBERT). New source integration = days (auth, rate limits, NLP),
+not a half-day regex detector — a real sub-project.
+
+**Build ONLY when ALL (in this order — each gates the next):**
+- [ ] **Backtest gate (cheapest, do first).** A historical backtest off the Pushshift dumps
+      shows credibility-weighted sentiment predicts forward returns OUT-OF-SAMPLE. No edge here
+      ⇒ stop, months saved.
+- [ ] Core catalyst strategy is PROVEN (50+ live trades/detector; today ~95% of P&L rests on
+      ~3 trades) — don't layer a noisy input on an unproven base.
+- [ ] Live LOG-ONLY run reproduces the backtest edge forward (true out-of-sample) before any
+      sentiment weight touches sizing.
+- [ ] Real capital, or an identified edge-loss reason, justifies the source-integration cost.
+
+**Risks:** social sentiment is the most manipulated signal there is and is arguably the OPPOSITE
+of this bot's "who-gets-the-news-first" edge (by the time it trends, it's priced in). Frame as a
+conviction *overlay*, not a core feature. Supersedes the vaguer "sentiment analysis" AI-improvements bullet.
+
 ### Detector Ideas
 - [ ] stock_split — splits often run up beforehand
 - [ ] crypto_treasury — Bitcoin treasury announcements (MicroStrategy pattern)
