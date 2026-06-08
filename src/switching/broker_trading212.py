@@ -37,6 +37,7 @@ Reference: https://docs.trading212.com/api
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -230,6 +231,10 @@ class Trading212Client:
         # Per-instance, so each service does ONE 5MB fetch per hour — fits the
         # 1 req/50s endpoint limit comfortably for the two US+UK services.
         self._instrument_cache: tuple[float, dict[str, dict]] | None = None
+        # Per-ticker accepted quantity precision (decimals). Learned on first
+        # order from T212's 'quantity-precision-mismatch' errors so we don't
+        # keep re-submitting a too-precise quantity. See _place_market_order.
+        self._qty_precision: dict[str, int] = {}
         # Never log the key itself — only mode, market, and base URL
         mode = "DEMO" if self.demo else "LIVE"
         log.info(
@@ -421,7 +426,10 @@ class Trading212Client:
         if not catalogue:
             return True, None    # fail open — catalogue temporarily unavailable
 
-        entry = catalogue.get(t212_id)
+        # Catalogue keys are upper-cased on load, but LSE order tickers carry a
+        # lowercase 'l' (BARCl_EQ) — look up case-insensitively so we don't
+        # falsely reject a tradeable UK instrument.
+        entry = catalogue.get(t212_id) or catalogue.get(t212_id.upper())
         if entry is None:
             return False, f"not_in_t212_catalogue: {t212_id}"
 
@@ -435,55 +443,56 @@ class Trading212Client:
     # Orders
     # ------------------------------------------------------------------
 
-    def buy_market(self, symbol: str, quantity: float) -> T212Order:
-        """Place a fractional market buy order in this client's market.
+    def _place_market_order(self, t212_ticker: str, quantity: float, side: str) -> T212Order:
+        """Place a market order, auto-reducing decimal precision on a T212
+        'quantity-precision-mismatch'.
 
-        Args:
-            symbol:   Plain ticker e.g. "AAPL" (US) or "MKS.L" (UK).
-            quantity: Number of shares (fractional OK). Must be > 0.
+        T212 caps the number of decimals in the order quantity PER instrument
+        (some allow 2, some 1, some whole-shares only) and exposes no precision
+        field in the catalogue — so we discover it by trying. We submit at the
+        requested precision and, on a precision error, step down 4 -> 3 -> 2 ->
+        1 -> 0, **flooring** (never rounding UP past available cash / the held
+        quantity). The accepted precision is memoised per ticker so we don't
+        burn a rejected call next time.
 
-        Returns:
-            T212Order with id, ticker, status.
+        ``quantity`` is signed: positive = buy, negative = sell.
         """
-        t212_ticker = _to_t212_ticker(symbol, self.market)
-        qty = round(abs(quantity), 4)
-        if qty < 0.0001:
-            raise T212OrderError(f"Quantity too small to buy: {qty} {symbol}")
-        payload = {"ticker": t212_ticker, "quantity": qty}
-        log.info("T212[%s] BUY submit %s qty=%.4f", self.market, t212_ticker, qty)
-        data = self._post("/equity/orders/market", payload)
-        order = _parse_order(data, t212_ticker)
-        log.info(
-            "T212[%s] BUY accepted %s id=%s status=%s",
-            self.market, t212_ticker, order.id, order.status,
-        )
-        return order
+        base = round(abs(quantity), 4)
+        if base < 0.0001:
+            raise T212OrderError(f"Quantity too small to {side}: {base} {t212_ticker}")
+        sign = 1.0 if quantity > 0 else -1.0
+        learned = self._qty_precision.get(t212_ticker)
+        precs = ([learned] if learned is not None else []) + [p for p in (4, 3, 2, 1, 0) if p != learned]
+        last_exc: Exception | None = None
+        for prec in precs:
+            qabs = float(int(base)) if prec == 0 else math.floor(base * 10 ** prec) / (10.0 ** prec)
+            if qabs < 0.0001:
+                continue   # this precision zeroes the order — try a finer one
+            signed = qabs if sign > 0 else -qabs
+            log.info("T212[%s] %s submit %s qty=%s (prec=%d)", self.market, side.upper(), t212_ticker, signed, prec)
+            try:
+                data = self._post("/equity/orders/market", {"ticker": t212_ticker, "quantity": signed})
+            except T212OrderError as exc:
+                if "precision" in str(exc).lower():
+                    last_exc = exc
+                    continue   # T212 rejected the decimals — coarsen and retry
+                raise          # any other error (404, market closed, …) is not ours to retry
+            order = _parse_order(data, t212_ticker)
+            self._qty_precision[t212_ticker] = prec
+            log.info("T212[%s] %s accepted %s id=%s status=%s qty=%s",
+                     self.market, side.upper(), t212_ticker, order.id, order.status, signed)
+            return order
+        raise last_exc or T212OrderError(f"{side} {t212_ticker}: no acceptable quantity precision")
+
+    def buy_market(self, symbol: str, quantity: float) -> T212Order:
+        """Market BUY of *quantity* shares (fractional OK). Auto-handles T212's
+        per-instrument quantity-precision limits (see _place_market_order)."""
+        return self._place_market_order(_to_t212_ticker(symbol, self.market), abs(quantity), "buy")
 
     def sell_all(self, symbol: str, quantity: float) -> T212Order:
-        """Place a market sell order liquidating the full position.
-
-        T212 uses a negative quantity to denote sells.
-
-        Args:
-            symbol:   Plain ticker e.g. "AAPL" (US) or "MKS.L" (UK).
-            quantity: Positive number of shares currently held.
-
-        Returns:
-            T212Order with id, ticker, status.
-        """
-        t212_ticker = _to_t212_ticker(symbol, self.market)
-        qty = round(abs(quantity), 4)
-        if qty < 0.0001:
-            raise T212OrderError(f"Quantity too small to sell: {qty} {symbol}")
-        payload = {"ticker": t212_ticker, "quantity": -qty}
-        log.info("T212[%s] SELL submit %s qty=%.4f", self.market, t212_ticker, qty)
-        data = self._post("/equity/orders/market", payload)
-        order = _parse_order(data, t212_ticker)
-        log.info(
-            "T212[%s] SELL accepted %s id=%s status=%s",
-            self.market, t212_ticker, order.id, order.status,
-        )
-        return order
+        """Market SELL of *quantity* shares (T212 takes a negative quantity).
+        Floors to the instrument's allowed precision so we never oversell."""
+        return self._place_market_order(_to_t212_ticker(symbol, self.market), -abs(quantity), "sell")
 
     # ------------------------------------------------------------------
     # Market hours
@@ -727,25 +736,30 @@ def _to_t212_ticker(symbol: str, market: str = "us") -> str:
     if market not in ("us", "uk"):
         raise ValueError(f"Unsupported market: {market!r}")
 
-    symbol = symbol.upper().strip()
+    raw = symbol.strip()
+    symbol = raw.upper()
     # Allow ".L" for UK input; alphanumerics + underscore otherwise.
     if not re.fullmatch(r"[A-Z0-9_.]{1,20}", symbol):
         raise ValueError(f"Invalid ticker symbol: {symbol!r}")
 
-    # Already a T212 instrument ID — passthrough (caller should know what
-    # they're doing; the bulkhead in get_positions handles cross-market leak).
+    # Already a T212 instrument ID — passthrough PRESERVING case (LSE ids carry a
+    # lowercase 'l', e.g. BARCl_EQ; upper-casing them would 404 on the order API).
     if symbol.endswith("_EQ"):
-        return symbol
+        return raw
 
     if market == "uk":
-        # Accept "MKS" or "MKS.L"; both map to MKSL_EQ
+        # Accept "MKS" or "MKS.L"; both map to MKSl_EQ.
+        # CRITICAL: T212's LSE suffix is a LOWERCASE 'l' (BARCl_EQ, VODl_EQ) —
+        # verified from live demo positions. An uppercase 'L' 404s on the
+        # (case-sensitive) order endpoint even though our catalogue lookup
+        # (which upper-cases keys) appeared to match.
         if symbol.endswith(".L"):
             symbol = symbol[:-2]
         if "." in symbol:
             raise ValueError(f"Invalid UK ticker symbol: {symbol!r}")
         if not symbol:
             raise ValueError("Empty UK ticker after stripping .L")
-        return f"{symbol}L_EQ"
+        return f"{symbol}l_EQ"
 
     # US
     if "." in symbol:
@@ -767,8 +781,9 @@ def _from_t212_ticker(t212_ticker: str, market: str = "us") -> str:
     """
     market = (market or "us").lower()
     if market == "uk":
-        if t212_ticker.endswith("L_EQ"):
-            core = t212_ticker[:-4]   # strip "L_EQ"
+        # LSE suffix is a lowercase 'l' + '_EQ' (BARCl_EQ -> BARC.L).
+        if t212_ticker.endswith("l_EQ"):
+            core = t212_ticker[:-4]   # strip the 'l_EQ' suffix
             return f"{core.upper()}.L"
         # Unexpected format — best-effort
         return t212_ticker.split("_")[0].upper() + ".L"
@@ -807,10 +822,12 @@ def _matches_market(t212_ticker: str, market: str) -> bool:
     if market == "us":
         return t212_ticker.endswith("_US_EQ")
     if market == "uk":
-        if not t212_ticker.endswith("L_EQ"):
+        # LSE tickers end with a LOWERCASE 'l' + '_EQ' (BARCl_EQ, VODl_EQ).
+        # EU listings use an uppercase 2-letter code (ASML_NL_EQ) and won't match.
+        if not t212_ticker.endswith("l_EQ"):
             return False
-        core = t212_ticker[:-4]   # strip "L_EQ"
-        # If core has an underscore it's a foreign _XX_EQ (e.g. _NL_EQ).
+        core = t212_ticker[:-4]   # strip the 'l_EQ' suffix
+        # If core has an underscore it's a foreign _XX_EQ (defensive).
         return bool(core) and "_" not in core
     return False
 

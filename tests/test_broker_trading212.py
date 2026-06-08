@@ -67,23 +67,23 @@ def test_to_t212_ticker_rejects_too_long():
 
 
 def test_to_t212_ticker_uk_with_dot_l():
-    """UK input "MKS.L" should map to "MKSL_EQ"."""
-    assert _to_t212_ticker("MKS.L", "uk") == "MKSL_EQ"
+    """UK input "MKS.L" should map to "MKSl_EQ"."""
+    assert _to_t212_ticker("MKS.L", "uk") == "MKSl_EQ"
 
 
 def test_to_t212_ticker_uk_without_dot_l():
-    """UK input "MKS" should also map to "MKSL_EQ"."""
-    assert _to_t212_ticker("MKS", "uk") == "MKSL_EQ"
+    """UK input "MKS" should also map to "MKSl_EQ"."""
+    assert _to_t212_ticker("MKS", "uk") == "MKSl_EQ"
 
 
 def test_to_t212_ticker_uk_multi_char():
-    """Longer UK tickers (BARC, BARCL_EQ) behave the same."""
-    assert _to_t212_ticker("BARC.L", "uk") == "BARCL_EQ"
-    assert _to_t212_ticker("VOD.L", "uk") == "VODL_EQ"
+    """Longer UK tickers (BARC, BARCl_EQ) behave the same."""
+    assert _to_t212_ticker("BARC.L", "uk") == "BARCl_EQ"
+    assert _to_t212_ticker("VOD.L", "uk") == "VODl_EQ"
 
 
 def test_to_t212_ticker_uk_passthrough():
-    assert _to_t212_ticker("MKSL_EQ", "uk") == "MKSL_EQ"
+    assert _to_t212_ticker("MKSl_EQ", "uk") == "MKSl_EQ"
 
 
 def test_to_t212_ticker_uk_rejects_dot_in_middle():
@@ -103,9 +103,9 @@ def test_to_t212_ticker_rejects_unknown_market():
 
 
 def test_from_t212_ticker_uk():
-    assert _from_t212_ticker("MKSL_EQ", "uk") == "MKS.L"
-    assert _from_t212_ticker("BARCL_EQ", "uk") == "BARC.L"
-    assert _from_t212_ticker("VODL_EQ", "uk") == "VOD.L"
+    assert _from_t212_ticker("MKSl_EQ", "uk") == "MKS.L"
+    assert _from_t212_ticker("BARCl_EQ", "uk") == "BARC.L"
+    assert _from_t212_ticker("VODl_EQ", "uk") == "VOD.L"
 
 
 def test_uk_roundtrip():
@@ -121,15 +121,15 @@ def test_uk_roundtrip():
 
 def test_matches_market_us():
     assert _matches_market("AAPL_US_EQ", "us") is True
-    assert _matches_market("MKSL_EQ", "us") is False
-    assert _matches_market("VODL_EQ", "us") is False
+    assert _matches_market("MKSl_EQ", "us") is False
+    assert _matches_market("VODl_EQ", "us") is False
     assert _matches_market("VOD_US_EQ", "us") is True
 
 
 def test_matches_market_uk():
-    assert _matches_market("MKSL_EQ", "uk") is True
-    assert _matches_market("VODL_EQ", "uk") is True
-    assert _matches_market("BARCL_EQ", "uk") is True
+    assert _matches_market("MKSl_EQ", "uk") is True
+    assert _matches_market("VODl_EQ", "uk") is True
+    assert _matches_market("BARCl_EQ", "uk") is True
     # The US ADR for Vodafone must NOT match the UK service
     assert _matches_market("VOD_US_EQ", "uk") is False
     assert _matches_market("AAPL_US_EQ", "uk") is False
@@ -364,7 +364,7 @@ def test_get_positions_uk_normalises_gbx_to_gbp(uk_client):
     the dashboard work in pounds. P&L (account currency) and the % return are
     unaffected (a ratio is unit-invariant)."""
     uk_client._session.get.return_value = _mock_response([
-        _make_position_item("VODL_EQ", 100.0, 80.0, 90.0, 10.0)  # 80p, 90p
+        _make_position_item("VODl_EQ", 100.0, 80.0, 90.0, 10.0)  # 80p, 90p
     ])
     positions = uk_client.get_positions()
     assert len(positions) == 1
@@ -438,6 +438,39 @@ def test_buy_market_tiny_quantity_raises(client):
         client.buy_market("AAPL", 0.00001)
 
 
+def test_buy_market_retries_on_precision_mismatch(client, monkeypatch):
+    """T212 caps decimals per instrument; on 'quantity-precision-mismatch' we
+    must step the quantity down (4->3->2…) and resubmit, not give up."""
+    import switching.broker_trading212 as b
+    monkeypatch.setattr(b.time, "sleep", lambda *a, **k: None)   # skip throttle waits
+    prec_err = _mock_response(
+        {"type": "/api-errors/quantity-precision-mismatch", "status": 400,
+         "detail": "invalid quantity precision 3"},
+        status_code=400, reason="Bad Request")
+    ok = _mock_response({"id": "ord-9", "ticker": "WHR_US_EQ", "status": "CONFIRMED"})
+    client._session.post.side_effect = [prec_err, prec_err, ok]   # 4dp fail, 3dp fail, 2dp ok
+    order = client.buy_market("WHR", 11.4227)
+    assert order.status == "CONFIRMED"
+    assert client._session.post.call_count == 3
+    final = client._session.post.call_args[1]["json"]
+    assert final["ticker"] == "WHR_US_EQ"
+    assert final["quantity"] == 11.42           # floored to the accepted 2 decimals
+    assert client._qty_precision["WHR_US_EQ"] == 2   # remembered for next time
+
+
+def test_order_does_not_retry_non_precision_errors(client, monkeypatch):
+    """A 404 (wrong ticker) must NOT trigger the precision step-down loop."""
+    import switching.broker_trading212 as b
+    monkeypatch.setattr(b.time, "sleep", lambda *a, **k: None)
+    nf = _mock_response(
+        {"type": "/api-errors/entity-not-found", "status": 404, "detail": "Ticker does not exist"},
+        status_code=404, reason="Not Found")
+    client._session.post.side_effect = [nf]
+    with pytest.raises(T212OrderError):
+        client.buy_market("ZZZZ", 5.0)
+    assert client._session.post.call_count == 1   # one attempt, no precision retries
+
+
 # ---------------------------------------------------------------------------
 # sell_all
 # ---------------------------------------------------------------------------
@@ -502,20 +535,20 @@ def test_error_includes_payload_and_body(client):
     assert "404" in msg
     assert "Not Found" in msg
     # Payload — must include the T212 ticker so we can disambiguate mapping
-    # bugs (CPI -> CPIL_EQ vs CPI_LN_EQ etc.).
+    # bugs (CPI -> CPIl_EQ vs CPI_LN_EQ etc.).
     assert "CPI_US_EQ" in msg
     # Body — must include the T212 error code so we know what was wrong
     assert "InstrumentNotFound" in msg
 
 
 def test_error_includes_market_scope(uk_client):
-    """The UK client must surface CPIL_EQ (LSE), not CPI_US_EQ (US)."""
+    """The UK client must surface CPIl_EQ (LSE), not CPI_US_EQ (US)."""
     resp = _mock_response({"code": "InstrumentNotFound"}, status_code=404, reason="Not Found")
     uk_client._session.post.return_value = resp
     with pytest.raises(T212OrderError) as excinfo:
         uk_client.buy_market("CPI.L", 5.0)
     msg = str(excinfo.value)
-    assert "CPIL_EQ" in msg
+    assert "CPIl_EQ" in msg
     assert "CPI_US_EQ" not in msg
 
 
@@ -665,7 +698,7 @@ def _positions_response(*tickers):
 def test_get_positions_bulkhead_us_filters_uk(client):
     """US client must not see UK positions (would otherwise be ghost-closed)."""
     client._session.get.return_value = _mock_response(
-        _positions_response("AAPL_US_EQ", "MKSL_EQ", "VODL_EQ", "TSLA_US_EQ")
+        _positions_response("AAPL_US_EQ", "MKSl_EQ", "VODl_EQ", "TSLA_US_EQ")
     )
     positions = client.get_positions()
     symbols = sorted(p.symbol for p in positions)
@@ -675,7 +708,7 @@ def test_get_positions_bulkhead_us_filters_uk(client):
 def test_get_positions_bulkhead_uk_filters_us(uk_client):
     """UK client must not see US positions (would otherwise be ghost-closed)."""
     uk_client._session.get.return_value = _mock_response(
-        _positions_response("AAPL_US_EQ", "MKSL_EQ", "VODL_EQ", "TSLA_US_EQ")
+        _positions_response("AAPL_US_EQ", "MKSl_EQ", "VODl_EQ", "TSLA_US_EQ")
     )
     positions = uk_client.get_positions()
     symbols = sorted(p.symbol for p in positions)
@@ -683,15 +716,15 @@ def test_get_positions_bulkhead_uk_filters_us(uk_client):
 
 
 def test_get_positions_dual_listing_vod(uk_client, client):
-    """Vodafone dual-listing: UK service sees VODL_EQ as VOD.L (GBX),
+    """Vodafone dual-listing: UK service sees VODl_EQ as VOD.L (GBX),
     US service sees VOD_US_EQ as VOD (USD ADR). The two never collide.
     """
-    response = _mock_response(_positions_response("VOD_US_EQ", "VODL_EQ"))
+    response = _mock_response(_positions_response("VOD_US_EQ", "VODl_EQ"))
 
     uk_client._session.get.return_value = response
     uk_positions = uk_client.get_positions()
     assert [p.symbol for p in uk_positions] == ["VOD.L"]
-    assert uk_positions[0].t212_ticker == "VODL_EQ"
+    assert uk_positions[0].t212_ticker == "VODl_EQ"
 
     client._session.get.return_value = response
     us_positions = client.get_positions()
@@ -702,7 +735,7 @@ def test_get_positions_dual_listing_vod(uk_client, client):
 def test_get_positions_bulkhead_excludes_eu(client, uk_client):
     """Markets we don't trade (Xetra/Euronext) are filtered from BOTH services."""
     response = _mock_response(
-        _positions_response("AAPL_US_EQ", "SAP_DE_EQ", "MC_FR_EQ", "MKSL_EQ")
+        _positions_response("AAPL_US_EQ", "SAP_DE_EQ", "MC_FR_EQ", "MKSl_EQ")
     )
 
     client._session.get.return_value = response
@@ -713,13 +746,13 @@ def test_get_positions_bulkhead_excludes_eu(client, uk_client):
 
 
 def test_uk_client_buy_uses_l_eq_suffix(uk_client):
-    """A UK client buying MKS.L must hit T212 with ticker=MKSL_EQ."""
+    """A UK client buying MKS.L must hit T212 with ticker=MKSl_EQ."""
     uk_client._session.post.return_value = _mock_response(
-        {"id": "1", "ticker": "MKSL_EQ", "status": "CONFIRMED"}
+        {"id": "1", "ticker": "MKSl_EQ", "status": "CONFIRMED"}
     )
     uk_client.buy_market("MKS.L", 5.0)
     posted = uk_client._session.post.call_args.kwargs["json"]
-    assert posted["ticker"] == "MKSL_EQ"
+    assert posted["ticker"] == "MKSl_EQ"
     assert posted["quantity"] == 5.0
 
 
@@ -735,11 +768,11 @@ def test_us_client_buy_uses_us_eq_suffix(client):
 
 def test_uk_client_sell_uses_l_eq_suffix(uk_client):
     uk_client._session.post.return_value = _mock_response(
-        {"id": "1", "ticker": "VODL_EQ", "status": "CONFIRMED"}
+        {"id": "1", "ticker": "VODl_EQ", "status": "CONFIRMED"}
     )
     uk_client.sell_all("VOD.L", 3.0)
     posted = uk_client._session.post.call_args.kwargs["json"]
-    assert posted["ticker"] == "VODL_EQ"
+    assert posted["ticker"] == "VODl_EQ"
     assert posted["quantity"] == -3.0   # sells are negative
 
 
@@ -792,11 +825,11 @@ def test_can_buy_rejects_non_tradeable_type(client):
 
 
 def test_can_buy_uses_market_aware_lookup(uk_client):
-    """UK client looks up VODL_EQ, NOT VOD_US_EQ. The US ADR may be present
+    """UK client looks up VODl_EQ, NOT VOD_US_EQ. The US ADR may be present
     in the catalogue but is irrelevant to the LSE service."""
     uk_client._session.get.return_value = _mock_response(_catalogue(
         {"ticker": "VOD_US_EQ", "type": "STOCK", "name": "Vodafone ADR (USD)"},
-        {"ticker": "VODL_EQ",   "type": "STOCK", "name": "Vodafone (LSE)"},
+        {"ticker": "VODl_EQ",   "type": "STOCK", "name": "Vodafone (LSE)"},
     ))
     ok, reason = uk_client.can_buy("VOD.L")
     assert ok is True
@@ -809,7 +842,7 @@ def test_can_buy_uk_rejects_when_only_us_listed(uk_client):
     ))
     ok, reason = uk_client.can_buy("AAPL.L")
     assert ok is False
-    assert "AAPLL_EQ" in reason   # the ID it tried
+    assert "AAPLl_EQ" in reason   # the ID it tried
 
 
 def test_can_buy_fails_open_on_catalogue_error(client, caplog):
@@ -866,7 +899,7 @@ def test_us_and_uk_clients_have_independent_caches(client, uk_client):
         {"ticker": "AAPL_US_EQ", "type": "STOCK"},
     ))
     uk_client._session.get.return_value = _mock_response(_catalogue(
-        {"ticker": "MKSL_EQ", "type": "STOCK"},
+        {"ticker": "MKSl_EQ", "type": "STOCK"},
     ))
     client.can_buy("AAPL")
     uk_client.can_buy("MKS.L")
