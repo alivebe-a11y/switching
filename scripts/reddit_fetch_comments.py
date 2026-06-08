@@ -53,7 +53,7 @@ def _month_starts(start: str, end: str):
         y, m = ny, nm
 
 
-def _get(path: str, params: dict, ua: str, max_retries: int = 6) -> list:
+def _get(path: str, params: dict, ua: str, max_retries: int = 8) -> list:
     """GET with retries/backoff. Returns the list of items (handles {'data':[...]} or bare list)."""
     url = f"{_BASE}{path}?{urllib.parse.urlencode(params)}"
     backoff = 5.0
@@ -73,9 +73,14 @@ def _get(path: str, params: dict, ua: str, max_retries: int = 6) -> list:
                 return body.get("data", body.get("items", []))
             return body if isinstance(body, list) else []
         except urllib.error.HTTPError as exc:
-            if exc.code == 429:
-                wait = float(exc.headers.get("Retry-After") or backoff)
-                print(f"    429 rate-limited; sleeping {wait:.0f}s", flush=True)
+            if exc.code in (429, 422):
+                # 429 = explicit rate limit; 422 = Arctic Shift's soft-throttle under
+                # sustained load (same query format succeeds when not throttled). Both
+                # clear on a wait, so back off and retry — heavier for 422.
+                wait = float(exc.headers.get("Retry-After") or
+                             (backoff if exc.code == 429 else max(backoff, 30.0)))
+                print(f"    HTTP {exc.code} throttled; backing off {wait:.0f}s "
+                      f"(retry {attempt+1}/{max_retries})", flush=True)
                 time.sleep(wait)
             elif 500 <= exc.code < 600:
                 print(f"    HTTP {exc.code}; retry in {backoff:.0f}s", flush=True)
@@ -165,8 +170,16 @@ def main(argv: list[str] | None = None) -> int:
             open(done, "w").close()
             print(f"  {label}: {n:,} items in {time.time()-t0:.0f}s", flush=True)
         except Exception as exc:
-            print(f"  {label}: FAILED ({exc}) — leaving incomplete, re-run to resume", flush=True)
-            return 1
+            # One stubborn month must not abort the whole subreddit. Drop the partial,
+            # leave no .done marker (so a later re-run retries it), and carry on.
+            print(f"  {label}: FAILED ({exc}) — skipping; re-run later to fill the gap", flush=True)
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            time.sleep(5.0)   # brief cooldown before the next month
+            continue
     print("done.", flush=True)
     return 0
 
