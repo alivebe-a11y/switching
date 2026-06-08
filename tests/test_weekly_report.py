@@ -70,6 +70,25 @@ def _paper_portfolio(tmp_path: Path, trades: list[dict]) -> Path:
     return p
 
 
+def _uk_portfolio(tmp_path: Path, trades: list[dict]) -> Path:
+    data = {
+        "cash": 19000.0,
+        "positions": [],
+        "trades": trades,
+        "seen_signals": [],
+        "last_signals": [],
+        "last_scan_dt": "",
+        "max_position_pct": 0.015,
+        "max_positions": 0,
+        "cached_prices": {},
+        "last_review_sent_dt": "",
+        "last_weekly_report_dt": "",
+    }
+    p = tmp_path / "uk_portfolio.json"
+    p.write_text(json.dumps(data), encoding="utf-8")
+    return p
+
+
 # ---------------------------------------------------------------------------
 # Unit tests — helper functions
 # ---------------------------------------------------------------------------
@@ -329,6 +348,23 @@ class TestGenerateReport:
         combined = "\n".join(messages)
         assert "earnings_surprise" in combined
         assert "buyback" in combined
+
+    def test_uk_detector_rankings_rendered(self, tmp_path: Path):
+        """LSE (UK) trades get their own per-detector rankings block + data key."""
+        _paper_portfolio(tmp_path, [])
+        _uk_portfolio(tmp_path, [
+            _trade(ticker="VOD.L", detector="mna_target", pnl=120.0, pct_return=0.12),
+            _trade(ticker="BARC.L", detector="mna_target", pnl=80.0, pct_return=0.06),
+            _trade(ticker="SSE.L", detector="dividend_surprise", pnl=-15.0, pct_return=-0.01),
+        ])
+        messages, data = generate_report(tmp_path)
+        combined = "\n".join(messages)
+        assert "LSE Detector Rankings" in combined
+        assert "mna_target" in combined
+        # data carries the UK rankings separately from the US ones
+        assert "uk_detector_rankings" in data
+        uk_dets = {r["detector"] for r in data["uk_detector_rankings"]}
+        assert {"mna_target", "dividend_surprise"} <= uk_dets
 
     def test_handles_missing_t212_file(self, tmp_path: Path):
         """Should not crash if t212_portfolio.json doesn't exist."""

@@ -236,6 +236,27 @@ def create_app(state_path: Path | None = None) -> Flask:
         total_pnl = sum(tr.pnl for tr in p.trades)
         invested = sum(pos.cost_basis for pos in p.positions)
 
+        # Per-LSE-detector breakdown — UK trades carry a `detector` but were never
+        # aggregated per-detector anywhere (only an all-time total). Surface hit rate /
+        # P&L per detector so we can see which LSE detectors actually have an edge.
+        by_detector: dict[str, dict] = {}
+        for tr in p.trades:
+            d = by_detector.setdefault(tr.detector, {"trades": 0, "wins": 0, "pnl": 0.0, "returns": []})
+            d["trades"] += 1
+            d["wins"] += 1 if tr.pnl > 0 else 0
+            d["pnl"] += tr.pnl
+            d["returns"].append(tr.pct_return)
+        detector_stats = {}
+        for det, d in sorted(by_detector.items()):
+            wr = d["wins"] / d["trades"] if d["trades"] else 0
+            avg_ret = sum(d["returns"]) / len(d["returns"]) if d["returns"] else 0
+            detector_stats[det] = {
+                "trades": d["trades"],
+                "win_rate": round(wr, 3),
+                "total_pnl": round(d["pnl"], 2),
+                "avg_return": round(avg_ret, 4),
+            }
+
         return jsonify({
             "available": True,
             "cash": p.cash,
@@ -248,6 +269,7 @@ def create_app(state_path: Path | None = None) -> Flask:
             "win_rate": (wins / total_trades * 100) if total_trades else 0,
             "positions": positions,
             "trades": trades,
+            "detector_stats": detector_stats,
             "last_scan_dt": p.last_scan_dt,
         })
 
@@ -1030,6 +1052,11 @@ tr:hover { background: rgba(255,255,255,0.02); }
   <div class="panel">
     <div class="panel-header"><h2>Open Positions</h2><span class="badge" id="uk-pos-count">0</span></div>
     <div id="uk-positions-body"><div class="empty-state">No open positions — LSE signals will appear here after 08:00 London time</div></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header"><h2>LSE Detectors by Performance</h2></div>
+    <div id="uk-detector-body"><div class="empty-state">No closed trades yet — per-detector hit rate appears once LSE positions close</div></div>
   </div>
 
   <div class="panel">
@@ -1838,6 +1865,29 @@ async function loadUK() {
       });
       html += '</tbody></table>';
       $('#uk-trades-body').innerHTML = html;
+    }
+
+    // Per-LSE-detector breakdown — which LSE detectors actually have an edge
+    const dets = d.detector_stats ? Object.entries(d.detector_stats) : [];
+    if (dets.length === 0) {
+      $('#uk-detector-body').innerHTML = '<div class="empty-state">No closed trades yet — per-detector hit rate appears once LSE positions close</div>';
+    } else {
+      // sort by total P&L desc so the best earners surface first
+      dets.sort((a, b) => b[1].total_pnl - a[1].total_pnl);
+      let html = '<table><thead><tr><th>Detector</th><th>Trades</th><th>Win Rate</th><th>Avg Return</th><th>Total P&L</th></tr></thead><tbody>';
+      dets.forEach(([det, s]) => {
+        const wrCls = s.win_rate >= 0.70 ? 'pos' : s.win_rate < 0.55 ? 'neg' : '';
+        const retCls = s.avg_return >= 0 ? 'pos' : 'neg';
+        html += '<tr>'
+          + '<td><span class="badge">' + det + '</span></td>'
+          + '<td>' + s.trades + '</td>'
+          + '<td class="' + wrCls + '">' + (s.win_rate * 100).toFixed(0) + '%</td>'
+          + '<td class="' + retCls + '">' + (s.avg_return * 100).toFixed(2) + '%</td>'
+          + '<td class="' + pnlCls(s.total_pnl) + '">' + pnlFmt(s.total_pnl) + '</td>'
+          + '</tr>';
+      });
+      html += '</tbody></table>';
+      $('#uk-detector-body').innerHTML = html;
     }
 
   } catch(e) {

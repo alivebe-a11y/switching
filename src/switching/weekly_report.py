@@ -396,7 +396,8 @@ def generate_report(state_dir: Path) -> tuple[list[str], dict]:
     t212_week_stats   = _analyse_trades(t212_week)
     uk_all_stats      = _analyse_trades(uk_trades_all)
 
-    det_rows   = _detector_rankings(paper_trades_all)
+    det_rows    = _detector_rankings(paper_trades_all)
+    uk_det_rows = _detector_rankings(uk_trades_all)   # LSE per-detector performance
     exit_brkdn = _exit_reason_breakdown(paper_trades_all)
     sev_data   = _severity_analysis(paper_trades_all)
     matched    = _t212_vs_paper(t212_trades_all, paper_trades_all)
@@ -510,6 +511,30 @@ def generate_report(state_dir: Path) -> tuple[list[str], dict]:
         )
     if not any(row["count"] > 0 for row in det_rows):
         m2_lines.append("No trades yet.")
+
+    # LSE (UK) per-detector rankings — same view for the UK book, so we can see
+    # which LSE detectors actually have an edge (UK trades are tracked separately
+    # under service 'uk'; they used to be aggregated only, never per-detector).
+    if any(row["count"] > 0 for row in uk_det_rows):
+        m2_lines += ["", "🇬🇧 <b>LSE Detector Rankings (all-time)</b>"]
+        for row in uk_det_rows:
+            n = row["count"]
+            if n == 0:
+                continue
+            wr = row["win_rate"]
+            if n < _MIN_TRADES_FOR_JUDGEMENT:
+                badge = "⏳"
+            elif wr >= _WIN_RATE_STRONG:
+                badge = "⭐"
+            elif wr >= _WIN_RATE_TARGET:
+                badge = "✅"
+            else:
+                badge = "❌"
+            m2_lines.append(
+                f"{badge} <b>{row['detector']}</b>: "
+                f"{wr*100:.0f}% WR  avg {row['avg_return']*100:+.2f}%  "
+                f"£{row['total_pnl']:+.0f}  ({n} trades)"
+            )
 
     # Exit reason breakdown
     m2_lines += ["", "🚪 <b>Exit Reasons</b>"]
@@ -644,6 +669,7 @@ def generate_report(state_dir: Path) -> tuple[list[str], dict]:
             "open_count": len(uk_data.get("positions", [])),
         },
         "detector_rankings": det_rows,
+        "uk_detector_rankings": uk_det_rows,
         "exit_breakdown": exit_brkdn,
         "severity_analysis": sev_data,
         "t212_slippage": {
