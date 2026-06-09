@@ -309,8 +309,15 @@ def create_app(state_path: Path | None = None) -> Flask:
     @app.route("/api/exit-tracker")
     def api_exit_tracker():
         from switching import storage
-        tracker_path = _STATE_PATH.parent / "exit_tracker.json"
-        tracker = ExitTracker.load(tracker_path, storage.service_from_path(_STATE_PATH))
+        # Post-exit tracking is collected per service (run_loop derives the service
+        # from the state-file name). Default = US; ?service=uk surfaces the LSE book.
+        svc = (request.args.get("service") or "").strip().lower()
+        if svc == "uk":
+            state_path = _STATE_PATH.parent / "uk_portfolio.json"
+        else:
+            state_path = _STATE_PATH
+        tracker_path = state_path.parent / "exit_tracker.json"
+        tracker = ExitTracker.load(tracker_path, storage.service_from_path(state_path))
         completed = [t for t in tracker.tracked if t.tracking_complete]
         active = [t for t in tracker.tracked if not t.tracking_complete]
         return jsonify({
@@ -1057,6 +1064,12 @@ tr:hover { background: rgba(255,255,255,0.02); }
   <div class="panel">
     <div class="panel-header"><h2>LSE Detectors by Performance</h2></div>
     <div id="uk-detector-body"><div class="empty-state">No closed trades yet — per-detector hit rate appears once LSE positions close</div></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header"><h2>LSE Post-Exit Tracker</h2><span class="badge" id="uk-exit-badge">0</span></div>
+    <div id="uk-exit-insights" style="display:none;margin-bottom:0.6rem"></div>
+    <div id="uk-exit-body"><div class="empty-state">No post-exit data yet — tracks LSE prices for 20 days after each trade closes, to see if we exited too early</div></div>
   </div>
 
   <div class="panel">
@@ -1890,8 +1903,67 @@ async function loadUK() {
       $('#uk-detector-body').innerHTML = html;
     }
 
+    loadUKExitTracker();
+
   } catch(e) {
     console.error('uk load failed', e);
+  }
+}
+
+async function loadUKExitTracker() {
+  try {
+    const r = await fetch('/api/exit-tracker?service=uk');
+    const d = await r.json();
+    const total = d.active_count + d.completed_count;
+    $('#uk-exit-badge').textContent = d.active_count > 0 ? d.active_count + ' active' : total;
+
+    if (total === 0) {
+      $('#uk-exit-insights').style.display = 'none';
+      $('#uk-exit-body').innerHTML = '<div class="empty-state">No post-exit data yet — tracks LSE prices for 20 days after each trade closes, to see if we exited too early</div>';
+      return;
+    }
+
+    // Insights
+    const insights = (d.summary && d.summary.insights) || [];
+    const ti = $('#uk-exit-insights');
+    if (insights.length > 0) {
+      let ihtml = '<div style="font-size:0.8rem;color:var(--amber);margin-bottom:0.4rem;font-weight:600">⚡ Insights</div>';
+      insights.forEach(i => { ihtml += '<div style="font-size:0.82rem;color:var(--dim);margin-bottom:0.3rem">&bull; ' + i + '</div>'; });
+      ti.innerHTML = ihtml;
+      ti.style.display = 'block';
+    } else {
+      ti.style.display = 'none';
+    }
+
+    // Per-detector summary
+    const byDet = (d.summary && d.summary.by_detector) || {};
+    const detKeys = Object.keys(byDet);
+    if (detKeys.length === 0) {
+      $('#uk-exit-body').innerHTML = '<div class="empty-state">Tracking ' + d.active_count + ' position(s) — per-detector summary appears once 20-day windows complete</div>';
+      return;
+    }
+    let html = '<div style="overflow-x:auto"><table><thead><tr>'
+      + '<th>Detector</th><th>Completed</th><th>Avg Exit Return</th>'
+      + '<th>Avg Max Post-Exit</th><th>Avg Left on Table</th><th>Exited Too Early</th>'
+      + '</tr></thead><tbody>';
+    detKeys.forEach(det => {
+      const s = byDet[det];
+      const lotClass = s.avg_left_on_table != null
+        ? (s.avg_left_on_table > 0.03 ? 'lot-large' : s.avg_left_on_table > 0.015 ? 'lot-medium' : s.avg_left_on_table > 0.005 ? 'lot-small' : s.avg_left_on_table < 0 ? 'pos' : '')
+        : '';
+      html += '<tr>';
+      html += '<td><span class="detector-tag">' + det + '</span></td>';
+      html += '<td>' + s.count + '</td>';
+      html += '<td class="' + color(s.avg_exit_return) + '">' + (s.avg_exit_return * 100).toFixed(1) + '%</td>';
+      html += '<td>' + (s.avg_max_post_exit != null ? (s.avg_max_post_exit * 100).toFixed(1) + '%' : '--') + '</td>';
+      html += '<td class="' + lotClass + '">' + (s.avg_left_on_table != null ? (s.avg_left_on_table * 100).toFixed(1) + '%' : '--') + '</td>';
+      html += '<td>' + (s.exit_too_early_pct != null ? (s.exit_too_early_pct * 100).toFixed(0) + '%' : '--') + '</td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+    $('#uk-exit-body').innerHTML = html;
+  } catch(e) {
+    console.error('uk exit-tracker load failed', e);
   }
 }
 

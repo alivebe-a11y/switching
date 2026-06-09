@@ -196,3 +196,31 @@ class TestDashboard:
         assert r.status_code == 200
         data = r.get_json()
         assert data["cash"] == 1000.0
+
+
+class TestExitTrackerService:
+    """The post-exit tracker endpoint is service-aware: ?service=uk surfaces the
+    LSE book, default surfaces US. Data is isolated per service in one DB."""
+
+    def test_uk_exit_tracker_is_separate_from_default(self, client, portfolio_path):
+        from switching.exit_tracker import ExitTracker
+
+        uk_trade = ClosedTrade(
+            ticker="VOD.L", detector="mna_target",
+            entry_price=0.70, exit_price=0.78, shares=100.0,
+            entry_dt="2026-05-19T08:00:00+00:00",
+            exit_dt="2026-05-21T15:00:00+00:00",
+            pnl=8.0, pct_return=0.11,
+            exit_reason="first_green", headline="Vodafone bid talk",
+        )
+        tracker = ExitTracker(tracked=[])
+        tracker.add_trade(uk_trade)
+        # save under the 'uk' service into the same dir the app reads from
+        tracker.save(portfolio_path.parent / "exit_tracker.json", "uk")
+
+        uk = client.get("/api/exit-tracker?service=uk").get_json()
+        assert uk["active_count"] + uk["completed_count"] == 1
+
+        # default service (us/portfolio) has no post-exit data
+        us = client.get("/api/exit-tracker").get_json()
+        assert us["active_count"] + us["completed_count"] == 0

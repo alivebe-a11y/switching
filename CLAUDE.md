@@ -404,8 +404,10 @@ same `Portfolio`/`ExitTracker`/`SkippedTracker` loaders, service-scoped) — it 
 yfinance. The paper trader's scan loop populates `portfolio.cached_prices[ticker]` for every
 held position each cycle, then saves. Dashboard refreshes show prices stamped with
 `last_scan_dt`. Stale by at most one scan interval (default 10 min). Stale tickers (no longer
-held) are pruned each cycle. The `/api/exit-tracker`, `/api/review`, `/api/skipped-signals`
-endpoints are US-scoped; `/api/uk` and `/api/t212` read their own services.
+held) are pruned each cycle. The `/api/review`, `/api/skipped-signals`
+endpoints are US-scoped; `/api/exit-tracker` accepts `?service=uk` (default US) and
+the UK dashboard tab has its own "LSE Post-Exit Tracker" panel; `/api/uk`
+(incl. per-LSE-detector `detector_stats`) and `/api/t212` read their own services.
 
 ## Known Issues / Gotchas
 - yfinance blocked in CI/sandbox — backtests show 0 trades but events load fine
