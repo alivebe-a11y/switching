@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from rich.markup import escape as _esc
 import logging
 import time
@@ -164,12 +165,13 @@ def get_intraday_data(ticker: str) -> dict | None:
         if hist.empty:
             return None
         row = hist.iloc[-1]
-        return {
-            "open": float(row["Open"]),
-            "high": float(row["High"]),
-            "low": float(row["Low"]),
-            "close": float(row["Close"]),
-        }
+        o, h, l, c = float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"])
+        # yfinance returns NaN OHLC for thin/AIM names on illiquid days. Treat a
+        # NaN bar as "no data" — a NaN would poison post-exit snapshots and, once
+        # serialized, break the dashboard JSON (browsers reject the `NaN` literal).
+        if not all(math.isfinite(v) for v in (o, h, l, c)):
+            return None
+        return {"open": o, "high": h, "low": l, "close": c}
     except Exception as exc:
         log.warning("intraday fetch failed for %s: %s", ticker, exc)
         return None

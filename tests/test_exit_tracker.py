@@ -37,6 +37,23 @@ def test_no_duplicate_trades():
     assert len(tracker.tracked) == 1
 
 
+def test_update_skips_nan_price():
+    """A NaN bar (thin yfinance day) must NOT be snapshotted — it would poison the
+    window (never completes) and break the dashboard JSON. The day is dropped."""
+    tracker = ExitTracker()
+    tracker.add_trade(FakeTrade())
+
+    # OHLC dict with a NaN close, and a bare-float NaN — both must be rejected
+    assert tracker.update(lambda t: {"open": 1.0, "high": 1.0, "low": 1.0, "close": float("nan")}) == 0
+    assert tracker.update(lambda t: float("nan")) == 0
+    assert tracker.tracked[0].snapshots == []
+    assert not tracker.tracked[0].tracking_complete
+
+    # a finite price still records normally
+    assert tracker.update(lambda t: 105.0) == 1
+    assert len(tracker.tracked[0].snapshots) == 1
+
+
 def test_update_records_snapshot():
     tracker = ExitTracker()
     tracker.add_trade(FakeTrade())

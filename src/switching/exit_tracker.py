@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,15 +31,25 @@ log = logging.getLogger(__name__)
 TRACK_DAYS = 20
 
 
+def _finite(x) -> bool:
+    """True only for a real, finite number — filters out None and NaN/inf."""
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
 def _parse_ohlc(raw) -> tuple[float, float, float, float] | None:
-    """Accept either a float or {open,high,low,close} dict. Returns (o,h,l,c)."""
+    """Accept either a float or {open,high,low,close} dict. Returns (o,h,l,c).
+
+    Rejects non-finite values (NaN/inf). yfinance returns NaN OHLC for thin/AIM
+    names on illiquid days; a NaN here would poison the snapshot, never complete
+    the 20-day window (NaN math propagates), and — once serialized — produce
+    invalid JSON (`NaN` literal) that browsers refuse to parse. Drop the day."""
     if raw is None:
         return None
     if isinstance(raw, (int, float)):
         f = float(raw)
-        return (f, f, f, f)
+        return None if not math.isfinite(f) else (f, f, f, f)
     try:
-        return (
+        o, h, l, c = (
             float(raw["open"]),
             float(raw["high"]),
             float(raw["low"]),
@@ -46,6 +57,9 @@ def _parse_ohlc(raw) -> tuple[float, float, float, float] | None:
         )
     except (KeyError, TypeError, ValueError):
         return None
+    if not all(math.isfinite(v) for v in (o, h, l, c)):
+        return None
+    return (o, h, l, c)
 
 
 @dataclass
@@ -247,12 +261,14 @@ class ExitTracker:
             by_exit_reason.setdefault(t.exit_reason, []).append(t)
 
         def _summarize_group(group: list[TrackedExit]) -> dict[str, Any]:
-            left       = [t.left_on_table          for t in group if t.left_on_table          is not None]
-            left_intra = [t.left_on_table_intraday  for t in group if t.left_on_table_intraday is not None]
-            max_after  = [t.max_post_exit_return    for t in group if t.max_post_exit_return    is not None]
-            max_high   = [t.max_intraday_high       for t in group if t.max_intraday_high       is not None]
-            final      = [t.final_return            for t in group if t.final_return            is not None]
-            day_peaks  = [t.day_of_peak             for t in group if t.day_of_peak             is not None]
+            # `_finite` drops both None and NaN/inf (legacy thin-bar snapshots can
+            # carry NaN; NaN != None so a plain `is not None` would poison the mean).
+            left       = [t.left_on_table          for t in group if _finite(t.left_on_table)]
+            left_intra = [t.left_on_table_intraday  for t in group if _finite(t.left_on_table_intraday)]
+            max_after  = [t.max_post_exit_return    for t in group if _finite(t.max_post_exit_return)]
+            max_high   = [t.max_intraday_high       for t in group if _finite(t.max_intraday_high)]
+            final      = [t.final_return            for t in group if _finite(t.final_return)]
+            day_peaks  = [t.day_of_peak             for t in group if _finite(t.day_of_peak)]
             return {
                 "count":                  len(group),
                 "avg_exit_return":        round(sum(t.pct_return for t in group) / len(group), 4),
@@ -272,10 +288,11 @@ class ExitTracker:
                 day = s["day"]
                 if day not in by_day:
                     by_day[day] = {"close": [], "high": [], "low": [], "n": 0}
-                by_day[day]["close"].append(s["pct_from_entry"])
-                if "high_pct" in s:
+                if _finite(s.get("pct_from_entry")):
+                    by_day[day]["close"].append(s["pct_from_entry"])
+                if _finite(s.get("high_pct")):
                     by_day[day]["high"].append(s["high_pct"])
-                if "low_pct" in s:
+                if _finite(s.get("low_pct")):
                     by_day[day]["low"].append(s["low_pct"])
                 by_day[day]["n"] += 1
 

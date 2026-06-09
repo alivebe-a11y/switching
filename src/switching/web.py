@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template_string, request
+from flask.json.provider import DefaultJSONProvider
 
 from switching.exit_tracker import ExitTracker
 from switching.paper_trader import Portfolio
@@ -18,8 +20,32 @@ log = logging.getLogger(__name__)
 _STATE_PATH: Path = Path("/app/.cache/paper_portfolio.json")
 
 
+def _json_safe(obj):
+    """Recursively replace non-finite floats (NaN/inf) with None.
+
+    Python's json emits bare `NaN`/`Infinity` literals (allow_nan=True), which
+    browsers' JSON.parse rejects — one NaN anywhere in a payload breaks the whole
+    response client-side. Historic post-exit snapshots can carry NaN (from thin
+    yfinance bars), so we scrub at the serialization boundary as a safety net."""
+    if isinstance(obj, float):
+        return None if not math.isfinite(obj) else obj
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    return obj
+
+
+class _SafeJSONProvider(DefaultJSONProvider):
+    """JSON provider that guarantees browser-valid output (no NaN/Infinity)."""
+
+    def dumps(self, obj, **kwargs):
+        return super().dumps(_json_safe(obj), **kwargs)
+
+
 def create_app(state_path: Path | None = None) -> Flask:
     app = Flask(__name__)
+    app.json = _SafeJSONProvider(app)
     if state_path:
         global _STATE_PATH
         _STATE_PATH = state_path

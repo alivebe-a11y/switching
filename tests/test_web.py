@@ -224,3 +224,29 @@ class TestExitTrackerService:
         # default service (us/portfolio) has no post-exit data
         us = client.get("/api/exit-tracker").get_json()
         assert us["active_count"] + us["completed_count"] == 0
+
+    def test_nan_in_snapshot_does_not_break_json(self, client, portfolio_path):
+        """A stored NaN (legacy thin-bar snapshot) must not emit invalid JSON.
+        Browsers' JSON.parse rejects the bare `NaN` literal, which would blank
+        the whole panel — the serializer scrubs NaN/inf to null."""
+        from switching.exit_tracker import ExitTracker, TrackedExit
+
+        tracker = ExitTracker(tracked=[
+            TrackedExit(
+                ticker="MICC.L", detector="mna_target",
+                entry_price=1.0, exit_price=1.1, exit_dt="2026-05-26T15:00:00+00:00",
+                exit_reason="first_green", pct_return=0.1, headline="bid",
+                snapshots=[{"date": "2026-05-27", "day": 1, "open": 1.0,
+                            "high": 1.0, "low": 1.0, "close": float("nan"),
+                            "pct_from_entry": float("nan"), "pct_from_exit": 0.0,
+                            "high_pct": 0.0, "low_pct": 0.0}],
+            )
+        ])
+        tracker.save(portfolio_path.parent / "exit_tracker.json", "uk")
+
+        r = client.get("/api/exit-tracker?service=uk")
+        raw = r.get_data(as_text=True)
+        # the decisive assertion: NO bare NaN/Infinity literal anywhere
+        assert "NaN" not in raw and "Infinity" not in raw
+        # and it round-trips through a STRICT parser (mirrors the browser)
+        json.loads(raw, parse_constant=lambda c: (_ for _ in ()).throw(ValueError(c)))
