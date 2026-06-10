@@ -198,6 +198,26 @@ class TestDashboard:
         assert data["cash"] == 1000.0
 
 
+class TestMoversEndpoint:
+    def test_unavailable_without_audit(self, client):
+        r = client.get("/api/movers?market=us")
+        assert r.status_code == 200
+        assert r.get_json()["available"] is False
+
+    def test_returns_saved_audit(self, client, portfolio_path):
+        from switching import movers
+        report = {"generated_at": "2026-06-10T12:00:00+00:00", "market": "us",
+                  "count": 1, "summary": {"caught": 0, "feed_gap": 1},
+                  "movers": [{"symbol": "ABCD", "pct_change": 30.0, "status": "missed",
+                              "reason": "feed_gap", "detector": "mna_target",
+                              "evidence": "ABCD to acquire rival"}]}
+        movers.save_audit(portfolio_path.parent, "us", report)
+        d = client.get("/api/movers?market=us").get_json()
+        assert d["available"] is True
+        assert d["summary"]["feed_gap"] == 1
+        assert d["movers"][0]["reason"] == "feed_gap"
+
+
 class TestExitTrackerService:
     """The post-exit tracker endpoint is service-aware: ?service=uk surfaces the
     LSE book, default surfaces US. Data is isolated per service in one DB."""

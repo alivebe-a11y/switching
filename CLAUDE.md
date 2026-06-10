@@ -94,14 +94,17 @@ copy. Secrets (`.env`) are deliberately excluded. Version-controlled copy at
 | trade-t212 | `switching trade-t212 --market us ...` | US T212 demo trading via REST API |
 | trade-t212-uk | `switching trade-t212 --market uk ...` | LSE T212 demo trading via REST API. Shares ONE T212 account with `trade-t212` but isolated via broker-level position filter (US sees `*_US_EQ` only, UK sees `*L_EQ` only). State in `t212_uk_portfolio.json`. |
 | dashboard | `switching web --port 8080` | Flask web UI on port 8080 |
-| trade | `switching trade ...` | Alpaca live trading (not yet active) |
 | switching | `switching list-detectors` | One-shot utility |
+
+(Alpaca `trade` service removed 2026-06 — UK-based, can't use Alpaca; IBKR is the
+chosen live broker, see ADR-006. `broker_alpaca.py` + the `trade` CLI command +
+`run_loop_alpaca` are gone.)
 
 ## Environment Variables (set in Dockge .env)
 - `SWITCHING_EDGAR_UA` — Required for EDGAR-based detectors (activist_13d, insider_cluster)
 - `ANTHROPIC_API_KEY` — Claude Haiku for AI signal scoring (~$0.30/month)
 - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` — Push notifications
-- `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` — Not active yet
+- `T212_API_KEY` — Trading 212 demo API key (US + UK T212 services share it)
 
 ## Critical: Data Directory
 Seed CSVs MUST go in `src/switching/data/historical_events/` (NOT top-level `data/`).
@@ -342,6 +345,7 @@ src/switching/
 │   ├── sec_edgar.py    — EdgarClient (rate-limited, needs SWITCHING_EDGAR_UA)
 │   └── ticker_lookup.py — SEC company-name→ticker fallback for extract_ticker()
 ├── detection_funnel.py — captures classified-but-no-ticker drops (the silent loss)
+├── movers.py           — movers researcher: audit why top movers were/weren't caught
 └── data/historical_events/*.csv  — Seed data for backtests
 ```
 
@@ -390,6 +394,27 @@ at that point, writing to the `dropped_signals` SQLite table (service-tagged, pr
   validate the proposed ticker against the SEC/known list (kills hallucination), and recover
   the trade. Measure first (a week of drops) to confirm ticker-loss is the bottleneck vs
   classify misfires, then point the resolver at it.
+
+## Movers Researcher (detector scoreboard) — `movers.py`
+The detection funnel catches drops *we classified*. The movers researcher catches the
+moves we **never saw at all**. Each market day pull the top movers (yfinance screener:
+US predefined `day_gainers`/`most_actives`; UK `region=gb` EquityQuery filtered to real
+LSE stocks — depositary lines like `0LC7.L` dropped), and for every mover we didn't
+trade, attribute WHY into buckets (the pure, tested `attribute()`):
+- `caught` — in our records (signal/trade); not a miss.
+- `ticker_drop` — a detector classifies the mover's news, and we ingested that story
+  (it's in the funnel/last_signals) → recall hole (ticker resolution).
+- `feed_gap` — a detector *would* classify it, but the story isn't in our records →
+  the gap is the **news source**, not the detector. (The big one for UK.)
+- `no_detector` — has news but nothing classifies → uncovered catalyst type (new-detector
+  candidate).
+- `no_news` — no headline → flow/squeeze, not our game.
+Run: `switching movers-audit --market us|uk` (cron daily or ad-hoc). Writes
+`<cache>/movers_audit/<market>.json`; dashboard **🔎 Movers tab** + `/api/movers?market=`
+render it. **Purpose is measurement, NOT trading** — by the time something is a top mover
+the move has happened; this grades detector recall and ranks what to build next.
+**Attribution is heuristic** (yfinance `.news` ≠ our exact feeds). US is clean; UK movers
+are noisier (yfinance UK news is weak) — tune US first, then UK.
 
 ## Notification Batching
 `src/switching/notifications.py` queues buy notifications in `_NotificationQueue` and flushes
@@ -635,6 +660,9 @@ Only these are in the spec — anything else (e.g. `404 InstrumentNotFound` we s
 
 ### ADR-006: IBKR as broker (not Alpaca)
 **Decision**: Interactive Brokers (IBKR) for live and paper trading. Alpaca removed from roadmap.
+**Update 2026-06**: the Alpaca code + `trade` service were deleted entirely (operator is
+UK-based and cannot use Alpaca). `broker_alpaca.py`, the `trade` CLI command, and
+`run_loop_alpaca` are gone. When IBKR is built it gets a fresh `broker_ibkr.py`.
 **Why**: (1) Alpaca is US-focused — UK residents face regulatory friction and limited support.
 (2) IBKR has a UK entity (IBKR UK Ltd, FCA regulated), straightforward account opening for UK Ltd companies.
 (3) IBKR supports API trading of US stocks from UK accounts natively.
@@ -957,7 +985,8 @@ IBKR paper account uses live market data with simulated fills — best pre-live 
 ```
 
 **What to build** (`src/switching/broker_ibkr.py`):
-- Mirror `broker_alpaca.py` interface: `buy_market`, `sell_all`, `get_quote`, `is_market_open`
+- Implement a broker interface: `buy_market`, `sell_all`, `get_quote`, `is_market_open`
+  (the same shape the removed `broker_alpaca.py` had — mirror `broker_trading212.py`)
 - Use `ib_insync` Python library (cleaner than official `ibapi`)
 - Controlled by env var `IBKR_PAPER=true` (port 4002) vs `IBKR_PAPER=false` (port 4001)
 - Paper trader falls back to internal simulation if IB Gateway unreachable

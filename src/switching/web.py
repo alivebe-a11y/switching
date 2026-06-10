@@ -309,6 +309,16 @@ def create_app(state_path: Path | None = None) -> Flask:
             "reports": reports,
         })
 
+    @app.route("/api/movers")
+    def api_movers():
+        """Latest movers audit (why big movers were/weren't caught). ?market=us|uk."""
+        from switching import movers
+        market = (request.args.get("market") or "us").strip().lower()
+        report = movers.load_audit(_STATE_PATH.parent, market)
+        if report is None:
+            return jsonify({"available": False, "market": market})
+        return jsonify({"available": True, **report})
+
     @app.route("/api/drops")
     def api_drops():
         """Detection funnel — headlines classified by a detector but dropped for
@@ -812,6 +822,7 @@ tr:hover { background: rgba(255,255,255,0.02); }
       <div class="tab" id="tab-btn-t212" onclick="switchTab('t212')">T212 Demo</div>
       <div class="tab" id="tab-btn-uk" onclick="switchTab('uk')">🇬🇧 LSE</div>
       <div class="tab" id="tab-btn-reports" onclick="switchTab('reports')">📋 Reports</div>
+      <div class="tab" id="tab-btn-movers" onclick="switchTab('movers')">🔎 Movers</div>
     </div>
   </div>
 
@@ -1127,6 +1138,25 @@ tr:hover { background: rgba(255,255,255,0.02); }
   </div>
 
   </div><!-- /tab-reports -->
+
+  <div id="tab-movers" style="display:none">
+  <div class="panel">
+    <div class="panel-header">
+      <h2>🔎 Movers Audit — did we catch the big moves?</h2>
+      <span class="badge" id="movers-stamp">—</span>
+    </div>
+    <div style="font-size:0.78rem;color:var(--dim);padding:0.5rem 1.2rem 0">
+      For each top mover we did NOT trade, why we missed it. Run
+      <code>switching movers-audit --market us</code> (or <code>--market uk</code>) to refresh.
+      <b>feed_gap</b> = a detector would've classified the news but it never reached our feeds (source gap);
+      <b>ticker_drop</b> = classified but couldn't resolve the ticker (recall hole);
+      <b>no_detector</b> = a catalyst type we don't cover (new-detector candidate);
+      <b>no_news</b> = no headline found (likely flow/squeeze). Attribution is heuristic.
+    </div>
+    <div id="movers-summary" style="padding:0.6rem 1.2rem"></div>
+    <div id="movers-body"><div class="empty-state">No audit yet — run <code>switching movers-audit</code>.</div></div>
+  </div>
+  </div><!-- /tab-movers -->
 
 </div>
 
@@ -1720,7 +1750,7 @@ async function loadReview() {
 let _activeTab = 'overview';
 
 function switchTab(name) {
-  ['overview', 'postexit', 'analytics', 't212', 'uk', 'reports'].forEach(t => {
+  ['overview', 'postexit', 'analytics', 't212', 'uk', 'reports', 'movers'].forEach(t => {
     document.getElementById('tab-' + t).style.display = t === name ? 'block' : 'none';
     document.getElementById('tab-btn-' + t).classList.toggle('active', t === name);
   });
@@ -1737,6 +1767,50 @@ function switchTab(name) {
     loadUK();
   } else if (name === 'reports') {
     loadReports();
+  } else if (name === 'movers') {
+    loadMovers();
+  }
+}
+
+async function loadMovers() {
+  try {
+    const r = await fetch('/api/movers?market=us');
+    const d = await r.json();
+    if (!d.available) {
+      $('#movers-stamp').textContent = '—';
+      $('#movers-summary').innerHTML = '';
+      $('#movers-body').innerHTML = '<div class="empty-state">No audit yet — run <code>switching movers-audit --market us</code>.</div>';
+      return;
+    }
+    $('#movers-stamp').textContent = (d.market || 'us').toUpperCase() + ' · ' + (d.generated_at || '').slice(0,16).replace('T',' ') + ' UTC';
+    const s = d.summary || {};
+    const chip = (label, n, cls) => '<span class="milestone-chip ' + (cls||'') + '" style="margin-right:6px">' + label + ': ' + (n||0) + '</span>';
+    $('#movers-summary').innerHTML =
+      chip('✅ caught', s.caught, 'reached') +
+      chip('🎯 ticker_drop', s.ticker_drop) +
+      chip('📡 feed_gap', s.feed_gap) +
+      chip('🧩 no_detector', s.no_detector) +
+      chip('· no_news', s.no_news);
+
+    const reasonCls = {ticker_drop:'', feed_gap:'neg', no_detector:'', no_news:''};
+    let html = '<table><thead><tr><th>Symbol</th><th>Move</th><th>Vol×</th><th>Status / why missed</th><th>Detector</th><th>Evidence headline</th></tr></thead><tbody>';
+    (d.movers || []).forEach(m => {
+      const moveCls = m.pct_change >= 0 ? 'pos' : 'neg';
+      const caught = m.status === 'caught';
+      const rcls = caught ? 'pos' : (reasonCls[m.reason] || '');
+      html += '<tr>'
+        + '<td><strong>' + m.symbol + '</strong>' + (m.had_earnings ? ' <span class="badge">earnings</span>' : '') + '</td>'
+        + '<td class="' + moveCls + '">' + (m.pct_change>=0?'+':'') + m.pct_change.toFixed(1) + '%</td>'
+        + '<td>' + (m.vol_ratio != null ? m.vol_ratio + '×' : '--') + '</td>'
+        + '<td class="' + rcls + '">' + (caught ? '✅ caught' : m.reason) + '</td>'
+        + '<td>' + (m.detector ? '<span class="detector-tag">' + m.detector + '</span>' : '--') + '</td>'
+        + '<td style="font-size:0.78rem;color:var(--dim);max-width:340px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + (m.evidence||'').replace(/"/g,'&quot;') + '">' + (m.evidence || '') + '</td>'
+        + '</tr>';
+    });
+    html += '</tbody></table>';
+    $('#movers-body').innerHTML = html;
+  } catch(e) {
+    console.error('movers load failed', e);
   }
 }
 

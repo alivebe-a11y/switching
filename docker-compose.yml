@@ -27,22 +27,6 @@ services:
     command: ["paper-trade", "--seed", "20000", "--interval", "10", "--stop-loss", "0.026", "--hold-days", "5", "--max-position", "0.015", "--max-positions", "0"]
     restart: unless-stopped
 
-  trade:
-    image: ${SWITCHING_IMAGE:-ghcr.io/alivebe-a11y/switching:latest}
-    build:
-      context: https://github.com/alivebe-a11y/switching.git#main
-      dockerfile: Dockerfile
-    environment:
-      - ALPACA_API_KEY=${ALPACA_API_KEY}
-      - ALPACA_SECRET_KEY=${ALPACA_SECRET_KEY}
-      - ALPACA_PAPER=${ALPACA_PAPER:-true}
-      - SWITCHING_EDGAR_UA=${SWITCHING_EDGAR_UA:-}
-    volumes:
-      - ${SWITCHING_DATA_DIR:-./data/cache}:/app/.cache
-    entrypoint: ["switching"]
-    command: ["trade", "--interval", "30", "--stop-loss", "0.05", "--hold-days", "5"]
-    restart: unless-stopped
-
   trade-t212:
     image: ${SWITCHING_IMAGE:-ghcr.io/alivebe-a11y/switching:latest}
     build:

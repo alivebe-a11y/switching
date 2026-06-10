@@ -348,44 +348,6 @@ def paper_trade_uk(
     )
 
 
-@app.command("trade")
-def trade_cmd(
-    detectors: list[str] = typer.Option(
-        None, "--detector", "-d",
-        help="Detector(s) to trade. Omit for recommended set.",
-    ),
-    stop_loss: float = typer.Option(0.05, "--stop-loss", help="Stop-loss fraction (e.g. 0.05 = 5%)."),
-    hold_days: int = typer.Option(5, "--hold-days", help="Max hold window in trading days."),
-    interval: int = typer.Option(30, "--interval", help="Scan interval in minutes."),
-    min_severity: float = typer.Option(0.0, help="Minimum signal severity to trade."),
-    max_position_pct: float = typer.Option(0.20, "--max-position", help="Max % of portfolio per trade."),
-    max_positions: int = typer.Option(5, "--max-positions", help="Max concurrent positions."),
-    state_file: Path = typer.Option(
-        "/app/.cache/alpaca_state.json", "--state",
-        help="Path to trade state file.",
-    ),
-    once: bool = typer.Option(False, "--once", help="Run one scan cycle and exit."),
-    log_level: str = typer.Option("WARNING", help="Python log level."),
-) -> None:
-    """Trade live via Alpaca. Requires ALPACA_API_KEY and ALPACA_SECRET_KEY.
-
-    Set ALPACA_PAPER=true (default) for paper trading, ALPACA_PAPER=false for real money.
-    """
-    logging.basicConfig(level=log_level.upper())
-    from switching.paper_trader import run_loop_alpaca
-    run_loop_alpaca(
-        state_path=state_file,
-        detectors=detectors or _DEFAULT_DETECTORS,
-        stop_loss=stop_loss,
-        hold_days=hold_days,
-        scan_interval_minutes=interval,
-        min_severity=min_severity,
-        max_position_pct=max_position_pct,
-        max_positions=max_positions,
-        once=once,
-    )
-
-
 @app.command("trade-t212")
 def trade_t212_cmd(
     detectors: list[str] = typer.Option(
@@ -748,6 +710,50 @@ def options_compare(
         "--dte 30 for monthlies. Higher IV = more expensive premium, "
         "so options need a bigger move to beat stock.[/dim]"
     )
+
+
+@app.command("movers-audit")
+def movers_audit_cmd(
+    market: str = typer.Option("us", "--market", help="Market: us | uk."),
+    state_file: Path = typer.Option(
+        None, "--state",
+        help="Portfolio state file (defaults per market).",
+    ),
+    limit: int = typer.Option(25, "--limit", help="Top N movers to audit."),
+    log_level: str = typer.Option("WARNING", help="Python log level."),
+) -> None:
+    """Audit today's top movers: for each, did our detectors catch it — and if not, WHY?
+
+    Buckets each missed mover as ticker_drop / feed_gap / no_detector / no_news, so we
+    can see recall holes (news we could classify but never received) and uncovered
+    catalyst types (new-detector candidates). Log-only research; writes a report the
+    dashboard "Movers" tab renders. Run daily (cron) or ad-hoc.
+    """
+    logging.basicConfig(level=log_level.upper())
+    from switching.movers import run_audit
+    if state_file is None:
+        state_file = Path(
+            "/app/.cache/uk_portfolio.json" if market == "uk"
+            else "/app/.cache/paper_portfolio.json"
+        )
+    report = run_audit(state_file, market=market, limit=limit)
+    s = report["summary"]
+    console.print(
+        f"\n[bold]Movers audit — {market.upper()}[/bold] "
+        f"({report['count']} movers)\n"
+        f"  caught={s['caught']}  ticker_drop={s['ticker_drop']}  "
+        f"feed_gap={s['feed_gap']}  no_detector={s['no_detector']}  no_news={s['no_news']}"
+    )
+    for m in report["movers"]:
+        if m["status"] == "caught":
+            continue
+        tag = {"ticker_drop": "yellow", "feed_gap": "red",
+               "no_detector": "magenta", "no_news": "dim"}.get(m["reason"], "white")
+        det = f" [{m['detector']}]" if m.get("detector") else ""
+        console.print(
+            f"  [{tag}]{m['symbol']:<8} {m['pct_change']:+6.1f}%  "
+            f"{m['reason']}{det}[/{tag}]  {m['evidence'][:80]}"
+        )
 
 
 @app.command("weekly-report")
