@@ -169,7 +169,7 @@ trackers) from being silently corrupted by a future schema/code change:
 | insider_cluster | SEC EDGAR (Form 4) | default | US only |
 | stock_split | RSS (default + corporate) | first_green +1.5%, 4-day hold | US + UK |
 | crypto_treasury | RSS (default + corporate) | first_green +3%, 3-day hold | US + UK |
-| uk_director_dealing | RSS (UK_FEEDS) | default (first_green +0%, 5-day) | UK only |
+| uk_director_dealing | RSS (UK_FEEDS) | **ride mode** (2026-06: +1.5% green → flips to peak-trailing 4% band, 6-day backstop) | UK only |
 
 ## UK Service (_UK_DEFAULT_DETECTORS)
 The `paper-trade-uk` service (and `--market uk` flag) uses `_UK_DEFAULT_DETECTORS` in cli.py:
@@ -310,7 +310,7 @@ path**. How it maps onto our code today:
 | Bounded buffers | `seen_signals[-500:]`, `last_signals[-50:]`, skipped tracker cap 500 | — |
 | Validate external responses | EPIC/ticker validation, `_safe_float`, market-aware price normalise | RSS/scrape shape only loosely checked |
 | Don't hold resources across slow calls | SQLite WAL + short txns; per-endpoint throttle | — |
-| **Circuit breaker** | — | **NOT DONE** — roadmap item "disable detector after N empty scans"; also a feed/source breaker |
+| **Circuit breaker** | **AI filter** (`ai_filter.py`): trips after 3 consecutive Anthropic failures → stops calling, fires ONE Telegram alert + error log, half-open probe every 30 min, alerts on recovery | Still TODO: per-detector/per-feed breaker ("disable detector after N empty scans") — the AI-filter breaker is the first instance of the pattern to copy |
 | Observability at boundaries | per-detector items/classified/with_ticker logs; `UK sources: …` line | no metrics/correlation IDs yet |
 
 When touching any external boundary, run the file's **Final checklist** — especially the
@@ -1071,6 +1071,24 @@ direct or a real RNS aggregator with a feed/API; US = evaluate direct exchange/w
 **Risks / notes:** the LSE API is undocumented + reverse-engineered (fragile, ToS-grey) — treat
 as a real integration, not a quick scrape. Until triggered, the Google-News probe (DONE) keeps
 UK flow alive so we can judge whether UK is worth the deeper build at all.
+
+**Probe findings (2026-06-09) — viable but DELIBERATELY NOT PURSUED:**
+- Confirmed `londonstockexchange.com/news` is a pure **JS SPA** — a plain HTTP fetch returns an
+  empty shell (no server-rendered content), so the Investegate-style BeautifulSoup approach
+  gets nothing. The content is loaded client-side from `api.londonstockexchange.com`.
+- Probed that API host directly: `GET /` → 404 from plain **nginx** (no Cloudflare/Akamai/PoW
+  anti-bot wall, unlike Stooq), and `POST /api/v1/components/refresh` → **200 `application/json`**
+  (returned `[]` only because the `componentId`/`parameters` payload was a guess). So a *free
+  interim* UK RNS reader is **technically viable** — the API answers JSON without a fight.
+- The exact working payload (GUID `componentId` + params) is not guessable; capturing it needs
+  a real-browser network-tab read (e.g. Claude-for-Chrome), then replay headlessly with plain
+  `requests.post` (no browser at runtime).
+- **DECISION: not building this now — respect LSE ToS, don't hammer/reverse-engineer their
+  endpoint.** Two acceptable future paths when UK earns the spend: (a) the **official paid RNS
+  Data Feed** — REST Announcement API (pull) + WebSocket (real-time push), TLS 1.2, authenticated
+  (`docs.londonstockexchange.com` RNS Data Feed spec) — the robust, ToS-clean answer; or (b) a
+  licensed RNS aggregator. The reverse-engineered route stays a documented *last resort*, not the
+  plan. Net: the deferred trigger is unchanged, but we now KNOW a free path exists if ever needed.
 
 #### Social-sentiment signal — Reddit / StockTwits  (DEFERRED — discussed 2026-05-30)
 Use retail social chatter (r/wallstreetbets, r/stocks, r/smallstreetbets, StockTwits) as a
