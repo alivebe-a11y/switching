@@ -311,13 +311,16 @@ def create_app(state_path: Path | None = None) -> Flask:
 
     @app.route("/api/movers")
     def api_movers():
-        """Latest movers audit (why big movers were/weren't caught). ?market=us|uk."""
+        """Movers audit (why big movers were/weren't caught).
+        ?market=us|uk  ?date=YYYY-MM-DD (defaults to newest). Includes available dates."""
         from switching import movers
         market = (request.args.get("market") or "us").strip().lower()
-        report = movers.load_audit(_STATE_PATH.parent, market)
+        date = (request.args.get("date") or "").strip() or None
+        dates = movers.audit_dates(_STATE_PATH.parent, market)
+        report = movers.load_audit(_STATE_PATH.parent, market, date=date)
         if report is None:
-            return jsonify({"available": False, "market": market})
-        return jsonify({"available": True, **report})
+            return jsonify({"available": False, "market": market, "dates": dates})
+        return jsonify({"available": True, "dates": dates, **report})
 
     @app.route("/api/drops")
     def api_drops():
@@ -1143,7 +1146,10 @@ tr:hover { background: rgba(255,255,255,0.02); }
   <div class="panel">
     <div class="panel-header">
       <h2>🔎 Movers Audit — did we catch the big moves?</h2>
-      <span class="badge" id="movers-stamp">—</span>
+      <span>
+        <select id="movers-date" onchange="loadMovers(this.value)" style="background:var(--panel);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:2px 6px;font-size:0.8rem"></select>
+        <span class="badge" id="movers-stamp">—</span>
+      </span>
     </div>
     <div style="font-size:0.78rem;color:var(--dim);padding:0.5rem 1.2rem 0">
       For each top mover we did NOT trade, why we missed it. Run
@@ -1772,14 +1778,21 @@ function switchTab(name) {
   }
 }
 
-async function loadMovers() {
+async function loadMovers(date) {
   try {
-    const r = await fetch('/api/movers?market=us');
+    const url = '/api/movers?market=us' + (date ? '&date=' + encodeURIComponent(date) : '');
+    const r = await fetch(url);
     const d = await r.json();
+    // populate the day picker from available dates (preserve current selection)
+    const sel = $('#movers-date');
+    if (sel && d.dates) {
+      const want = date || (d.dates[0] || '');
+      sel.innerHTML = d.dates.map(dt => '<option value="' + dt + '"' + (dt === want ? ' selected' : '') + '>' + dt + '</option>').join('');
+    }
     if (!d.available) {
       $('#movers-stamp').textContent = '—';
       $('#movers-summary').innerHTML = '';
-      $('#movers-body').innerHTML = '<div class="empty-state">No audit yet — run <code>switching movers-audit --market us</code>.</div>';
+      $('#movers-body').innerHTML = '<div class="empty-state">No audit yet — run <code>switching movers-audit --market us</code> (or wait for the 22:00 cron).</div>';
       return;
     }
     $('#movers-stamp').textContent = (d.market || 'us').toUpperCase() + ' · ' + (d.generated_at || '').slice(0,16).replace('T',' ') + ' UTC';

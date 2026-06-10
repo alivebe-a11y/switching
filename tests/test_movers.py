@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from switching import movers
-from switching.movers import attribute, _norm, save_audit, load_audit
+from switching.movers import attribute, _norm, save_audit, load_audit, audit_dates
 
 
 # A fake classifier that "fires" on any headline containing its keyword.
@@ -71,6 +71,22 @@ class TestPersistence:
 
     def test_load_missing_returns_none(self, tmp_path: Path):
         assert load_audit(tmp_path, "us") is None
+
+    def test_keeps_one_file_per_day(self, tmp_path: Path):
+        for day in ("2026-06-08", "2026-06-09", "2026-06-10"):
+            save_audit(tmp_path, "us", {"generated_at": f"{day}T21:00:00+00:00",
+                                        "market": "us", "count": 0, "summary": {}, "movers": []})
+        # all three days kept + listed newest-first
+        assert audit_dates(tmp_path, "us") == ["2026-06-10", "2026-06-09", "2026-06-08"]
+        # default load = newest day
+        assert load_audit(tmp_path, "us")["generated_at"].startswith("2026-06-10")
+        # specific day selectable
+        assert load_audit(tmp_path, "us", date="2026-06-08")["generated_at"].startswith("2026-06-08")
+        # a re-run on the same day overwrites only that day
+        save_audit(tmp_path, "us", {"generated_at": "2026-06-10T22:00:00+00:00",
+                                    "market": "us", "count": 9, "summary": {}, "movers": []})
+        assert len(audit_dates(tmp_path, "us")) == 3
+        assert load_audit(tmp_path, "us")["count"] == 9
 
 
 def test_real_classifiers_load():

@@ -409,9 +409,10 @@ trade, attribute WHY into buckets (the pure, tested `attribute()`):
 - `no_detector` — has news but nothing classifies → uncovered catalyst type (new-detector
   candidate).
 - `no_news` — no headline → flow/squeeze, not our game.
-Run: `switching movers-audit --market us|uk` (cron daily or ad-hoc). Writes
-`<cache>/movers_audit/<market>.json`; dashboard **🔎 Movers tab** + `/api/movers?market=`
-render it. **Purpose is measurement, NOT trading** — by the time something is a top mover
+Run: `switching movers-audit --market us|uk` (cron weekdays 22:00 NAS-local = ~1h after
+US close, or ad-hoc). Writes one file PER DAY: `<cache>/movers_audit/<market>/<YYYY-MM-DD>.json`
+(kept 90 days). Dashboard **🔎 Movers tab** (with a day picker) + `/api/movers?market=&date=`
+render it — newest by default. **Purpose is measurement, NOT trading** — by the time something is a top mover
 the move has happened; this grades detector recall and ranks what to build next.
 **Attribution is heuristic** (yfinance `.news` ≠ our exact feeds). US is clean; UK movers
 are noisier (yfinance UK news is weak) — tune US first, then UK.

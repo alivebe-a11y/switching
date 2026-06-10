@@ -245,17 +245,50 @@ def run_audit(state_path: Path, market: str = "us", limit: int = 25,
     return report
 
 
+_KEEP_DAYS = 90   # bound disk growth — keep ~a quarter of daily audits per market
+
+
+def _market_dir(state_dir: Path, market: str) -> Path:
+    return state_dir / _AUDIT_DIR / market
+
+
 def save_audit(state_dir: Path, market: str, report: dict) -> Path:
-    out_dir = state_dir / _AUDIT_DIR
+    """Persist one day's audit to ``<state_dir>/movers_audit/<market>/<YYYY-MM-DD>.json``.
+    One file per trading day so history accumulates (we never overwrite a prior day)."""
+    day = (report.get("generated_at") or datetime.now(tz=timezone.utc).isoformat())[:10]
+    out_dir = _market_dir(state_dir, market)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / f"{market}.json"
+    out = out_dir / f"{day}.json"
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    # prune oldest beyond _KEEP_DAYS
+    files = sorted(out_dir.glob("*.json"), reverse=True)
+    for stale in files[_KEEP_DAYS:]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
     return out
 
 
-def load_audit(state_dir: Path, market: str = "us") -> dict | None:
-    p = state_dir / _AUDIT_DIR / f"{market}.json"
-    if not p.exists():
+def audit_dates(state_dir: Path, market: str = "us") -> list[str]:
+    """Available audit dates (YYYY-MM-DD), newest first."""
+    d = _market_dir(state_dir, market)
+    if not d.exists():
+        return []
+    return sorted((p.stem for p in d.glob("*.json")), reverse=True)
+
+
+def load_audit(state_dir: Path, market: str = "us", date: str | None = None) -> dict | None:
+    """Load one day's audit (newest if ``date`` is None)."""
+    d = _market_dir(state_dir, market)
+    if not d.exists():
+        return None
+    if date:
+        p = d / f"{date}.json"
+    else:
+        files = sorted(d.glob("*.json"), reverse=True)
+        p = files[0] if files else None
+    if not p or not p.exists():
         return None
     try:
         return json.loads(p.read_text(encoding="utf-8"))
