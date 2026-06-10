@@ -5,7 +5,11 @@ The decisive Reddit experiment. Needs NO good individual callers — it tests th
 crowd: when mentions of a ticker SPIKE, what does the stock do over the next few
 days, and is there a rideable window before the reversal?
 
-Pipeline (all streaming / stdlib only, runs in a bare python:3.11-slim container):
+Prices come from yfinance, so run this in an image that HAS yfinance (the
+`switching` image), NOT a bare python:3.11-slim. (Stooq's free CSV endpoint is no
+longer usable headless — it now serves a JavaScript proof-of-work anti-bot wall.)
+
+Pipeline (Reddit parsing is streaming/stdlib; pricing uses yfinance):
   1. Read the dump folder(s) -> per-ticker daily mention counts (upvote-weighted,
      bot-filtered, crypto/slang-filtered; optional --tickers whitelist).
   2. Detect SPIKE days per ticker (count >= --min-mentions AND >= --spike-ratio x
@@ -18,9 +22,11 @@ Pipeline (all streaming / stdlib only, runs in a bare python:3.11-slim container
   5. Compare spike-day forward returns to an all-days baseline for the same tickers
      -> the EXCESS return attributable to the spike. Print a verdict.
 
-Usage (server, throwaway container):
-  docker run --rm -it -v /mnt/Pool_1/Configs/reddit:/data python:3.11-slim \
-    python /data/reddit_momentum_backtest.py /data/discovery \
+Usage (server, throwaway container — use the switching image for yfinance):
+  docker run -d --name wsb_bt -v /mnt/Pool_1/Configs/reddit:/data \
+    ghcr.io/alivebe-a11y/switching:latest \
+    python /data/reddit_momentum_backtest.py \
+      /data/discovery /data/discovery/comments /data/discovery/wsb_comments \
       --price-cache /data/prices --out /data/momentum_report.txt
 
   # tighter spikes only, or a whitelist for precision:
@@ -110,7 +116,13 @@ def is_bot(a: str) -> bool:
 # ---------------------------------------------------------------------------
 def fetch_prices(ticker: str, cache_dir: str, sleep: float):
     """Return ordered list of (date, open, high, low, close) or [] if unavailable.
-    Cached to <cache_dir>/<TICKER>.csv (a literal 'NODATA' marker file if Stooq has none)."""
+    Cached to <cache_dir>/<TICKER>.csv (a literal 'NODATA' marker file if there's none).
+
+    Prices come from **yfinance** (US daily OHLC). We moved off Stooq's free CSV
+    endpoint after it put up a JavaScript proof-of-work anti-bot wall (a headless
+    client only ever gets the challenge HTML, never the CSV). yfinance is already
+    a project dependency and works headless — so this script must run in an image
+    that has yfinance (e.g. the `switching` image), not a bare python:3.11-slim."""
     safe = re.sub(r"[^A-Za-z0-9]", "", ticker).upper()
     if not safe:
         return []
@@ -121,20 +133,26 @@ def fetch_prices(ticker: str, cache_dir: str, sleep: float):
             if head.startswith("NODATA"):
                 return []
         return _parse_price_csv(path)
-    url = f"https://stooq.com/q/d/l/?s={safe.lower()}.us&i=d"
+
+    rows: list[str] = ["Date,Open,High,Low,Close"]
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "switching-research/1.0"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            text = resp.read().decode("utf-8", errors="ignore")
-    except (urllib.error.URLError, TimeoutError):
-        text = ""
+        import yfinance as yf
+        df = yf.Ticker(safe).history(start="2023-09-01", end="2026-07-01", auto_adjust=False)
+        for idx, r in df.iterrows():
+            o, h, l, c = float(r["Open"]), float(r["High"]), float(r["Low"]), float(r["Close"])
+            # skip NaN bars (thin/holiday days) — a NaN would corrupt forward returns
+            if any(v != v for v in (o, h, l, c)):
+                continue
+            rows.append(f"{idx.strftime('%Y-%m-%d')},{o},{h},{l},{c}")
+    except Exception:
+        rows = []
     time.sleep(sleep)
-    if (not text) or ("Date,Open" not in text) or ("N/D" in text[:50]):
+    if len(rows) <= 1:   # header only (or error) == no usable data
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("NODATA\n")
         return []
     with open(path, "w", encoding="utf-8") as fh:
-        fh.write(text)
+        fh.write("\n".join(rows) + "\n")
     return _parse_price_csv(path)
 
 
