@@ -7,7 +7,18 @@ from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+import switching.ai_filter as aif
 from switching.ai_filter import score_signal, score_signals
+
+
+@pytest.fixture(autouse=True)
+def _reset_breaker():
+    """Breaker state is module-global — reset it before/after each test."""
+    aif._reset_breaker()
+    yield
+    aif._reset_breaker()
 
 
 @dataclass
@@ -106,3 +117,50 @@ class TestScoreSignals:
 
         assert result[0].extra["ai_score"] == 0.9
         assert result[0].extra["ai_reasoning"] == "good"
+
+
+class TestCircuitBreaker:
+    def test_single_failure_does_not_trip(self):
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = Exception("boom")
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k"}), \
+             patch("switching.ai_filter._get_client", return_value=mock_client), \
+             patch("switching.notifications.notify_text") as notify:
+            score_signal("h", "ai_pivot", "AAA", 0.5, "e")
+        assert not aif._breaker_open
+        notify.assert_not_called()
+
+    def test_trips_after_threshold_and_stops_calling(self):
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = Exception("401 invalid x-api-key")
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k"}), \
+             patch("switching.ai_filter._get_client", return_value=mock_client), \
+             patch("switching.notifications.notify_text") as notify:
+            # 3 failures trip the breaker; the 4th call must be skipped entirely
+            for _ in range(4):
+                assert score_signal("h", "ai_pivot", "AAA", 0.5, "e") is None
+        assert aif._breaker_open
+        assert mock_client.messages.create.call_count == 3   # 4th was blocked, not called
+        # exactly ONE alert (the trip), no spam
+        assert notify.call_count == 1
+        assert "DISABLED" in notify.call_args[0][0]
+
+    def test_recovers_and_alerts_after_cooldown(self):
+        good = MagicMock()
+        good.content = [MagicMock(text='{"score": 0.7, "reasoning": "ok"}')]
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = [Exception("x"), Exception("x"), Exception("x"), good]
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k"}), \
+             patch("switching.ai_filter._get_client", return_value=mock_client), \
+             patch("switching.notifications.notify_text") as notify:
+            for _ in range(3):
+                score_signal("h", "ai_pivot", "AAA", 0.5, "e")
+            assert aif._breaker_open
+            # simulate the cooldown elapsing so the next call is a half-open probe
+            aif._breaker_opened_at = 0.0
+            result = score_signal("h", "ai_pivot", "AAA", 0.5, "e")
+        assert result is not None and result["score"] == 0.7
+        assert not aif._breaker_open          # recovered
+        assert aif._consec_failures == 0
+        assert notify.call_count == 2         # trip + recovery
+        assert "RECOVERED" in notify.call_args[0][0]

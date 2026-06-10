@@ -14,11 +14,82 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from typing import Any
 
 log = logging.getLogger(__name__)
 
 _MODEL = "claude-haiku-4-5-20251001"
+
+# ---------------------------------------------------------------------------
+# Circuit breaker (Release-It!: fail fast + loud, don't hammer a dead dependency)
+# ---------------------------------------------------------------------------
+# A dead/invalid ANTHROPIC_API_KEY (or an Anthropic outage) used to throw a 401
+# on EVERY signal EVERY scan — silent except for log spam, only noticed a month
+# later by spotting £0 spend. The breaker trips after N consecutive failures:
+# stops calling the API, fires ONE Telegram alert + error log, then probes once
+# per cooldown (half-open) and alerts again on recovery. Scoring is log-only, so
+# tripping never affects trades — it just stops the waste and makes the failure loud.
+_BREAKER_THRESHOLD = 3          # consecutive failures before tripping
+_BREAKER_COOLDOWN_S = 1800.0    # 30 min between half-open probe attempts
+
+_consec_failures = 0
+_breaker_open = False
+_breaker_opened_at = 0.0
+
+
+def _reset_breaker() -> None:
+    """Reset breaker state (used by tests)."""
+    global _consec_failures, _breaker_open, _breaker_opened_at
+    _consec_failures = 0
+    _breaker_open = False
+    _breaker_opened_at = 0.0
+
+
+def _breaker_blocks() -> bool:
+    """True when the breaker is open and still cooling down → skip the API call.
+    When the cooldown has elapsed, returns False to allow ONE half-open probe."""
+    if not _breaker_open:
+        return False
+    return (time.time() - _breaker_opened_at) < _BREAKER_COOLDOWN_S
+
+
+def _alert(text: str) -> None:
+    """Log loudly + best-effort Telegram. Never raises out of the breaker path."""
+    log.error(text)
+    try:
+        from switching import notifications
+        notifications.notify_text(text)
+    except Exception:   # notifications unconfigured / import issue must not crash scoring
+        pass
+
+
+def _record_failure(ticker: str, exc: Exception) -> None:
+    """Count a failed call; trip + alert ONCE when the threshold is crossed."""
+    global _consec_failures, _breaker_open, _breaker_opened_at
+    _consec_failures += 1
+    if not _breaker_open and _consec_failures >= _BREAKER_THRESHOLD:
+        _breaker_open = True
+        _breaker_opened_at = time.time()
+        _alert(
+            f"🤖 AI filter DISABLED — Anthropic API failing after {_consec_failures} "
+            f"consecutive errors ({type(exc).__name__}: {str(exc)[:140]}). "
+            f"Retrying every {int(_BREAKER_COOLDOWN_S // 60)} min. Trades are unaffected "
+            "(scoring is log-only) — check ANTHROPIC_API_KEY / Anthropic status."
+        )
+    elif _breaker_open:
+        # a half-open probe failed → restart the cooldown, stay quiet (no re-alert spam)
+        _breaker_opened_at = time.time()
+
+
+def _record_success() -> None:
+    """A successful call clears the breaker; alert once on recovery."""
+    global _consec_failures, _breaker_open, _breaker_opened_at
+    if _breaker_open:
+        _alert("✅ AI filter RECOVERED — Anthropic API responding again; scoring resumed.")
+    _consec_failures = 0
+    _breaker_open = False
+    _breaker_opened_at = 0.0
 
 
 def _get_client():
@@ -46,6 +117,8 @@ def score_signal(
     client = _get_client()
     if client is None:
         return None
+    if _breaker_blocks():
+        return None   # API is known-bad; skip the doomed call until the next probe window
 
     memory_context = ""
     if memory and memory.get("total_trades", 0) >= 5:
@@ -88,8 +161,10 @@ Reply with ONLY valid JSON: {{"score": 0.XX, "reasoning": "one sentence"}}"""
         text = _extract_json(text)
         result = json.loads(text)
         result["score"] = max(0.0, min(1.0, float(result["score"])))
+        _record_success()
         return result
     except Exception as exc:
+        _record_failure(ticker, exc)
         log.warning("AI filter failed for %s: %s (raw: %r)", ticker, exc,
                      response.content[0].text[:200] if 'response' in dir() else "no response")
         return None
