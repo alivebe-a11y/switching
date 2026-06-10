@@ -177,6 +177,35 @@ def get_intraday_data(ticker: str) -> dict | None:
         return None
 
 
+# A closed paper trade whose entry→exit ratio implies a move this large is almost
+# never real — it's bad price data (classically yfinance flipping GBp/GBP on an LSE
+# ticker, giving a ~100x-off quote). One such trade (FPP.L, +11,476%) once turned the
+# whole UK book from a small loss into a fake +£33k. The guard below neutralises any
+# such close to a scratch so it can't inflate cash or poison the per-detector analytics.
+_MAX_PLAUSIBLE_RETURN = 5.0   # +500%; real catalyst trades never approach this
+
+
+def _exit_return_is_sane(entry_price: float, exit_price: float) -> bool:
+    """False when entry/exit imply an impossible move — treat as bad price data."""
+    if entry_price <= 0 or exit_price <= 0:
+        return False
+    return abs(exit_price / entry_price - 1.0) <= _MAX_PLAUSIBLE_RETURN
+
+
+def _alert_bad_exit_price(ticker: str, detector: str, entry_price: float, exit_price: float) -> None:
+    """Log loudly + best-effort Telegram when a close is neutralised as bad data."""
+    pct = (exit_price / entry_price - 1.0) * 100 if entry_price else 0.0
+    msg = (f"⚠️ {ticker} ({detector}): implausible {pct:+.0f}% return "
+           f"(entry {entry_price:.6g} → exit {exit_price:.6g}) — likely bad price data "
+           f"(yfinance GBp/GBP flip?). Closed as scratch (data_error); no P&L booked.")
+    log.error(msg)
+    try:
+        from switching import notifications
+        notifications.notify_text(msg)
+    except Exception:   # notifications unconfigured must never crash the exit path
+        pass
+
+
 def _signal_key(sig: Signal) -> str:
     """Stable per-article dedup key for the ``seen_signals`` list.
 
@@ -584,6 +613,17 @@ def _exit_profile(detector: str, price: float) -> dict:
         return {"first_green": True, "first_green_pct": 0.015, "hold_days": 4}
     if detector == "crypto_treasury":
         return {"first_green": True, "first_green_pct": 0.03, "hold_days": 3}
+    if detector == "uk_director_dealing":
+        # UK-only (director/PDMR buying — a multi-day DRIFT signal). It used to fall
+        # through to the default 0% first-green and scratch at break-even: live LSE
+        # data showed 154 first-green exits averaging +0.68% with 73 closing ~0.0%,
+        # while losers ran to the -4.3% stop — a losing asymmetry (tiny wins, full
+        # losses). Flip it into ride mode: require a real +1.5% green before taking
+        # anything, then peak-track with a wide 4% trail (LSE is noisier / less
+        # liquid than the US momentum names, so wider than their 3%), 6-day backstop.
+        # HYPOTHESIS — measure on the testbed; revisit after ~30+ post-change trades.
+        return {"first_green": True, "first_green_pct": 0.015, "hold_days": 6,
+                "ride": True, "trail_pct": 0.04}
     return {"first_green": True, "first_green_pct": 0.0, "hold_days": 5}
 
 
@@ -731,6 +771,13 @@ def check_exits(portfolio: Portfolio, market: str = "us") -> list[ClosedTrade]:
             reason = "hold_expiry"
 
         if reason:
+            if reason != "stop_loss" and not _exit_return_is_sane(pos.entry_price, price):
+                # Bad price data (e.g. yfinance GBp/GBP unit flip). Neutralise the
+                # close to a scratch — proceeds == cost, zero P&L — so it can't
+                # inflate cash or poison analytics, and fire a loud alert.
+                _alert_bad_exit_price(pos.ticker, pos.detector, pos.entry_price, price)
+                price = pos.entry_price
+                reason = "data_error"
             pnl = (price - pos.entry_price) * pos.shares
             pct = price / pos.entry_price - 1.0
             trade = ClosedTrade(

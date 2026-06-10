@@ -110,6 +110,39 @@ class TestCheckExits:
         assert closed[0].exit_reason == "hold_expiry"
         assert len(portfolio.positions) == 0
 
+    def test_neutralizes_implausible_return_as_data_error(self):
+        """Bad price data (e.g. yfinance GBp/GBP flip) must NOT book a fake huge win —
+        it's scratched to a zero-P&L data_error close + an alert is fired."""
+        now = datetime.now(tz=timezone.utc)
+        portfolio = Portfolio(cash=800.0, positions=[_make_position(now, first_green=True)])
+        with patch("switching.paper_trader.get_intraday_data",
+                   return_value={"open": 100000.0, "high": 100000.0, "low": 100000.0, "close": 100000.0}), \
+             patch("switching.paper_trader.is_market_hours", return_value=True), \
+             patch("switching.paper_trader.trading_days_since", return_value=2), \
+             patch("switching.notifications.notify_text") as notify:
+            closed = check_exits(portfolio)
+        assert len(closed) == 1
+        t = closed[0]
+        assert t.exit_reason == "data_error"
+        assert t.pnl == 0.0
+        assert t.pct_return == 0.0
+        assert t.exit_price == 100.0          # scratched back to entry
+        assert len(portfolio.positions) == 0
+        notify.assert_called_once()            # loud alert fired
+
+    def test_plausible_move_books_normally(self):
+        """A normal-sized move is unaffected by the bad-data guard."""
+        now = datetime.now(tz=timezone.utc)
+        portfolio = Portfolio(cash=800.0, positions=[_make_position(now, first_green=True)])
+        with patch("switching.paper_trader.get_intraday_data",
+                   return_value={"open": 110.0, "high": 110.0, "low": 110.0, "close": 110.0}), \
+             patch("switching.paper_trader.is_market_hours", return_value=True), \
+             patch("switching.paper_trader.trading_days_since", return_value=2):
+            closed = check_exits(portfolio)
+        assert len(closed) == 1
+        assert closed[0].exit_reason == "first_green"
+        assert abs(closed[0].pct_return - 0.10) < 1e-9   # +10%, booked normally
+
     def test_hold_expiry_does_not_fire_outside_market_hours(self):
         """hold_expiry must NOT fire on weekends / bank holidays."""
         now = datetime.now(tz=timezone.utc)
@@ -257,6 +290,15 @@ class TestExitProfile:
     def test_dividend_surprise_widens_stop(self):
         p = _exit_profile("dividend_surprise", 10.0)
         assert p["stop_loss_extra"] == 0.01   # absorbs day-0 intraday noise
+
+    def test_uk_director_dealing_rides_not_scratches(self):
+        # Was falling through to the 0% default and scratching at break-even.
+        # Now ride mode with a real green threshold + wide LSE trail.
+        p = _exit_profile("uk_director_dealing", 5.0)
+        assert p["ride"] is True
+        assert p["first_green_pct"] == 0.015   # no more 0% break-even scratches
+        assert p["trail_pct"] == 0.04          # wider than US momentum (LSE noisier)
+        assert p["hold_days"] == 6
 
     def test_dividend_surprise_stop_applied_in_open_position(self):
         """Dividend surprise position should have a wider effective stop-loss."""
