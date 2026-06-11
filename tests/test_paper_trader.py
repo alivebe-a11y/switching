@@ -282,14 +282,33 @@ class TestExitProfile:
         assert p["first_green_pct"] == 0.0
         assert p["hold_days"] == 5
 
-    def test_guidance_raise_raised_threshold(self):
+    def test_guidance_raise_rides_with_10day_hold(self):
+        # Post-exit data (durable +8.9% at day 20): now ride mode, 10-day backstop.
         p = _exit_profile("guidance_raise", 100.0)
-        assert p["first_green_pct"] == 0.05   # raised from 0.02 — live data
-        assert p["hold_days"] == 5             # raised from 3
+        assert p["first_green_pct"] == 0.05
+        assert p["ride"] is True
+        assert p["trail_pct"] == 0.03
+        assert p["hold_days"] == 10            # extended from 5
+
+    def test_contract_win_rides_with_8day_hold(self):
+        p = _exit_profile("contract_win", 100.0)
+        assert p["first_green_pct"] == 0.02
+        assert p["ride"] is True
+        assert p["trail_pct"] == 0.03
+        assert p["hold_days"] == 8             # extended from 5
 
     def test_dividend_surprise_widens_stop(self):
         p = _exit_profile("dividend_surprise", 10.0)
         assert p["stop_loss_extra"] == 0.01   # absorbs day-0 intraday noise
+
+    def test_t212_orphan_rides_with_10day_hold(self):
+        # Manually-added / pre-existing T212 positions: keep the stop, but ride
+        # winners (peak-trail) instead of scratching, with a 10-day backstop.
+        p = _exit_profile("t212_orphan", 50.0)
+        assert p["ride"] is True
+        assert p["first_green_pct"] == 0.02
+        assert p["trail_pct"] == 0.03
+        assert p["hold_days"] == 10
 
     def test_uk_director_dealing_rides_not_scratches(self):
         # Was falling through to the 0% default and scratching at break-even.

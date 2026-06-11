@@ -169,9 +169,9 @@ trackers) from being silently corrupted by a future schema/code change:
 | index_inclusion | RSS (default + corporate) | default (first_green +0%, 5-day) | US + UK (FTSE) |
 | spinoff | RSS (default + corporate) | default | US + UK |
 | mna_target | RSS (default + corporate + UK_FEEDS) | **ride mode**: first-green flips into peak-trailing (3% band), 8-day backstop; **acquirer-direction signals are skipped** | US + UK |
-| guidance_raise | RSS (default + earnings + corporate + UK_FEEDS) | first_green +5%, 5-day hold | US + UK |
+| guidance_raise | RSS (default + earnings + corporate + UK_FEEDS) | **ride mode** (2026-06): +5% green → peak-trailing 3% band, 10-day backstop (post-exit data: durable +8.9%@day20) | US + UK |
 | dividend_surprise | RSS (default + earnings + corporate) | first_green +1%, 4-day hold, +1% wider stop | US + UK |
-| contract_win | RSS (default + corporate) | first_green +2%, 5-day hold | US + UK |
+| contract_win | RSS (default + corporate) | **ride mode** (2026-06): +2% green → peak-trailing 3% band, 8-day backstop (post-exit data: durable +4.1%@day20, small n) | US + UK |
 | activist_13d | SEC EDGAR (13D filings) | default | US only |
 | insider_cluster | SEC EDGAR (Form 4) | default | US only |
 | stock_split | RSS (default + corporate) | first_green +1.5%, 4-day hold | US + UK |
@@ -220,6 +220,19 @@ then rides with a 3% trailing band until a 3% drop from peak or the hold-days
 backstop (ai_pivot 6–8d, mna_target 8d). Derived per-cycle in `check_exits`; no
 persisted Position fields beyond `peak_tracking`/`peak_price` (which already save).
 The pre-existing day-0 **+8% spike** peak-tracking still applies to all detectors.
+
+### ⏱️ Exit-profile change marker — 2026-06-11 14:00 BST (13:00 UTC)
+**Cohort cutoff for reviewing these changes.** Trades that CLOSE after this timestamp run
+the new exit rules; before it, the old ones. When evaluating "did it work?", split
+`exit_dt` on this date (recent-vs-historical) — the per-detector aggregates blend old+new
+until enough fresh trades accumulate, and win-rate may FALL even if avg-return/P&L rise
+(ride trades certainty for size). The post-exit tracker's `avg_left_on_table` shrinking is
+the cleanest success signal. Changed on this date (from post-exit-tracker data, US n shown):
+- **guidance_raise** → ride mode, +5% green → 3% trail, hold 5→**10d** (durable +8.9%@day20, n=17)
+- **contract_win** → ride mode, +2% green → 3% trail, hold 5→**8d** (durable +4.1%@day20, n=9, low-confidence)
+- **uk_director_dealing** → ride mode, +1.5% green → 4% trail, 6d (was scratching at break-even)
+- **t212_orphan** (manual/adopted T212 buys) → ride mode, +2% green → 3% trail, hold **10d**, stop unchanged
+Expect: fewer `first_green` exits, more `peak_trailing`/`hold_expiry`, longer holds.
 
 ## Position Sizing — conviction weighting (`_position_weight`)
 Replaces the old fixed-$2k guidance_raise override with a fund-relative multiplier
@@ -1190,7 +1203,28 @@ dump loader for the backtest, TTL-cached, keeping the rolling per-ticker store; 
 already-wired Haiku (or VADER/FinBERT). New source integration = days (auth, rate limits, NLP),
 not a half-day regex detector — a real sub-project.
 
-**Build ONLY when ALL (in this order — each gates the next):**
+**⛔ BACKTEST GATE RESULT (2026-06 — FAILED, do not build the long/discovery side):**
+Ran the mention-momentum backtest over 29.8M WSB items (2024-01→2026-04), 8,063 spike-days,
+**6,325 usable spike events** priced via yfinance (`scripts/reddit_momentum_backtest.py`).
+Buying the next open after a WSB mention spike is **negative at every horizon** (+1d −0.5%,
++5d −2.8%, +10d −3.4%; win rate ~35%) and **−12.5% excess vs the same-tickers baseline**
+(+9.7%). Mean 10-day peak +19% / trough −16% = violently volatile, drifts DOWN. **Verdict:
+WSB spikes are a FADE, not a buy — by the time it trends you're late.** This kills the
+"Reddit → discovery (buy trending)" direction and dents the "confirmation overlay" (buzz =
+crowded = priced in). The credibility-weighted variant is untested, but it'd start from a
+−12.5% base-rate hole. Gate did its job: months of infra saved.
+
+**USABLE NOW (long-only, no new infra):** invert it into a **defensive filter** — if a detector
+fires on a stock that's *also* a current WSB mention-spike, treat it as crowded/late → skip or
+downsize. Negative-confirmation overlay; the safe payoff of this whole exercise.
+
+**PHASE-3 LEAD (keep, re-validate — defined-risk PUTS only, NEVER naked shorts):** the fade is a
+short candidate, but shorting meme names = squeeze/unlimited risk, and the backtest HIDES the
+worst squeezes (survivorship: deleted/banned/delisted gone). Before trusting it at Phase 3:
+re-test with put premiums (brutal meme IV) + borrow/slippage modelled, a liquid-optionable-only
+filter, and fresh out-of-sample data. Most names won't clear the option premium. See "crash alpha".
+
+**Original build gate (kept for reference — the FIRST item is now answered FAILED above):**
 - [ ] **Backtest gate (cheapest, do first).** A historical backtest off the Pushshift dumps
       shows credibility-weighted sentiment predicts forward returns OUT-OF-SAMPLE. No edge here
       ⇒ stop, months saved.
@@ -1279,7 +1313,13 @@ Naturally pairs with the regime filter we need for the kill-switch anyway.
 - [x] Analytics tab in dashboard — Exit Profile Tuning, Signal Severity correlation, Peak Trailing summary
 - [x] Weekly Saturday report (`weekly_report.py`) — auto-fires every Saturday at 09:00 UTC; covers detector rankings, T212 vs paper slippage, skipped-signal opportunity cost, data-driven improvement suggestions. Manual trigger: `switching weekly-report`
 - [x] Signal dedup bug fixed — `_signal_key` now URL-based (not date-based), so undated RSS articles can't re-fire daily
-- [x] T212 orphan position fix — positions in T212 with no local tracker get a synthetic record on reconciliation (no longer auto-sold on first profitable cycle)
+- [x] T212 orphan position fix — positions in T212 with no local tracker (e.g. manually
+  bought in the app, or pre-existing) get a synthetic record on reconciliation (no longer
+  auto-sold on first profitable cycle). Exit profile `t212_orphan` (2026-06): keeps the
+  generic tiered stop, but **rides** winners (flip to peak-trailing at +2%, 3% trail) with
+  a **10-day** backstop — treats intentional buys as managed holds, not break-even scratches.
+  (NOTE: still *managed* — the bot will exit them on stop/trail/10-day. A true never-touch
+  hold would need a separate exclusion list, not built.)
 - [x] SQLite storage (`storage.py`) — one `switching.db`, `service` column (us/uk/t212); US/UK no longer share/clobber JSON; T212 now collects full analytics; auto-migration of legacy JSON with `scripts/migrate_to_sqlite.py` validation
 - [x] T212 rate limiting — per-endpoint throttle + 429 Retry-After backoff; batched post-buy position fetch
 - [x] T212 ghost-position reconciliation (`_reconcile_t212_ghosts`) — positions T212 closes externally (corporate action: M&A cash-out, delisting, liquidation, ticker change) are recorded as `corporate_action` and removed, so they don't ghost forever, block re-buys, or skew analytics

@@ -597,10 +597,13 @@ def _exit_profile(detector: str, price: float) -> dict:
         return {"first_green": True, "first_green_pct": 0.03, "hold_days": 8,
                 "ride": True, "trail_pct": 0.03}
     if detector == "guidance_raise":
-        # Live data: stocks consistently ran 5-25% beyond the old 2% threshold
-        # (CVS +14.3%, GEN +12.3%, TBLA +37.8% post-exit). Raised to 5%;
-        # hold extended to 5 days to capture multi-day guidance-revision drift.
-        return {"first_green": True, "first_green_pct": 0.05, "hold_days": 5}
+        # Post-exit tracker (2026-06, n=17): peaked +16.6% and STILL held +8.9% at
+        # day 20 while we only banked +4.5% — the most durable "money left on table"
+        # of any detector. Flip into ride mode: at +5% green, peak-track with a 3%
+        # trail and a 10-day backstop, to ride the durable guidance-revision drift
+        # instead of taking the +5% first-green. HYPOTHESIS — review recent-vs-historical.
+        return {"first_green": True, "first_green_pct": 0.05, "hold_days": 10,
+                "ride": True, "trail_pct": 0.03}
     if detector == "dividend_surprise":
         # Live data: MKTW and SII both stopped out on day-0 intraday dips then
         # surged 18-14% — stop_loss_extra widens the effective stop by 1% for
@@ -608,7 +611,12 @@ def _exit_profile(detector: str, price: float) -> dict:
         return {"first_green": True, "first_green_pct": 0.01, "hold_days": 4,
                 "stop_loss_extra": 0.01}
     if detector == "contract_win":
-        return {"first_green": True, "first_green_pct": 0.02, "hold_days": 5}
+        # Post-exit tracker (2026-06, n=9): durable (+4.1% at day 20), lowest
+        # exit-too-early rate (33%), peak ~day 11. Extend hold to 8 days and ride
+        # (peak-track at +2%, 3% trail). Lower confidence than guidance_raise
+        # (small sample) — review as trades accumulate.
+        return {"first_green": True, "first_green_pct": 0.02, "hold_days": 8,
+                "ride": True, "trail_pct": 0.03}
     if detector == "stock_split":
         return {"first_green": True, "first_green_pct": 0.015, "hold_days": 4}
     if detector == "crypto_treasury":
@@ -624,6 +632,14 @@ def _exit_profile(detector: str, price: float) -> dict:
         # HYPOTHESIS — measure on the testbed; revisit after ~30+ post-change trades.
         return {"first_green": True, "first_green_pct": 0.015, "hold_days": 6,
                 "ride": True, "trail_pct": 0.04}
+    if detector == "t212_orphan":
+        # Manually-added T212 positions (or ones that pre-existed this service),
+        # adopted by reconciliation. These are INTENTIONAL buys, so don't scratch
+        # them at break-even: keep the generic tiered stop (downside protection),
+        # but let winners RIDE — flip into peak-tracking at +2% with a 3% trailing
+        # band, and a longer 10-day backstop hold.
+        return {"first_green": True, "first_green_pct": 0.02, "hold_days": 10,
+                "ride": True, "trail_pct": 0.03}
     return {"first_green": True, "first_green_pct": 0.0, "hold_days": 5}
 
 
@@ -1539,6 +1555,7 @@ def run_loop_t212(
                     "(entry_price=%.4f, qty=%.4f)",
                     sym, tp.avg_entry_price, tp.quantity,
                 )
+                _orphan_profile = _exit_profile("t212_orphan", tp.avg_entry_price)
                 synthetic = Position(
                     ticker=sym,
                     detector="t212_orphan",
@@ -1548,9 +1565,9 @@ def run_loop_t212(
                     headline="[position pre-existed — no local record]",
                     severity=0.0,
                     stop_loss=_tiered_stop_loss(stop_loss, tp.avg_entry_price),
-                    hold_days=hold_days,
-                    first_green=True,
-                    first_green_pct=0.0,
+                    hold_days=_orphan_profile["hold_days"],          # 10-day backstop
+                    first_green=_orphan_profile["first_green"],
+                    first_green_pct=_orphan_profile["first_green_pct"],  # +2% before riding
                 )
                 portfolio.positions.append(synthetic)
                 local_map[sym] = synthetic
