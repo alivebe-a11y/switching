@@ -193,7 +193,7 @@ def _alert_uk_failover(reason: str) -> None:
     log.warning("UK RSS failover: %s", reason)
     try:
         from switching import notifications
-        notifications.notify_text(f"⚠️ UK RNS source failed ({reason}) — falling back to Google News.")
+        notifications.notify_alert(f"UK RNS source failed ({reason}) — falling back to Google News.")
     except Exception:  # pragma: no cover — notifications optional
         pass
 

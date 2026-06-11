@@ -55,6 +55,21 @@ def _config() -> tuple[str, str] | None:
     return token, chat_id
 
 
+def _alert_config() -> tuple[str, str] | None:
+    """Config for the SEPARATE ops/alert bot used for 'something has gone wrong'
+    alerts. Distinct token (TELEGRAM_ALERT_BOT_TOKEN) so failure alerts come from a
+    different sender than routine trade notifications — and still reach you even if
+    the MAIN bot's token is what failed. Chat id defaults to the main chat
+    (TELEGRAM_CHAT_ID) unless TELEGRAM_ALERT_CHAT_ID overrides it."""
+    token = os.environ.get("TELEGRAM_ALERT_BOT_TOKEN", "")
+    if not token:
+        return None
+    chat_id = os.environ.get("TELEGRAM_ALERT_CHAT_ID", "") or os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not chat_id:
+        return None
+    return token, chat_id
+
+
 def _html_to_plain(text: str) -> str:
     """Strip HTML tags and unescape entities for a plain-text fallback send."""
     import html
@@ -93,11 +108,8 @@ def _post_message(token: str, chat_id: str, text: str, parse_mode: str | None) -
         return False, None
 
 
-def _send(text: str, parse_mode: str = "HTML") -> bool:
-    cfg = _config()
-    if cfg is None:
-        return False
-    token, chat_id = cfg
+def _send_via(token: str, chat_id: str, text: str, parse_mode: str = "HTML") -> bool:
+    """Send to a specific bot/chat with the market prefix + 400→plain-text fallback."""
     if _MARKET_PREFIX:
         text = f"<b>[{_MARKET_PREFIX}]</b>\n{text}"
     ok, status = _post_message(token, chat_id, text, parse_mode)
@@ -115,9 +127,29 @@ def _send(text: str, parse_mode: str = "HTML") -> bool:
     return False
 
 
+def _send(text: str, parse_mode: str = "HTML") -> bool:
+    cfg = _config()
+    if cfg is None:
+        return False
+    return _send_via(cfg[0], cfg[1], text, parse_mode)
+
+
 def notify_text(text: str) -> None:
     """Send an ad-hoc one-off alert (gets the market prefix like everything else)."""
     _send(text)
+
+
+def notify_alert(text: str) -> None:
+    """Critical / 'something has gone wrong' alert — sent from the SEPARATE ops bot
+    so it stands out from routine trade notifications and survives the main bot's
+    token failing. Falls back to the main bot if the ops bot isn't configured, and
+    to a plain log if neither is (degrade, never drop a failure alert silently)."""
+    msg = f"🚨 {text}"
+    alert = _alert_config()
+    if alert is not None and _send_via(alert[0], alert[1], msg):
+        return
+    _send(msg)   # fall back to the main bot; silent no-op if neither is configured
+                 # (callers already log the underlying failure, so we don't re-log here)
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +365,7 @@ def notify_rate_limit_warning(endpoint: str) -> None:
         f"<code>{short_url}</code>\n"
         f"Backing off 2 s and retrying. If this repeats, check scan frequency."
     )
-    _send(text)
+    notify_alert(text)
 
 
 def notify_review_digest(insights: list[str], trade_count: int) -> None:

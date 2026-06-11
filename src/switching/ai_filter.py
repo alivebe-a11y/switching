@@ -59,7 +59,7 @@ def _alert(text: str) -> None:
     log.error(text)
     try:
         from switching import notifications
-        notifications.notify_text(text)
+        notifications.notify_alert(text)   # ops bot — a failure alert, not a routine note
     except Exception:   # notifications unconfigured / import issue must not crash scoring
         pass
 

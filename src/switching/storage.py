@@ -276,8 +276,7 @@ def _check_invariants_once(conn: sqlite3.Connection, db_path: Path) -> None:
     # being tailed. Wrapped in a bare except — alerting must never crash startup.
     try:
         from switching import notifications
-        if notifications.is_configured():
-            notifications._send(f"WARNING: {msg}")  # type: ignore[attr-defined]
+        notifications.notify_alert(msg)   # routes to the ops bot (falls back to main)
     except Exception:
         pass
 

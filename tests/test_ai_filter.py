@@ -125,7 +125,7 @@ class TestCircuitBreaker:
         mock_client.messages.create.side_effect = Exception("boom")
         with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k"}), \
              patch("switching.ai_filter._get_client", return_value=mock_client), \
-             patch("switching.notifications.notify_text") as notify:
+             patch("switching.notifications.notify_alert") as notify:
             score_signal("h", "ai_pivot", "AAA", 0.5, "e")
         assert not aif._breaker_open
         notify.assert_not_called()
@@ -135,7 +135,7 @@ class TestCircuitBreaker:
         mock_client.messages.create.side_effect = Exception("401 invalid x-api-key")
         with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k"}), \
              patch("switching.ai_filter._get_client", return_value=mock_client), \
-             patch("switching.notifications.notify_text") as notify:
+             patch("switching.notifications.notify_alert") as notify:
             # 3 failures trip the breaker; the 4th call must be skipped entirely
             for _ in range(4):
                 assert score_signal("h", "ai_pivot", "AAA", 0.5, "e") is None
@@ -152,7 +152,7 @@ class TestCircuitBreaker:
         mock_client.messages.create.side_effect = [Exception("x"), Exception("x"), Exception("x"), good]
         with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k"}), \
              patch("switching.ai_filter._get_client", return_value=mock_client), \
-             patch("switching.notifications.notify_text") as notify:
+             patch("switching.notifications.notify_alert") as notify:
             for _ in range(3):
                 score_signal("h", "ai_pivot", "AAA", 0.5, "e")
             assert aif._breaker_open

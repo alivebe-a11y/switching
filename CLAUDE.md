@@ -103,7 +103,11 @@ chosen live broker, see ADR-006. `broker_alpaca.py` + the `trade` CLI command +
 ## Environment Variables (set in Dockge .env)
 - `SWITCHING_EDGAR_UA` — Required for EDGAR-based detectors (activist_13d, insider_cluster)
 - `ANTHROPIC_API_KEY` — Claude Haiku for AI signal scoring (~$0.30/month)
-- `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` — Push notifications
+- `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` — Push notifications (routine trade alerts)
+- `TELEGRAM_ALERT_BOT_TOKEN` (+ optional `TELEGRAM_ALERT_CHAT_ID`) — SEPARATE **ops bot** for
+  "something has gone wrong" alerts (different sender, survives the main bot's token failing).
+  Optional: if unset, those alerts fall back to the main bot. `TELEGRAM_ALERT_CHAT_ID` defaults
+  to `TELEGRAM_CHAT_ID`.
 - `T212_API_KEY` — Trading 212 demo API key (US + UK T212 services share it)
 
 ## Critical: Data Directory
@@ -295,6 +299,14 @@ The old UK RSS feeds all died. UK ingestion now (`rss._fetch_uk`, triggered when
 Every message is prefixed with a per-process market label (`notifications.set_market`,
 called once at loop start): `🇺🇸 US` / `🇬🇧 LSE` / `🇺🇸 T212`, so the three services'
 alerts are distinguishable in one chat. Default is no prefix (unconfigured/tests).
+
+**Two bots: trades vs ops.** Routine notifications (`notify_text`, buys/sells/summaries) go
+via the main bot (`TELEGRAM_BOT_TOKEN`). **Failure / "gone wrong" alerts** go via
+`notify_alert()` → a SEPARATE ops bot (`TELEGRAM_ALERT_BOT_TOKEN`) so they stand out from the
+chatty trade feed and still arrive if the *main* bot's token is the thing that broke. Routed
+to the ops bot: AI-filter circuit breaker, bad-price guard (`data_error`), UK RNS failover,
+EDGAR 429 warning, schema-invariant failure. `notify_alert` falls back to the main bot if the
+ops bot isn't configured, and is a silent no-op if neither is (callers log the failure anyway).
 
 ## Stability rules (Release It!)
 @docs/release-it.mini.md

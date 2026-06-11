@@ -201,7 +201,7 @@ def _alert_bad_exit_price(ticker: str, detector: str, entry_price: float, exit_p
     log.error(msg)
     try:
         from switching import notifications
-        notifications.notify_text(msg)
+        notifications.notify_alert(msg)   # ops bot — a data-quality failure, not a trade note
     except Exception:   # notifications unconfigured must never crash the exit path
         pass
 

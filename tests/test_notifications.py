@@ -102,6 +102,50 @@ class TestSendHtmlFallback:
         assert mo.call_count == 1
 
 
+class TestNotifyAlert:
+    """Critical/'gone wrong' alerts route to the SEPARATE ops bot, with graceful
+    fallback to the main bot if the ops bot isn't configured."""
+
+    def teardown_method(self):
+        _notif._MARKET_PREFIX = ""
+
+    def _ok(self):
+        r = MagicMock()
+        r.status = 200
+        r.__enter__ = lambda s: s
+        r.__exit__ = MagicMock(return_value=False)
+        return r
+
+    def test_uses_ops_bot_when_configured(self):
+        env = {"TELEGRAM_BOT_TOKEN": "MAINTOK", "TELEGRAM_CHAT_ID": "1",
+               "TELEGRAM_ALERT_BOT_TOKEN": "OPSTOK", "TELEGRAM_ALERT_CHAT_ID": "9"}
+        with patch.dict("os.environ", env, clear=True), \
+             patch("urllib.request.urlopen", return_value=self._ok()) as mo:
+            _notif.notify_alert("breaker tripped")
+        req = mo.call_args[0][0]
+        assert "botOPSTOK/" in req.full_url        # sent via the OPS bot, not main
+        data = req.data.decode("utf-8")
+        assert "breaker tripped" in data
+        assert '"chat_id": "9"' in data
+
+    def test_falls_back_to_main_bot_when_ops_unset(self):
+        env = {"TELEGRAM_BOT_TOKEN": "MAINTOK", "TELEGRAM_CHAT_ID": "1"}
+        with patch.dict("os.environ", env, clear=True), \
+             patch("urllib.request.urlopen", return_value=self._ok()) as mo:
+            _notif.notify_alert("breaker tripped")
+        assert "botMAINTOK/" in mo.call_args[0][0].full_url   # degraded to main bot
+
+    def test_ops_chat_id_defaults_to_main_chat(self):
+        env = {"TELEGRAM_BOT_TOKEN": "MAINTOK", "TELEGRAM_CHAT_ID": "1",
+               "TELEGRAM_ALERT_BOT_TOKEN": "OPSTOK"}   # no alert chat id
+        with patch.dict("os.environ", env, clear=True), \
+             patch("urllib.request.urlopen", return_value=self._ok()) as mo:
+            _notif.notify_alert("x")
+        data = mo.call_args[0][0].data.decode("utf-8")
+        assert "botOPSTOK/" in mo.call_args[0][0].full_url
+        assert '"chat_id": "1"' in data            # defaulted to the main chat
+
+
 class TestIsConfigured:
     def test_not_configured_without_env(self):
         with patch.dict("os.environ", {}, clear=True):

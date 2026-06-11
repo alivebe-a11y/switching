@@ -119,7 +119,7 @@ class TestCheckExits:
                    return_value={"open": 100000.0, "high": 100000.0, "low": 100000.0, "close": 100000.0}), \
              patch("switching.paper_trader.is_market_hours", return_value=True), \
              patch("switching.paper_trader.trading_days_since", return_value=2), \
-             patch("switching.notifications.notify_text") as notify:
+             patch("switching.notifications.notify_alert") as notify:
             closed = check_exits(portfolio)
         assert len(closed) == 1
         t = closed[0]

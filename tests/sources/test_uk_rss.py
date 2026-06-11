@@ -254,7 +254,7 @@ def test_uk_failover_alert_is_cooldowned():
     from switching.sources import rss
     rss._last_uk_failover_alert = 0.0
     sent = []
-    with patch("switching.notifications.notify_text", side_effect=lambda t: sent.append(t)):
+    with patch("switching.notifications.notify_alert", side_effect=lambda t: sent.append(t)):
         rss._alert_uk_failover("first")
         rss._alert_uk_failover("second")   # within cooldown -> suppressed
     assert len(sent) == 1
