@@ -442,6 +442,30 @@ the move has happened; this grades detector recall and ranks what to build next.
 **Attribution is heuristic** (yfinance `.news` ≠ our exact feeds). US is clean; UK movers
 are noisier (yfinance UK news is weak) — tune US first, then UK.
 
+### TODO (backlog, not yet built) — upgrade movers-audit news source to Benzinga WIIM
+**Problem:** the audit reads **yfinance `.news`**, which returns lagging *commentary* headlines
+("Valuation check after surge", "Why X jumped"), not the catalyst wire. Live data (3 days,
+2026-06): `no_detector` = **76%** — badly inflated, because real catalysts (ROKU buyout chatter,
+ALMS Q1 results, ELVN FDA) only showed up as commentary that didn't `classify()`. So the
+scoreboard currently *under-counts* what we'd actually catch and can't be fully trusted.
+**Fix:** swap the audit's per-ticker news source to **Benzinga**, ideally the **WIIM
+("Why Is It Moving") endpoint** (`/api/v1/wiims`) — it's purpose-built to give the *actual
+reason a stock moved*, which is exactly what `attribute()` needs. Fall back to `/api/v1/news`
++ `/api/v1/press-releases` for tickers without a WIIM.
+**Steps:**
+1. Add a small Benzinga client (`sources/benzinga.py`): `BENZINGA_API_KEY` env, REST, timeout,
+   graceful no-op if key unset (→ falls back to yfinance `.news`, so nothing breaks).
+2. In `movers.py`, add `_fetch_headlines` variant that pulls Benzinga WIIM/news per symbol;
+   prefer it when the key is set.
+3. Re-run the audit → expect `no_detector` to SHRINK and the true "catalyst we target but
+   missed" (feed_gap-like) signal to sharpen. Document before/after.
+**Gate:** start on Benzinga's **FREE tier** (headline+teaser+link) — confirm WIIM is in free
+vs paid first; measure value before paying for the real-time stream. **US-only** (UK = RNS).
+**Caveats:** free-tier rate/latency limits; quick ToS check (headlines for internal signals).
+**Why it matters:** until the audit's *own* news source is good, the `no_detector` number is
+measuring our measurement tool's weakness — this is the prerequisite for trusting the scoreboard
+AND a free trial of whether Benzinga is worth paying for as a live detector feed.
+
 ## Notification Batching
 `src/switching/notifications.py` queues buy notifications in `_NotificationQueue` and flushes
 every 2 hours via a daemon timer. Sells, stop-losses, skips, and the end-of-day summary call
@@ -994,6 +1018,14 @@ These are crash/failure protections; the demo can run without them, real money c
 
 ### Phase 2 — Scale to Real Capital (Month 3-6)
 - [ ] Set up UK Ltd company for tax efficiency (25% vs 40%)
+  - ⚠️ **Ltd ↔ market-data cost linkage (discovered 2026-06):** trading via a Ltd makes you a
+    **"Professional Subscriber"** for market data — an **exchange-level** classification, not a
+    single-vendor quirk. It raises data fees across **every** vendor (Massive, IBKR, the
+    exchanges themselves) and **disqualifies you from cheap "Individual/Non-Pro" data plans**
+    (you'd need Business/Enterprise "contact us" pricing). So the 25%-vs-40% tax saving is
+    **partly offset by Professional data fees**. Personal trading = Non-Pro = cheap data but 40%
+    tax. Decide structure WITH the accountant factoring Pro data cost in — it sets your data tier
+    everywhere. (Don't misclassify to dodge it — vendors penalise it; if via the Ltd, you ARE Pro.)
 - [ ] Fund with £5-10K own savings
 - [ ] **IBKR paper trading integration** (see below — do this 4-6 weeks before going live)
 - [ ] Add Polygon.io (~$30/month) for real-time price data (or use IBKR market data subscription)
@@ -1048,9 +1080,40 @@ rate on US dividends (15% vs 30% default withholding). Do this at account openin
 
 ### Phase 4 — Scale & Harden (Month 9-12)
 - [ ] Scale to £30K capital
-- [ ] Multi-container architecture (VPN for rate limit distribution)
+- [ ] Multi-container architecture (VPN for rate limit distribution) — see "Rate limits &
+      egress IP" below for the crucial NAT caveat before assuming a 2nd machine helps
 - [ ] UK market support (LSE, RNS feeds, FCA filings)
 - [ ] Other markets (EU, Asia — evaluate per-market)
+
+### Rate limits & egress IP — how the limits actually scope (discussed 2026-06)
+The rate-limit scope differs per dependency, and this drives all multi-machine / failover design:
+- **T212 = per ACCOUNT, IP-irrelevant.** A LIVE account and the DEMO account have
+  independent budgets. Two services on the *same* account share the budget (current US+UK
+  demo split — fine at this volume). NEVER run the **same account hot from two machines** →
+  rate contention AND duplicate real orders.
+- **yfinance / EDGAR = per PUBLIC IP.** The IP that counts is your **ISP/WAN IP**, not LAN
+  (192.168.x). Two machines on the **same home connection sit behind one NAT = ONE public
+  IP = SHARED budget** — a 2nd home box gives NO yfinance/EDGAR headroom (slightly worse).
+  Separate budgets need **separate egress** (VPN / VPS / hotspot).
+- **VPN price-fetcher (free lever IF yfinance throttles):** run a VPN sidecar container, put a
+  dedicated price-fetcher on `network_mode: "service:vpn"` so only IT egresses via the VPN; it
+  writes to the shared SQLite `PriceCache` and trading services READ the cache (decouples
+  fetch-behind-VPN from trade-on-normal-net). ⚠️ **Caveat: Yahoo aggressively throttles known
+  VPN/datacenter IP ranges** (scraper abuse) — a VPN exit can be WORSE than the residential IP.
+  Test the specific exit IP first. **Real fix at live scale = a paid feed (Polygon ~$30/mo or
+  IBKR market data), not a yfinance trick.** Don't build pre-emptively — yfinance isn't the
+  bottleneck at 10-min scans.
+
+### Going-live deployment shape (discussed 2026-06 — gated on the pre-live safety gate)
+- **Separate live service** (`t212_live` tag, or IBKR per ADR-006) alongside the existing paper
+  services — service-scoped SQLite supports it natively. **Keep paper running as the
+  shadow/benchmark** (live-vs-paper divergence = real slippage measurement).
+- **Host on the NAS** (always-on, proven), funded TINY, only after the 4 pre-live blockers exist.
+- **2012 Mac mini**: too old to be the real-money primary; use it for research/movers/backtests
+  or a **cold standby** (Linux for Docker — macOS is EOL on it). Fail over **manually** off a
+  heartbeat alert — do NOT build automated hot HA (split-brain = duplicate real orders).
+- Broker decision is conscious: T212-live = one flag (`T212_DEMO=false` + live key) but
+  contradicts ADR-006; IBKR = the chosen home but unbuilt (IB Gateway sidecar + ib_insync).
 
 ### Infrastructure
 - [ ] Failover / HA: secondary machine (VPS or second NAS) monitors primary heartbeat, takes over if offline. State sync via shared volume or rsync. Alert on failover via Telegram.
@@ -1067,7 +1130,19 @@ rate on US dividends (15% vs 30% default withholding). Do this at account openin
 - [ ] Claude API integration for adaptive strategy tuning
 
 ### Data Sources (when capital justifies cost)
-- [ ] Polygon.io real-time + options ($30-200/month)
+- [ ] **Massive** (formerly Polygon.io — rebranded Oct 2025) — US stocks only, **Individual/Non-Pro
+      plans require Non-Professional status** (see Ltd caveat in Phase 2). Tiers (priced 2026-06):
+      - **Basic $0**: 2yr history, EOD, 5 calls/min — dev/testing only.
+      - **Starter $29**: 5yr history, **15-min delayed**, unlimited, corp-actions, minute aggs,
+        flat files. → great cheap **BACKTEST** feed (flat files = bulk history); delayed so fine
+        for backtest + 10-min-scan entries, **useless for live exits**.
+      - **Developer $79**: 10yr history, +Trades, still 15-min delayed.
+      - **Advanced $199**: **real-time**, websockets, snapshot, second aggs, trades, quotes,
+        financials & ratios — the tier you'd need for **live exit management** (or use IBKR realtime).
+      - **News is NOT in core tiers** — it's a **+$99/mo Benzinga add-on**; keep our RSS instead.
+      - **No LSE/UK** — UK side still needs IBKR market data or another feed.
+      - Verdict: good cheap **research/backtest** upgrade now (Starter, personal Non-Pro); for live,
+        real-time ($199 or IBKR) + the Pro-status/Ltd cost question dominate the decision.
 - [ ] Tiingo Pro for cleaner fundamentals ($30/month)
 - [ ] S&P Capital IQ (£15-25K/year — only at £100K+ capital)
 - [ ] Bloomberg Terminal (£24K/year — only if running a fund)
