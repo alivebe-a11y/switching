@@ -301,6 +301,17 @@ class TestExitProfile:
         p = _exit_profile("dividend_surprise", 10.0)
         assert p["stop_loss_extra"] == 0.01   # absorbs day-0 intraday noise
 
+    def test_market_ohlc_fn_normalises_uk_not_us(self):
+        # The post-exit tracker bug: UK snapshots came back in pence while entry
+        # was in pounds. The feed must normalise UK (÷100) and leave US untouched.
+        from switching.paper_trader import _market_ohlc_fn
+        raw = {"open": 400.0, "high": 410.0, "low": 395.0, "close": 405.0}
+        with patch("switching.paper_trader.get_intraday_data", return_value=raw):
+            uk = _market_ohlc_fn("uk")("VOD.L")
+            us = _market_ohlc_fn("us")("AAPL")
+        assert uk == {"open": 4.0, "high": 4.1, "low": 3.95, "close": 4.05}   # pence → £
+        assert us == raw                                                       # identity
+
     def test_t212_orphan_rides_with_10day_hold(self):
         # Manually-added / pre-existing T212 positions: keep the stop, but ride
         # winners (peak-trail) instead of scratching, with a 10-day backstop.

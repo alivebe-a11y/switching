@@ -36,6 +36,18 @@ def _finite(x) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
 
 
+# A post-exit return beyond this band is not signal — it's bad data (classically a
+# GBp/GBP price-unit mismatch making close/entry ~100x). Excluded from aggregates +
+# insights so a units bug can never again surface as a "+10,000% left on table"
+# headline. Defence-in-depth alongside the normalised price feed in paper_trader.
+_MAX_PLAUSIBLE_RETURN = 5.0   # +500%
+
+
+def _plausible(x) -> bool:
+    """Finite AND within a believable return band (-100% .. +500%)."""
+    return _finite(x) and -1.0 <= x <= _MAX_PLAUSIBLE_RETURN
+
+
 def _parse_ohlc(raw) -> tuple[float, float, float, float] | None:
     """Accept either a float or {open,high,low,close} dict. Returns (o,h,l,c).
 
@@ -263,12 +275,13 @@ class ExitTracker:
         def _summarize_group(group: list[TrackedExit]) -> dict[str, Any]:
             # `_finite` drops both None and NaN/inf (legacy thin-bar snapshots can
             # carry NaN; NaN != None so a plain `is not None` would poison the mean).
-            left       = [t.left_on_table          for t in group if _finite(t.left_on_table)]
-            left_intra = [t.left_on_table_intraday  for t in group if _finite(t.left_on_table_intraday)]
-            max_after  = [t.max_post_exit_return    for t in group if _finite(t.max_post_exit_return)]
-            max_high   = [t.max_intraday_high       for t in group if _finite(t.max_intraday_high)]
-            final      = [t.final_return            for t in group if _finite(t.final_return)]
-            day_peaks  = [t.day_of_peak             for t in group if _finite(t.day_of_peak)]
+            # return-based metrics: drop implausible (bad-data / unit-mismatch) values
+            left       = [t.left_on_table          for t in group if _plausible(t.left_on_table)]
+            left_intra = [t.left_on_table_intraday  for t in group if _plausible(t.left_on_table_intraday)]
+            max_after  = [t.max_post_exit_return    for t in group if _plausible(t.max_post_exit_return)]
+            max_high   = [t.max_intraday_high       for t in group if _plausible(t.max_intraday_high)]
+            final      = [t.final_return            for t in group if _plausible(t.final_return)]
+            day_peaks  = [t.day_of_peak             for t in group if _finite(t.day_of_peak)]  # day number, not a return
             return {
                 "count":                  len(group),
                 "avg_exit_return":        round(sum(t.pct_return for t in group) / len(group), 4),
@@ -288,11 +301,11 @@ class ExitTracker:
                 day = s["day"]
                 if day not in by_day:
                     by_day[day] = {"close": [], "high": [], "low": [], "n": 0}
-                if _finite(s.get("pct_from_entry")):
+                if _plausible(s.get("pct_from_entry")):
                     by_day[day]["close"].append(s["pct_from_entry"])
-                if _finite(s.get("high_pct")):
+                if _plausible(s.get("high_pct")):
                     by_day[day]["high"].append(s["high_pct"])
-                if _finite(s.get("low_pct")):
+                if _plausible(s.get("low_pct")):
                     by_day[day]["low"].append(s["low_pct"])
                 by_day[day]["n"] += 1
 
@@ -327,8 +340,8 @@ class ExitTracker:
         for det, trades in by_detector.items():
             if len(trades) < 3:
                 continue
-            left = [t.left_on_table for t in trades if t.left_on_table is not None]
-            peaks = [t.day_of_peak  for t in trades if t.day_of_peak   is not None]
+            left = [t.left_on_table for t in trades if _plausible(t.left_on_table)]
+            peaks = [t.day_of_peak  for t in trades if _finite(t.day_of_peak)]
             if left:
                 avg_left = sum(left) / len(left)
                 if avg_left > 0.03:
@@ -348,14 +361,14 @@ class ExitTracker:
             if len(trades) < 3:
                 continue
             if reason == "stop_loss":
-                recovered = [t for t in trades if t.max_post_exit_return and t.max_post_exit_return > 0]
+                recovered = [t for t in trades if _plausible(t.max_post_exit_return) and t.max_post_exit_return > 0]
                 if len(recovered) > len(trades) * 0.5:
                     insights.append(
                         f"stop_loss: {len(recovered)}/{len(trades)} trades recovered after stop — "
                         f"consider widening stop-loss"
                     )
             if reason == "first_green":
-                kept_running = [t for t in trades if t.left_on_table and t.left_on_table > 0.03]
+                kept_running = [t for t in trades if _plausible(t.left_on_table) and t.left_on_table > 0.03]
                 if len(kept_running) > len(trades) * 0.4:
                     insights.append(
                         f"first_green: {len(kept_running)}/{len(trades)} trades ran 3%+ further — "

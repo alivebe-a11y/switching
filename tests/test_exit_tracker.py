@@ -215,3 +215,33 @@ def test_stop_loss_recovery_insight():
     summary = tracker._build_summary()
     assert summary["completed_tracks"] == 4
     assert any("recovered" in i for i in summary.get("insights", []))
+
+
+def _completed_track(detector, entry, close, pct_return):
+    """A completed track with one snapshot at `close` (for clamp tests)."""
+    pe = round(close / entry - 1.0, 4)
+    snap = {"date": "2026-06-01", "day": 1, "open": close, "high": close,
+            "low": close, "close": close, "pct_from_entry": pe,
+            "pct_from_exit": 0.0, "high_pct": pe, "low_pct": pe}
+    return TrackedExit(
+        ticker="X", detector=detector, entry_price=entry, exit_price=entry,
+        exit_dt="2026-05-01T00:00:00+00:00", exit_reason="first_green",
+        pct_return=pct_return, headline="h", snapshots=[snap], tracking_complete=True,
+    )
+
+
+def test_implausible_returns_excluded_from_summary_and_insights():
+    """A GBp/GBP unit bug (snapshot 100x entry → +9900%) must NOT poison the
+    averages or surface as an insight — the plausibility clamp drops it."""
+    tracker = ExitTracker(tracked=[
+        _completed_track("uk_director_dealing", 1.0, 1.05, 0.0),    # +5% real
+        _completed_track("uk_director_dealing", 1.0, 1.05, 0.0),    # +5% real
+        _completed_track("uk_director_dealing", 1.0, 100.0, 0.0),   # +9900% bad data
+    ])
+    s = tracker._build_summary()
+    g = s["by_detector"]["uk_director_dealing"]
+    assert g["count"] == 3                          # the bad track is still counted as a track
+    assert g["avg_left_on_table"] == 0.05           # but excluded from the average (not ~33)
+    assert g["avg_max_post_exit"] == 0.05
+    # no insight quotes the absurd number
+    assert all("9900" not in i and "990000" not in i for i in s["insights"])

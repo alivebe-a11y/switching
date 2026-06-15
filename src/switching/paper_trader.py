@@ -519,6 +519,23 @@ def _normalise_price(price: float, market: str) -> float:
     return price / 100.0 if market == "uk" else price
 
 
+def _market_ohlc_fn(market: str):
+    """OHLC price feed for the POST-EXIT tracker, normalised to major units (GBP
+    for UK). Each tracked exit stores the trade's NORMALISED entry/exit price, so
+    its daily snapshots MUST be normalised too. Without this, UK (.L) snapshots
+    came back in pence while entry was in pounds — a 100x mismatch that rendered
+    +10,000% 'left on table' garbage (fixed 2026-06). US is unaffected
+    (_normalise_price is a no-op). NB: the *skipped* tracker is deliberately
+    raw/raw self-consistent and must keep feeding get_intraday_data directly."""
+    def fn(ticker: str):
+        data = get_intraday_data(ticker)
+        if data is None:
+            return None
+        return {k: _normalise_price(data[k], market)
+                for k in ("open", "high", "low", "close") if k in data}
+    return fn
+
+
 def _is_market_open(market: str) -> bool:
     """Dispatch to the correct calendar function based on market."""
     if market == "uk":
@@ -1104,7 +1121,7 @@ def run_loop(
                         "low_pct":         round(ohlc["low"]   / pos.entry_price - 1.0, 4),
                     })
 
-        tracked = exit_tracker.update(get_intraday_data)
+        tracked = exit_tracker.update(_market_ohlc_fn(market))
         if tracked:
             console.print(f"  [dim]Post-exit tracker: updated {tracked} price(s), {exit_tracker.active_count} active[/dim]")
         exit_tracker.save(tracker_path, service)
@@ -1928,7 +1945,7 @@ def run_loop_t212(
         # Analytics — post-exit tracking, skipped-signal sim, trade memory
         # (service-scoped to 't212'; daily-deduped internally so cheap at 60s)
         # ----------------------------------------------------------------
-        tracked = exit_tracker.update(get_intraday_data)
+        tracked = exit_tracker.update(_market_ohlc_fn(market))
         if tracked:
             console.print(f"  [dim]Post-exit tracker: updated {tracked} price(s), {exit_tracker.active_count} active[/dim]")
         exit_tracker.save(tracker_path, service)
