@@ -106,6 +106,7 @@ services:
       dockerfile: Dockerfile
     environment:
       - SWITCHING_EDGAR_UA=${SWITCHING_EDGAR_UA:-}
+      - BENZINGA_API_KEY=${BENZINGA_API_KEY:-}
     volumes:
       - ${SWITCHING_DATA_DIR:-./data/cache}:/app/.cache
     ports:

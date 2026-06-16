@@ -442,29 +442,44 @@ the move has happened; this grades detector recall and ranks what to build next.
 **Attribution is heuristic** (yfinance `.news` ≠ our exact feeds). US is clean; UK movers
 are noisier (yfinance UK news is weak) — tune US first, then UK.
 
-### TODO (backlog, not yet built) — upgrade movers-audit news source to Benzinga WIIM
-**Problem:** the audit reads **yfinance `.news`**, which returns lagging *commentary* headlines
-("Valuation check after surge", "Why X jumped"), not the catalyst wire. Live data (3 days,
-2026-06): `no_detector` = **76%** — badly inflated, because real catalysts (ROKU buyout chatter,
-ALMS Q1 results, ELVN FDA) only showed up as commentary that didn't `classify()`. So the
-scoreboard currently *under-counts* what we'd actually catch and can't be fully trusted.
-**Fix:** swap the audit's per-ticker news source to **Benzinga**, ideally the **WIIM
-("Why Is It Moving") endpoint** (`/api/v1/wiims`) — it's purpose-built to give the *actual
-reason a stock moved*, which is exactly what `attribute()` needs. Fall back to `/api/v1/news`
-+ `/api/v1/press-releases` for tickers without a WIIM.
-**Steps:**
-1. Add a small Benzinga client (`sources/benzinga.py`): `BENZINGA_API_KEY` env, REST, timeout,
-   graceful no-op if key unset (→ falls back to yfinance `.news`, so nothing breaks).
-2. In `movers.py`, add `_fetch_headlines` variant that pulls Benzinga WIIM/news per symbol;
-   prefer it when the key is set.
-3. Re-run the audit → expect `no_detector` to SHRINK and the true "catalyst we target but
-   missed" (feed_gap-like) signal to sharpen. Document before/after.
-**Gate:** start on Benzinga's **FREE tier** (headline+teaser+link) — confirm WIIM is in free
-vs paid first; measure value before paying for the real-time stream. **US-only** (UK = RNS).
-**Caveats:** free-tier rate/latency limits; quick ToS check (headlines for internal signals).
-**Why it matters:** until the audit's *own* news source is good, the `no_detector` number is
-measuring our measurement tool's weakness — this is the prerequisite for trusting the scoreboard
-AND a free trial of whether Benzinga is worth paying for as a live detector feed.
+### TODO (backlog, not yet built) — Benzinga as a primary US news source (API CONFIRMED 2026-06)
+**Why it's big:** Benzinga's `/api/v2/news` is the strongest US feed we've evaluated, and it's
+**verified working on the operator's key** (probed 2026-06). It solves two problems at once:
+the movers-audit's weak news source (yfinance `.news` commentary → `no_detector` 76% inflated)
+AND — bigger — the detection funnel's **`ticker_drop`** problem, because Benzinga **pre-tags
+tickers**, so no `extract_ticker()` guessing is needed.
+
+**CONFIRMED API (from the OpenAPI spec + live probe):**
+- Base `https://api.benzinga.com`, auth = `token` query param (`BENZINGA_API_KEY`).
+- `GET /api/v2/news` params: `displayOutput=full|abstract|headline` (**full = real body, ~9k chars**),
+  `updatedSince`/`publishedSince` (unix ts → **poll "new since last check"**, near-real-time),
+  `tickers` (csv, max 50), `channels` (csv), `topics`, `importanceRank` (1-5), `pageSize` (≤100),
+  `sort`.
+- Response `api.NewsItem`: `title`, `body`, `teaser`, **`stocks[]` = {name=ticker, exchange, sector,
+  gics, isin, cusip}**, `channels[]`, `tags[]`, `created`, `updated`, `author`, `url`, `importance_rank`.
+- Channels confirmed live: **`WIIMs`** ("why is it moving" — the dead `/api/v1/wiims` was the wrong
+  endpoint), **`Press Releases`**, plus Equities/News/Markets/Tech etc. (full list via
+  `/api/v2.1/news/channels`, nested under `data`).
+- **Rate limit: 4,000/min, 250/sec** — enormous; a 10-min loop uses ~1 call. No throttling concern.
+
+**Build (log-only first, measure before trusting):**
+1. ✅ **DONE (2026-06):** `sources/benzinga.py` — client, `BENZINGA_API_KEY` env, bounded timeout,
+   graceful no-op (returns [] if key unset → callers fall back, nothing breaks); pre-tagged tickers
+   via `stocks[].name`. `BENZINGA_API_KEY` wired into the `dashboard` compose service.
+2. ✅ **DONE (2026-06):** movers audit is news-source-aware — `movers-audit --news yfinance|benzinga|auto`
+   (auto = benzinga if key set). A/B by running both on the same day and comparing `no_detector`/`feed_gap`.
+   This is the test harness: does Benzinga surface catalysts on the movers that Yahoo commentary misses?
+3. ⏳ **PENDING (the real prize):** live detector feed — a poller on `/api/v2/news?displayOutput=full&
+   updatedSince=<last>`, read `stocks[].name` for ticker(s) (no resolution), feed title+body to
+   `classify()`. Run **LOG-ONLY** alongside RSS and compare catch-rate before it sizes anything.
+   Build this only once the audit A/B (step 2) shows Benzinga is worth it.
+**Caveats:** **US-only** (UK still = RNS). Confirm whether the key's generous limits are the free
+tier or a time-limited **trial** (check the Benzinga account/plan + expiry) — the integration works
+regardless, design the poller to respect `X-RateLimit-*` headers. ToS: headlines/body for internal
+signals only, not republishing.
+**Status:** Phase 1 BUILT (client + audit A/B harness, 804 tests). Next: deploy, run the audit
+A/B (`--news yfinance` vs `--news benzinga`) to measure Benzinga's catalyst lift on the movers,
+THEN decide on phase-3 (live detector feed). Phase 3 gated behind that measurement + operator time.
 
 ## Notification Batching
 `src/switching/notifications.py` queues buy notifications in `_NotificationQueue` and flushes

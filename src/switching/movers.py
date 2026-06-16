@@ -169,8 +169,18 @@ def _fetch_movers(market: str, limit: int = 25) -> list[dict]:
     return out[:limit]
 
 
-def _fetch_headlines(symbol: str, limit: int = 8) -> list[str]:
-    """Recent headline titles for a ticker (handles old flat + new content-nested shapes)."""
+def _fetch_headlines(symbol: str, limit: int = 8, source: str = "yfinance") -> list[str]:
+    """Recent headline titles for a ticker, from the chosen news source.
+
+    'benzinga' uses the Benzinga News API (real catalyst headlines, pre-tagged
+    tickers); 'yfinance' uses Yahoo's per-ticker .news (lagging commentary). The
+    A/B point of the audit: compare which source actually surfaces the catalyst.
+    """
+    if source == "benzinga":
+        from switching.sources import benzinga
+        items = benzinga.fetch_news(tickers=[symbol], display_output="abstract", page_size=limit)
+        return [it["title"] for it in items if it.get("title")][:limit]
+
     import yfinance as yf
     try:
         items = yf.Ticker(symbol).news or []
@@ -220,9 +230,17 @@ def _our_records(state_path: Path, service: str) -> tuple[set[str], set[str]]:
 # Orchestration + persistence
 # ---------------------------------------------------------------------------
 def run_audit(state_path: Path, market: str = "us", limit: int = 25,
-              news_per_ticker: int = 8) -> dict:
-    """Pull movers, attribute each, persist + return the report."""
+              news_per_ticker: int = 8, news_source: str = "auto") -> dict:
+    """Pull movers, attribute each, persist + return the report.
+
+    news_source: 'yfinance' | 'benzinga' | 'auto' (benzinga if BENZINGA_API_KEY is
+    set, else yfinance). Recorded in the report so A/B runs are distinguishable.
+    """
     from switching import storage
+    from switching.sources import benzinga
+    if news_source == "auto":
+        news_source = "benzinga" if benzinga.is_configured() else "yfinance"
+
     service = storage.service_from_path(state_path)
     classifiers = _load_classifiers()
     seen, titles = _our_records(state_path, service)
@@ -230,13 +248,14 @@ def run_audit(state_path: Path, market: str = "us", limit: int = 25,
     movers = _fetch_movers(market, limit=limit)
     rows = []
     for m in movers:
-        headlines = _fetch_headlines(m["symbol"], limit=news_per_ticker)
+        headlines = _fetch_headlines(m["symbol"], limit=news_per_ticker, source=news_source)
         rows.append(attribute(m, headlines, seen, titles, classifiers))
 
     summary = {r: sum(1 for x in rows if x["reason"] == r) for r in _REASONS}
     report = {
         "generated_at": datetime.now(tz=timezone.utc).isoformat(),
         "market": market,
+        "news_source": news_source,
         "count": len(rows),
         "summary": summary,
         "movers": rows,

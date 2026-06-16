@@ -720,6 +720,7 @@ def movers_audit_cmd(
         help="Portfolio state file (defaults per market).",
     ),
     limit: int = typer.Option(25, "--limit", help="Top N movers to audit."),
+    news: str = typer.Option("auto", "--news", help="News source: auto | yfinance | benzinga."),
     log_level: str = typer.Option("WARNING", help="Python log level."),
 ) -> None:
     """Audit today's top movers: for each, did our detectors catch it — and if not, WHY?
@@ -728,6 +729,10 @@ def movers_audit_cmd(
     can see recall holes (news we could classify but never received) and uncovered
     catalyst types (new-detector candidates). Log-only research; writes a report the
     dashboard "Movers" tab renders. Run daily (cron) or ad-hoc.
+
+    A/B the news source: run `--news yfinance` then `--news benzinga` on the same day
+    and compare the no_detector/feed_gap counts — that shows whether Benzinga surfaces
+    catalysts (on the movers) that Yahoo's commentary headlines miss.
     """
     logging.basicConfig(level=log_level.upper())
     from switching.movers import run_audit
@@ -736,11 +741,11 @@ def movers_audit_cmd(
             "/app/.cache/uk_portfolio.json" if market == "uk"
             else "/app/.cache/paper_portfolio.json"
         )
-    report = run_audit(state_file, market=market, limit=limit)
+    report = run_audit(state_file, market=market, limit=limit, news_source=news)
     s = report["summary"]
     console.print(
         f"\n[bold]Movers audit — {market.upper()}[/bold] "
-        f"({report['count']} movers)\n"
+        f"({report['count']} movers, news={report.get('news_source')})\n"
         f"  caught={s['caught']}  ticker_drop={s['ticker_drop']}  "
         f"feed_gap={s['feed_gap']}  no_detector={s['no_detector']}  no_news={s['no_news']}"
     )

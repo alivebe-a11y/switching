@@ -89,6 +89,15 @@ class TestPersistence:
         assert load_audit(tmp_path, "us")["count"] == 9
 
 
+def test_fetch_headlines_uses_benzinga_when_selected():
+    from unittest.mock import patch
+    with patch("switching.sources.benzinga.fetch_news",
+               return_value=[{"title": "Acme to acquire Beta"}, {"title": "X soars"}]) as mo:
+        out = movers._fetch_headlines("ACME", limit=8, source="benzinga")
+    assert out == ["Acme to acquire Beta", "X soars"]
+    mo.assert_called_once()
+
+
 def test_real_classifiers_load():
     # Smoke test: the registry-backed classifier collection returns real detectors
     clfs = movers._load_classifiers()
