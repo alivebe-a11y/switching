@@ -1516,6 +1516,13 @@ def run_loop_t212(
             market, acct.free, acct.invested, acct.total, acct.ppl, acct.currency,
         )
 
+        # Mirror the live broker state into the local portfolio so the dashboard
+        # reflects reality: real free cash (not the unset 1000.0 default) + a fresh
+        # scan timestamp. DISPLAY-ONLY for T212 — position sizing reads acct.* directly,
+        # so this has no effect on trading decisions.
+        portfolio.cash = acct.free
+        portfolio.last_scan_dt = now.isoformat()
+
         # ----------------------------------------------------------------
         # Exit checks — iterate over T212 positions
         # ----------------------------------------------------------------

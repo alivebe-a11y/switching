@@ -477,9 +477,24 @@ tickers**, so no `extract_ticker()` guessing is needed.
 tier or a time-limited **trial** (check the Benzinga account/plan + expiry) — the integration works
 regardless, design the poller to respect `X-RateLimit-*` headers. ToS: headlines/body for internal
 signals only, not republishing.
-**Status:** Phase 1 BUILT (client + audit A/B harness, 804 tests). Next: deploy, run the audit
-A/B (`--news yfinance` vs `--news benzinga`) to measure Benzinga's catalyst lift on the movers,
-THEN decide on phase-3 (live detector feed). Phase 3 gated behind that measurement + operator time.
+**Status:** Phase 1 BUILT (client + audit A/B harness, 804 tests). **A/B RESULT (2026-06-16): the
+FREE/sandbox tier is unusable** — general feed caps at ~25 rolling items, and the `tickers` filter
+only hits whatever's in that pool (MSFT/INTC/AAPL returned data; NVDA/TSLA/SNAP/MRNA and ALL 24 of
+the day's movers returned 0). So `no_news=24` was a tier limitation, not "no news." The client works
+(verified), the value (per-ticker/full-body/WIIM) is real but **paid-tier only**. **Decision: don't
+build phase 3 on free — Benzinga is now a paid-tier cost/benefit question** (fold in Pro-status/Ltd).
+The built client + A/B harness mean a *paid* key can be validated in 30s by re-running
+`movers-audit --news benzinga`. **Until then, run the cron with `--news yfinance`** (auto picks
+Benzinga because the key is set → empty audits). Code kept dormant + ready.
+
+### ✅ DONE (2026-06) — T212 portfolio observability (found in DQ sweep, fixed same day)
+`run_loop_t212` now mirrors the live broker account into the local portfolio each poll:
+`portfolio.cash = acct.free` and `portfolio.last_scan_dt = now` (right after the account fetch).
+Fixes both dashboard issues: (1) T212 `free_cash`/`total` showed the unset `1000.0` default →
+now the real broker free cash; (2) `last_scan_dt` was blank → now a live freshness timestamp.
+DISPLAY-ONLY — T212 position sizing reads `acct.*` directly, so zero trading impact. (NB: dashboard
+`total` = real free cash + positions-at-cost-basis; the small cost-vs-market gap is unrealised P&L,
+same convention as the paper dashboard. Persisting `acct.total` for an exact match = future nicety.)
 
 ## Notification Batching
 `src/switching/notifications.py` queues buy notifications in `_NotificationQueue` and flushes
