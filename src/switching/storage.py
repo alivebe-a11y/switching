@@ -61,12 +61,12 @@ _CONNECTIONS: dict[str, sqlite3.Connection] = {}
 _POSITION_COLS = [
     "ticker", "detector", "entry_price", "shares", "entry_dt", "headline",
     "severity", "stop_loss", "hold_days", "days_held", "first_green",
-    "first_green_pct", "peak_price", "peak_tracking", "snapshots",
+    "first_green_pct", "peak_price", "peak_tracking", "snapshots", "ai_score",
 ]
 _CLOSED_TRADE_COLS = [
     "ticker", "detector", "entry_price", "exit_price", "shares", "entry_dt",
     "exit_dt", "pnl", "pct_return", "exit_reason", "headline", "peak_price",
-    "severity",
+    "severity", "ai_score",
 ]
 _EXIT_TRACK_COLS = [
     "ticker", "detector", "entry_price", "exit_price", "exit_dt", "exit_reason",
@@ -173,7 +173,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             entry_dt TEXT, headline TEXT, severity REAL, stop_loss REAL,
             hold_days INTEGER, days_held INTEGER, first_green INTEGER,
             first_green_pct REAL, peak_price REAL, peak_tracking INTEGER,
-            snapshots TEXT
+            snapshots TEXT, ai_score REAL
         );
         CREATE INDEX IF NOT EXISTS ix_positions_service ON positions(service);
 
@@ -182,7 +182,8 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             service TEXT NOT NULL,
             ticker TEXT, detector TEXT, entry_price REAL, exit_price REAL,
             shares REAL, entry_dt TEXT, exit_dt TEXT, pnl REAL, pct_return REAL,
-            exit_reason TEXT, headline TEXT, peak_price REAL, severity REAL
+            exit_reason TEXT, headline TEXT, peak_price REAL, severity REAL,
+            ai_score REAL
         );
         CREATE INDEX IF NOT EXISTS ix_trades_service ON closed_trades(service);
         CREATE INDEX IF NOT EXISTS ix_trades_service_detector ON closed_trades(service, detector);
@@ -210,6 +211,14 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS ix_skipped_service ON skipped_signals(service);
         """
     )
+    conn.commit()
+
+    # Migrations: add columns introduced after a DB already exists (CREATE TABLE IF
+    # NOT EXISTS won't alter an existing table). Idempotent — only adds if missing.
+    for _table in ("positions", "closed_trades"):
+        _cols = {row[1] for row in conn.execute(f"PRAGMA table_info({_table})")}
+        if "ai_score" not in _cols:
+            conn.execute(f"ALTER TABLE {_table} ADD COLUMN ai_score REAL")
     conn.commit()
 
 

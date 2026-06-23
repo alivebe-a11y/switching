@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from switching.weekly_report import (
+    _ai_score_analysis,
     _analyse_trades,
     _detector_rankings,
     _exit_reason_breakdown,
@@ -180,6 +181,26 @@ class TestSeverityAnalysis:
         result = _severity_analysis([])
         assert result["high_severity"]["count"] == 0
         assert result["low_severity"]["count"] == 0
+
+
+class TestAiScoreAnalysis:
+    def test_buckets_scored_and_unscored(self):
+        trades = [
+            {**_trade(pnl=10.0), "ai_score": 0.8},   # high
+            {**_trade(pnl=5.0), "ai_score": 0.5},    # mid
+            {**_trade(pnl=-3.0), "ai_score": 0.2},   # low
+            _trade(pnl=7.0),                          # unscored (no ai_score)
+        ]
+        r = _ai_score_analysis(trades)
+        assert r["scored_count"] == 3
+        assert r["unscored_count"] == 1
+        assert r["high"]["count"] == 1
+        assert r["mid"]["count"] == 1
+        assert r["low"]["count"] == 1
+
+    def test_empty(self):
+        r = _ai_score_analysis([])
+        assert r["scored_count"] == 0 and r["unscored_count"] == 0
 
 
 class TestT212VsPaper:

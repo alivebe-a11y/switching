@@ -131,6 +131,21 @@ def _severity_analysis(trades: list[dict]) -> dict[str, Any]:
     }
 
 
+def _ai_score_analysis(trades: list[dict]) -> dict[str, Any]:
+    """Does the Haiku AI score predict outcome? Buckets SCORED trades so we can judge
+    whether AI-filter gating would help (and at what threshold) — the validation this
+    feeds. Trades opened before the score was persisted (or while the key was down)
+    have ai_score=None and land in 'unscored'."""
+    scored = [t for t in trades if t.get("ai_score") is not None]
+    return {
+        "scored_count": len(scored),
+        "unscored_count": len(trades) - len(scored),
+        "high": _analyse_trades([t for t in scored if t["ai_score"] >= 0.7]),
+        "mid":  _analyse_trades([t for t in scored if 0.4 <= t["ai_score"] < 0.7]),
+        "low":  _analyse_trades([t for t in scored if t["ai_score"] < 0.4]),
+    }
+
+
 def _t212_vs_paper(t212_trades: list[dict], paper_trades: list[dict]) -> list[dict]:
     """Match trades on ticker + entry date for slippage comparison."""
     paper_by_key: dict[str, dict] = {}
@@ -400,6 +415,7 @@ def generate_report(state_dir: Path) -> tuple[list[str], dict]:
     uk_det_rows = _detector_rankings(uk_trades_all)   # LSE per-detector performance
     exit_brkdn = _exit_reason_breakdown(paper_trades_all)
     sev_data   = _severity_analysis(paper_trades_all)
+    ai_data    = _ai_score_analysis(paper_trades_all)
     matched    = _t212_vs_paper(t212_trades_all, paper_trades_all)
     skipped_opps = _skipped_opportunity(skipped_signals)
     suggestions = _generate_suggestions(
@@ -567,6 +583,22 @@ def generate_report(state_dir: Path) -> tuple[list[str], dict]:
             ),
         ]
 
+    # AI-score → outcome (validation for the AI-filter gating decision)
+    if ai_data.get("scored_count", 0) > 0:
+        hi, mi, lo = ai_data["high"], ai_data["mid"], ai_data["low"]
+        m2_lines += [
+            "",
+            (f"🤖 <b>AI Score → Outcome</b> "
+             f"({ai_data['scored_count']} scored, {ai_data['unscored_count']} unscored)"),
+            (f"  High (≥0.7):   {hi.get('count',0)} trades, "
+             f"{hi.get('win_rate',0)*100:.0f}% WR, avg {hi.get('avg_return',0)*100:+.2f}%"),
+            (f"  Mid (0.4-0.7): {mi.get('count',0)} trades, "
+             f"{mi.get('win_rate',0)*100:.0f}% WR, avg {mi.get('avg_return',0)*100:+.2f}%"),
+            (f"  Low (<0.4):    {lo.get('count',0)} trades, "
+             f"{lo.get('win_rate',0)*100:.0f}% WR, avg {lo.get('avg_return',0)*100:+.2f}%"),
+            "  <i>need ~30+ scored trades before trusting this — and watch the fat tail</i>",
+        ]
+
     msg2 = "\n".join(m2_lines)
 
     # -----------------------------------------------------------------------
@@ -672,6 +704,7 @@ def generate_report(state_dir: Path) -> tuple[list[str], dict]:
         "uk_detector_rankings": uk_det_rows,
         "exit_breakdown": exit_brkdn,
         "severity_analysis": sev_data,
+        "ai_score_analysis": ai_data,
         "t212_slippage": {
             "matched_count": len(matched),
             "avg_slippage": t212_slippage_avg,

@@ -1017,10 +1017,17 @@ event_dt,ticker,company,headline,url,evidence,severity
 ## Roadmap
 
 ### Phase 1 — Prove the Strategy (Now → Month 3)
-- [ ] Collect 50+ live trades with AI scores attached
-- [ ] Compare Haiku predictions vs actual outcomes
+- [~] Collect 50+ live trades with AI scores attached — **infra DONE 2026-06**: `ai_score` now
+  persists signal→Position→ClosedTrade (storage migration `ALTER TABLE … ADD COLUMN ai_score`),
+  and the **Saturday weekly report has an "AI Score → Outcome" section** (high/mid/low buckets:
+  count, win-rate, avg return). Dataset is now *collecting* (was being discarded before). Note the
+  key was dead ~a month, so the clock effectively started 2026-06.
+- [ ] Compare Haiku predictions vs actual outcomes — read the Saturday section once ~30+ scored
+  trades have closed.
 - [ ] Tune exit profiles based on live data (not just backtest seeds)
-- [ ] Enable AI filter gating once score threshold is validated
+- [ ] Enable AI filter gating once score threshold is validated — **and decide gate-vs-tilt**: a
+  hard cutoff risks clipping the fat-tail winner (same reason `_position_weight` doesn't size weak
+  detectors *down*); a soft sizing tilt may be safer. Validate it doesn't kill the tail.
 - [ ] Improve buyback detector (36% win rate — needs work or disable)
 - [ ] Build Form 4 XML parser for insider_cluster (currently stub)
 

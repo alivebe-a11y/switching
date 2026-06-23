@@ -51,6 +51,7 @@ class Position:
     # Daily OHLC snapshots recorded while the position is held.
     # Each entry: {date, day, open, high, low, close, pct_from_entry, high_pct, low_pct}
     snapshots: list = field(default_factory=list)
+    ai_score: float | None = None   # Haiku signal score at entry (log-only; kept for validation)
 
     @property
     def cost_basis(self) -> float:
@@ -72,6 +73,7 @@ class ClosedTrade:
     headline: str
     peak_price: float = 0.0
     severity: float = 0.0  # signal severity — used for quality correlation in analytics
+    ai_score: float | None = None  # Haiku score at entry — for AI-filter gating validation
 
 
 @dataclass
@@ -504,6 +506,7 @@ def _reconcile_t212_ghosts(portfolio, held_symbols_t212, now) -> list:
             exit_reason="corporate_action",
             headline=pos.headline,
             severity=pos.severity,
+            ai_score=pos.ai_score,
         )
         portfolio.trades.append(closed)
         portfolio.recently_sold[pos.ticker] = now.isoformat()
@@ -722,6 +725,7 @@ def open_position(
         hold_days=profile["hold_days"],
         first_green=profile["first_green"],
         first_green_pct=profile["first_green_pct"],
+        ai_score=signal.extra.get("ai_score"),
     )
     portfolio.positions.append(pos)
     portfolio.seen_signals.append(_signal_key(signal))
@@ -827,6 +831,7 @@ def check_exits(portfolio: Portfolio, market: str = "us") -> list[ClosedTrade]:
                 headline=pos.headline,
                 peak_price=round(pos.peak_price, 4) if pos.peak_tracking else 0.0,
                 severity=pos.severity,
+                ai_score=pos.ai_score,
             )
             portfolio.cash += pos.shares * price
             portfolio.trades.append(trade)
@@ -939,6 +944,7 @@ def _check_peak_exits_only(portfolio: Portfolio, market: str = "us") -> list[Clo
                 exit_reason="peak_trailing",
                 headline=pos.headline,
                 peak_price=round(pos.peak_price, 4),
+                ai_score=pos.ai_score,
             )
             portfolio.cash += pos.shares * price
             portfolio.trades.append(trade)
@@ -1699,6 +1705,7 @@ def run_loop_t212(
                         exit_reason=reason,
                         headline=tracker.headline if tracker else "",
                         severity=tracker.severity if tracker else 0.0,
+                        ai_score=tracker.ai_score if tracker else None,
                     )
                     portfolio.trades.append(closed)
                     exit_tracker.add_trade(closed)   # begin 20-day post-exit tracking
@@ -1946,6 +1953,7 @@ def run_loop_t212(
                     hold_days=profile["hold_days"],
                     first_green=profile.get("first_green", True),
                     first_green_pct=profile.get("first_green_pct", 0.0),
+                    ai_score=sig.extra.get("ai_score"),
                 ))
 
         # ----------------------------------------------------------------
