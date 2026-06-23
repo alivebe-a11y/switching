@@ -287,3 +287,56 @@ class TestSchemaInvariants:
         warnings = [r for r in caplog.records if "invariants" in r.message.lower()]
         # First call should warn; second should be silent
         assert len(warnings) == 1
+
+
+class TestAddColumnIfMissing:
+    """Race-safety of the schema migration helper.
+
+    Regression: on the ai_score deploy, all five services migrated the same db at
+    boot; the check-then-ALTER race made one service throw `duplicate column name`
+    and crash (it only recovered via Docker restart). _add_column_if_missing must
+    swallow that specific error and stay up.
+    """
+
+    def _conn(self, tmp_path):
+        import sqlite3
+        conn = sqlite3.connect(str(tmp_path / "m.db"))
+        conn.execute("CREATE TABLE positions (id INTEGER)")
+        return conn
+
+    def test_adds_when_missing_and_is_idempotent(self, tmp_path):
+        conn = self._conn(tmp_path)
+        storage._add_column_if_missing(conn, "positions", "ai_score", "REAL")
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(positions)")}
+        assert "ai_score" in cols
+        # second call is a no-op, must not raise
+        storage._add_column_if_missing(conn, "positions", "ai_score", "REAL")
+        conn.close()
+
+    def test_swallows_duplicate_column_race(self):
+        """Column reads as missing but the ALTER raises duplicate (another process
+        added it between our read and write) — must be treated as success."""
+        import sqlite3
+
+        class _RaceConn:
+            def execute(self, sql, *args):
+                if sql.startswith("PRAGMA"):
+                    return iter([])  # column looks missing
+                if sql.startswith("ALTER"):
+                    raise sqlite3.OperationalError("duplicate column name: ai_score")
+                raise AssertionError(f"unexpected SQL: {sql}")
+
+        # must NOT raise
+        storage._add_column_if_missing(_RaceConn(), "positions", "ai_score", "REAL")
+
+    def test_reraises_other_operational_errors(self):
+        import sqlite3
+
+        class _BadConn:
+            def execute(self, sql, *args):
+                if sql.startswith("PRAGMA"):
+                    return iter([])
+                raise sqlite3.OperationalError("no such table: positions")
+
+        with pytest.raises(sqlite3.OperationalError):
+            storage._add_column_if_missing(_BadConn(), "positions", "ai_score", "REAL")

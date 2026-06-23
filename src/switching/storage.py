@@ -214,12 +214,37 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
     # Migrations: add columns introduced after a DB already exists (CREATE TABLE IF
-    # NOT EXISTS won't alter an existing table). Idempotent — only adds if missing.
+    # NOT EXISTS won't alter an existing table). See _add_column_if_missing for why
+    # this is race-safe — all services open the SAME db file and migrate at boot.
     for _table in ("positions", "closed_trades"):
-        _cols = {row[1] for row in conn.execute(f"PRAGMA table_info({_table})")}
-        if "ai_score" not in _cols:
-            conn.execute(f"ALTER TABLE {_table} ADD COLUMN ai_score REAL")
+        _add_column_if_missing(conn, _table, "ai_score", "REAL")
     conn.commit()
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection, table: str, column: str, decl: str
+) -> None:
+    """Idempotently add ``column`` to ``table`` — concurrency-safe.
+
+    All five services open the SAME ``switching.db`` and run schema init at boot,
+    so a plain check-then-``ALTER`` is a race: two processes can both read the
+    column as "missing", then the second ``ALTER`` raises
+    ``OperationalError: duplicate column name``. SQLite's file lock (busy_timeout)
+    serialises the two writes so neither corrupts, but the loser still throws — and
+    that crashed ``paper-trade`` on the ai_score deploy (it only recovered because
+    Docker restarted it onto a now-migrated DB). We treat "duplicate column name"
+    as success: the column is present, which is all the migration wanted. Any other
+    OperationalError is a real fault and re-raised (release-it: idempotent,
+    restartable migrations that preserve core service).
+    """
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column in cols:
+        return
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column name" not in str(exc).lower():
+            raise  # a genuine schema fault, not the benign concurrent-add race
 
 
 # ---------------------------------------------------------------------------
