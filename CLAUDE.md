@@ -1353,7 +1353,25 @@ conviction *overlay*, not a core feature. Supersedes the vaguer "sentiment analy
 ### Detector Ideas
 - [ ] stock_split — splits often run up beforehand
 - [ ] crypto_treasury — Bitcoin treasury announcements (MicroStrategy pattern)
-- [ ] geopolitical — oil/defence/shipping on geopolitical events (Strait of Hormuz etc.)
+- [ ] geopolitical — split into two very different sub-ideas (discussed 2026-06):
+  - **`defence_escalation` — GOOD FIT, the one worth building.** A *sustained* conflict
+    reliably bids the defence primes (LMT, RTX, NOC, GD, BA-ish) over **weeks** as order
+    books fill — a **multi-day drift on clean, specific tickers**, exactly the
+    catalyst-momentum the bot trades well. Fits the engine (named tickers, drift horizon,
+    fixed basket).
+  - **oil-on-war-headline / "peace→price-down" — POOR FIT, parked.** Reasons it doesn't
+    suit the current engine: (1) it's **macro, not company-specific** — ambiguous instrument
+    (USO? XOM/CVX? shipping?), nothing for the ticker→drift pipeline to latch onto; (2) you're
+    **late** — crude gaps the instant conflict breaks and round-trips fast (2020 Soleimani
+    reversed in days; 2022 oil spiked then closed the year *below* pre-war), the same
+    "by the time it trends you're late" trap that failed the Reddit gate; (3) **direction
+    isn't clean** — war usually lifts crude short-term *unless* recession/demand fear flips it
+    down; (4) **"peace→down" is untradeable long-only** — that's the crash-alpha (inverse
+    ETF / puts) path, not this engine; (5) it's an **LLM-judgment** signal (magnitude/direction),
+    not a regex one (ADR-001).
+  - If ever pursued: **backtest-gate first** (war/peace headlines → forward defence/oil returns,
+    out-of-sample) — the "obvious" direction is the part most likely already priced in. Pairs
+    with the market-regime kill-switch (pre-live gate #1) and the crash-alpha exploration.
 - [ ] day_trading — intraday momentum signals (separate project likely)
 - [ ] **uk_activist_holdings** — UK equivalent of `activist_13d`. Source: RNS
   "Holding(s) in Company" announcements (TR-1 / DTR5 disclosures, already in
