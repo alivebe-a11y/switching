@@ -114,3 +114,21 @@ class TestTierStats:
         d = s.to_dict()
         assert d["trades"] == 10
         assert d["win_rate"] == 0.6
+
+
+class TestNullPnlResilience:
+    """SQLite stores NaN as NULL, so a bad-price trade loads back with pnl=None.
+    build_memory must coalesce it to 0.0 rather than crash on None+float / None>0
+    (this crash-looped the UK loop, 2026-06-25)."""
+
+    def test_none_pnl_does_not_crash(self):
+        trades = _trades() + [
+            FakeTrade("guidance_raise", "IAG.L", 5.0, 4.8, None, -0.04, "stop_loss"),
+            FakeTrade("guidance_raise", "VOD.L", 1.0, 1.0, None, None, "hold_expiry"),
+        ]
+        m = build_memory(trades)
+        # the two None-pnl trades count, contribute 0 pnl, and don't crash
+        assert m["total_trades"] == len(trades)
+        gr = m["by_detector"]["guidance_raise"]
+        assert gr["trades"] == 2
+        assert gr["total_pnl"] == 0.0  # both None -> 0.0

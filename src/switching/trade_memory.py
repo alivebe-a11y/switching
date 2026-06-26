@@ -65,10 +65,19 @@ def build_memory(trades: Sequence[Any]) -> dict[str, Any]:
     overall = TierStats()
 
     for t in trades:
+        # Coalesce None -> 0.0.  SQLite cannot store NaN — it silently writes NULL
+        # — so a trade closed with a NaN pnl (e.g. from a bad-price position) loads
+        # back as None.  `None + float` and `None > 0` both raise, which crash-looped
+        # the whole loop (release-it: "validate external/runtime data before use,
+        # preserve core service").  pct_return is price-based and normally present,
+        # but coalesce it too for safety.
+        pnl = t.pnl if t.pnl is not None else 0.0
+        ret = t.pct_return if t.pct_return is not None else 0.0
+
         overall.trades += 1
-        overall.total_pnl += t.pnl
-        overall.total_return_pct += t.pct_return
-        if t.pnl > 0:
+        overall.total_pnl += pnl
+        overall.total_return_pct += ret
+        if pnl > 0:
             overall.wins += 1
 
         det = t.detector
@@ -76,9 +85,9 @@ def build_memory(trades: Sequence[Any]) -> dict[str, Any]:
             by_detector[det] = TierStats()
         s = by_detector[det]
         s.trades += 1
-        s.total_pnl += t.pnl
-        s.total_return_pct += t.pct_return
-        if t.pnl > 0:
+        s.total_pnl += pnl
+        s.total_return_pct += ret
+        if pnl > 0:
             s.wins += 1
 
         tier = _price_tier(t.entry_price)
@@ -86,9 +95,9 @@ def build_memory(trades: Sequence[Any]) -> dict[str, Any]:
             by_price_tier[tier] = TierStats()
         s = by_price_tier[tier]
         s.trades += 1
-        s.total_pnl += t.pnl
-        s.total_return_pct += t.pct_return
-        if t.pnl > 0:
+        s.total_pnl += pnl
+        s.total_return_pct += ret
+        if pnl > 0:
             s.wins += 1
 
         exit_r = t.exit_reason
@@ -96,9 +105,9 @@ def build_memory(trades: Sequence[Any]) -> dict[str, Any]:
             by_exit[exit_r] = TierStats()
         s = by_exit[exit_r]
         s.trades += 1
-        s.total_pnl += t.pnl
-        s.total_return_pct += t.pct_return
-        if t.pnl > 0:
+        s.total_pnl += pnl
+        s.total_return_pct += ret
+        if pnl > 0:
             s.wins += 1
 
         if det not in by_detector_tier:
@@ -107,13 +116,13 @@ def build_memory(trades: Sequence[Any]) -> dict[str, Any]:
             by_detector_tier[det][tier] = TierStats()
         s = by_detector_tier[det][tier]
         s.trades += 1
-        s.total_pnl += t.pnl
-        s.total_return_pct += t.pct_return
-        if t.pnl > 0:
+        s.total_pnl += pnl
+        s.total_return_pct += ret
+        if pnl > 0:
             s.wins += 1
 
-    losers = [t for t in trades if t.pnl < 0]
-    winners = [t for t in trades if t.pnl > 0]
+    losers = [t for t in trades if (t.pnl or 0.0) < 0]
+    winners = [t for t in trades if (t.pnl or 0.0) > 0]
 
     patterns: list[str] = []
     for det, stats in by_detector.items():
