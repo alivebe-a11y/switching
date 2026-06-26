@@ -433,6 +433,29 @@ class TestOpenPositionProfiles:
         pos = open_position(portfolio, sig, 0.50, market="us")
         assert pos is None
 
+    def test_bad_price_rejected(self):
+        """NaN / None / 0 / negative quotes must never open a position.
+
+        Regression (2026-06-25): yfinance returned a NaN price for IAG.L; with no
+        guard, shares = alloc/NaN = NaN opened a poison position whose NaN infected
+        portfolio.total_value and cascaded NaN shares onto 25 subsequent UK buys.
+        """
+        for bad in (float("nan"), float("inf"), None, 0.0, -5.0):
+            portfolio = Portfolio(cash=1000.0)
+            sig = self._make_signal("guidance_raise")
+            pos = open_position(portfolio, sig, bad, market="uk")
+            assert pos is None, f"price {bad!r} should be rejected"
+            assert portfolio.cash == 1000.0
+            assert portfolio.positions == []
+
+    def test_poisoned_total_value_cannot_size_a_buy(self):
+        """Defence in depth: if total_value is already NaN, no new buy is sized
+        off it (the NaN must not propagate into a fresh position)."""
+        portfolio = Portfolio(cash=float("nan"))
+        sig = self._make_signal("guidance_raise")
+        pos = open_position(portfolio, sig, 50.0, market="uk")
+        assert pos is None
+
     def test_first_green_pct_prevents_early_exit(self):
         """A +1% return should NOT trigger first_green when threshold is 2%."""
         yesterday = datetime.now(tz=timezone.utc) - timedelta(days=1)

@@ -680,6 +680,18 @@ def open_position(
             log.info("already holding %s, skipping", signal.ticker)
             return None
 
+    # Bad-price guard (release-it: "validate external responses before they affect
+    # state").  yfinance can return None / NaN / 0 for a ticker it can't price
+    # (seen on UK names, e.g. IAG.L).  Without this, a NaN price sailed straight
+    # through — the UK branch skips the <1.0 floor and `nan < 1.0` is False — so
+    # `shares = alloc / nan = nan` opened a poison position whose NaN then infected
+    # `portfolio.total_value`, making EVERY later buy size to nan shares (a cascade
+    # that corrupted 25 UK positions on 2026-06-25).  Reject the bad quote here so
+    # one unpriceable ticker can never poison the book.
+    if price is None or not math.isfinite(price) or price <= 0:
+        log.warning("bad price %r for %s — skipping (unpriceable quote)", price, signal.ticker)
+        return None
+
     # Price floor — US only.  $1 keeps the bot out of OTC-grade / failing-
     # reverse-split garbage on NYSE/NASDAQ.  UK floor REMOVED 2026-05-27:
     # AIM has legitimate sub-£1 names (small caps, recovery plays) and we
@@ -696,8 +708,11 @@ def open_position(
     weight = _position_weight(signal.detector)
     alloc = portfolio.total_value * portfolio.max_position_pct * weight
     alloc = min(alloc, portfolio.cash, portfolio.total_value * _MAX_SINGLE_POSITION_PCT)
-    if alloc < 1.0:
-        log.info("insufficient cash ($%.2f), skipping %s", portfolio.cash, signal.ticker)
+    # Defensive: a non-finite alloc means the portfolio total/cash is already
+    # poisoned (NaN/inf) — never size a buy off it (`nan < 1.0` is False, so the
+    # plain threshold below would let it through and propagate the NaN).
+    if not math.isfinite(alloc) or alloc < 1.0:
+        log.info("insufficient/invalid alloc (%.4f, cash $%.2f), skipping %s", alloc, portfolio.cash, signal.ticker)
         return None
 
     # UK prices from yfinance are in pence (GBX). Normalise to GBP so that
