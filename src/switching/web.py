@@ -1798,12 +1798,32 @@ async function loadMovers(date) {
     $('#movers-stamp').textContent = (d.market || 'us').toUpperCase() + ' · ' + (d.generated_at || '').slice(0,16).replace('T',' ') + ' UTC';
     const s = d.summary || {};
     const chip = (label, n, cls) => '<span class="milestone-chip ' + (cls||'') + '" style="margin-right:6px">' + label + ': ' + (n||0) + '</span>';
-    $('#movers-summary').innerHTML =
+    let summaryHtml =
       chip('✅ caught', s.caught, 'reached') +
       chip('🎯 ticker_drop', s.ticker_drop) +
       chip('📡 feed_gap', s.feed_gap) +
       chip('🧩 no_detector', s.no_detector) +
       chip('· no_news', s.no_news);
+
+    // no_detector catalyst-theme tally — the "which detector are we missing?" view.
+    // On the yfinance feed expect a high uncategorised/commentary floor; a theme is
+    // only trustworthy on a clean catalyst source (benzinga).
+    const themes = d.no_detector_themes || {};
+    const uncat = themes._uncategorised || 0;
+    const themeEntries = Object.entries(themes)
+      .filter(([k]) => k !== '_uncategorised')
+      .sort((a, b) => b[1] - a[1]);
+    if (themeEntries.length || uncat) {
+      summaryHtml += '<div style="margin-top:8px;font-size:0.8rem">'
+        + '<span style="color:var(--dim)">🧩 no_detector catalyst themes:</span> '
+        + (themeEntries.length
+            ? themeEntries.map(([k, n]) => '<span class="detector-tag" style="margin-right:6px">' + k + ': ' + n + '</span>').join('')
+            : '<span style="color:var(--dim)">none matched</span>')
+        + ' <span style="color:var(--dim)">· uncategorised/commentary: ' + uncat + '</span>'
+        + (d.news_source === 'yfinance' ? ' <span style="color:var(--dim)">(yfinance — themes noisy; trust on benzinga)</span>' : '')
+        + '</div>';
+    }
+    $('#movers-summary').innerHTML = summaryHtml;
 
     const reasonCls = {ticker_drop:'', feed_gap:'neg', no_detector:'', no_news:''};
     let html = '<table><thead><tr><th>Symbol</th><th>Move</th><th>Vol×</th><th>Status / why missed</th><th>Detector</th><th>Evidence headline</th></tr></thead><tbody>';
@@ -1816,7 +1836,11 @@ async function loadMovers(date) {
         + '<td class="' + moveCls + '">' + (m.pct_change>=0?'+':'') + m.pct_change.toFixed(1) + '%</td>'
         + '<td>' + (m.vol_ratio != null ? m.vol_ratio + '×' : '--') + '</td>'
         + '<td class="' + rcls + '">' + (caught ? '✅ caught' : m.reason) + '</td>'
-        + '<td>' + (m.detector ? '<span class="detector-tag">' + m.detector + '</span>' : '--') + '</td>'
+        + '<td>' + (m.detector
+            ? '<span class="detector-tag">' + m.detector + '</span>'
+            : ((m.themes && m.themes.length)
+                ? m.themes.map(t => '<span class="detector-tag" style="opacity:.7">' + t + '</span>').join(' ')
+                : '--')) + '</td>'
         + '<td style="font-size:0.78rem;color:var(--dim);max-width:340px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + (m.evidence||'').replace(/"/g,'&quot;') + '">' + (m.evidence || '') + '</td>'
         + '</tr>';
     });
