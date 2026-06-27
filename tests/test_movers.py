@@ -55,9 +55,44 @@ class TestAttribute:
         assert r["reason"] == "no_detector"
         assert r["detector"] is None
 
+    def test_no_detector_keeps_all_headlines_and_themes(self):
+        heads = [
+            "WXYZ stock: is it a good buy now?",          # commentary, no theme
+            "WXYZ announces Phase 3 topline data readout",  # clinical_data theme
+            "WXYZ prices $50M registered direct offering",  # offering_dilution theme
+        ]
+        r = attribute(_mover("WXYZ"), heads, set(), set(), CLASSIFIERS)
+        assert r["reason"] == "no_detector"
+        assert r["headlines"] == [h[:200] for h in heads]  # all kept, not just [0]
+        assert "clinical_data" in r["themes"]
+        assert "offering_dilution" in r["themes"]
+
     def test_no_news_when_no_headlines(self):
         r = attribute(_mover("QQQQ"), [], set(), set(), CLASSIFIERS)
         assert r["reason"] == "no_news"
+
+
+class TestThemeTally:
+    def test_classify_themes_detects_and_dedups(self):
+        assert movers.classify_themes(["Acme gets FDA approval"]) == ["fda_regulatory"]
+        assert movers.classify_themes(["pure market commentary, mixed session"]) == []
+        # multiple headlines -> union of themes
+        t = movers.classify_themes(["X to acquire Y", "X downgraded by Morgan Stanley"])
+        assert set(t) == {"mna", "analyst"}
+
+    def test_aggregate_only_counts_no_detector(self):
+        rows = [
+            {"reason": "no_detector", "themes": ["clinical_data", "fda_regulatory"]},
+            {"reason": "no_detector", "themes": ["clinical_data"]},
+            {"reason": "no_detector", "themes": []},          # commentary noise
+            {"reason": "caught", "themes": ["mna"]},           # ignored (not no_detector)
+            {"reason": "feed_gap", "detector": "mna_target"},  # ignored
+        ]
+        agg = movers.aggregate_no_detector_themes(rows)
+        assert agg["clinical_data"] == 2
+        assert agg["fda_regulatory"] == 1
+        assert agg["_uncategorised"] == 1
+        assert "mna" not in agg  # the caught/feed_gap rows are excluded
 
 
 class TestPersistence:

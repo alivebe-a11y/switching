@@ -37,6 +37,65 @@ log = logging.getLogger(__name__)
 _AUDIT_DIR = "movers_audit"
 _REASONS = ("caught", "ticker_drop", "feed_gap", "no_detector", "no_news")
 
+# How many headlines to retain per mover in the saved audit (bounded payload).
+_MAX_KEPT_HEADLINES = 8
+
+# Candidate catalyst themes for the `no_detector` bucket — the "which detector
+# might we be missing?" instrument. A no_detector mover's headlines are tagged with
+# any themes they hit, and run_audit tallies them per day so a recurring uncovered
+# catalyst type surfaces over time (a build candidate). HEURISTIC + best-effort: on
+# the yfinance news source most no_detector items are Yahoo *commentary* (valuation
+# think-pieces, listicles) that match nothing — that's expected, and a theme only
+# becomes trustworthy on a clean catalyst source (Benzinga WIIM). See the graduation
+# rule in CLAUDE.md (Movers Researcher).
+_CATALYST_THEMES: dict[str, str] = {
+    "offering_dilution":   r"offering|dilut|priced|registered direct|\batm\b|convertible|private placement",
+    "clinical_data":       r"\bphase\b|topline|trial|endpoint|\bdata\b|study results|results from",
+    "fda_regulatory":      r"\bfda\b|approval|clearance|breakthrough|designation|\bema\b|chmp|crl",
+    "partnership_license":  r"partner|collaborat|licens|alliance|teams up",
+    "mna":                 r"acqui|merger|takeover|buyout|to be acquired|tender offer",
+    "analyst":             r"upgrade|downgrade|price target|initiat|reiterat|coverage",
+    "guidance_earnings":   r"guidance|outlook|preliminary|warns|warning|profit warning",
+    "legal_settlement":    r"lawsuit|settle|verdict|ruling|patent|investigat|fine|antitrust",
+    "exec_mgmt":           r"\bceo\b|\bcfo\b|resign|appoint|steps down|departure",
+    "contract_award":      r"\bcontract\b|\baward\b|wins |deal worth|grant",
+    "short_report":        r"short seller|hindenburg|muddy waters|fraud|accounting",
+    "bankruptcy_distress": r"bankrupt|chapter 11|going concern|delist|default|restructur",
+    "buyback":             r"buyback|repurchase|tender for its",
+}
+_THEME_RX = {name: re.compile(pat, re.I) for name, pat in _CATALYST_THEMES.items()}
+
+
+def classify_themes(headlines: list[str]) -> list[str]:
+    """Return the catalyst themes any of these headlines hit (deduped, ordered).
+    Pure. Empty list = matched nothing (likely commentary, not a catalyst)."""
+    hit: list[str] = []
+    blob = " \n ".join(h for h in headlines if h)
+    for name, rx in _THEME_RX.items():
+        if rx.search(blob):
+            hit.append(name)
+    return hit
+
+
+def aggregate_no_detector_themes(rows: list[dict]) -> dict[str, int]:
+    """Tally catalyst themes across the no_detector movers in one audit.
+    A mover can hit multiple themes; ``_uncategorised`` counts movers that hit none
+    (the commentary-noise floor). Pure — drives the per-day decision view."""
+    tally: dict[str, int] = {}
+    uncat = 0
+    for r in rows:
+        if r.get("reason") != "no_detector":
+            continue
+        themes = r.get("themes") or []
+        if not themes:
+            uncat += 1
+            continue
+        for t in themes:
+            tally[t] = tally.get(t, 0) + 1
+    out = dict(sorted(tally.items(), key=lambda kv: -kv[1]))
+    out["_uncategorised"] = uncat
+    return out
+
 
 def _norm(text: str) -> str:
     """Normalise a headline for fuzzy membership comparison."""
@@ -115,8 +174,14 @@ def attribute(
                 "detector": det, "evidence": headline[:200]}
 
     if headlines:
+        # Keep ALL headlines (bounded) + theme tags, not just headlines[0] — the
+        # real catalyst can sit below a commentary headline, and the themes feed the
+        # per-day "what detector are we missing?" tally.
+        kept = [h[:200] for h in headlines[:_MAX_KEPT_HEADLINES]]
         return {**base, "status": "missed", "reason": "no_detector",
-                "evidence": headlines[0][:200]}
+                "evidence": headlines[0][:200],
+                "headlines": kept,
+                "themes": classify_themes(headlines)}
     return {**base, "status": "missed", "reason": "no_news"}
 
 
@@ -258,6 +323,10 @@ def run_audit(state_path: Path, market: str = "us", limit: int = 25,
         "news_source": news_source,
         "count": len(rows),
         "summary": summary,
+        # Per-day catalyst-theme tally over the no_detector bucket — accumulates the
+        # "which detector are we missing?" decision view. Trust it only on a clean
+        # catalyst source (Benzinga); on yfinance expect a high _uncategorised floor.
+        "no_detector_themes": aggregate_no_detector_themes(rows),
         "movers": rows,
     }
     save_audit(state_path.parent, market, report)

@@ -442,6 +442,19 @@ the move has happened; this grades detector recall and ranks what to build next.
 **Attribution is heuristic** (yfinance `.news` ≠ our exact feeds). US is clean; UK movers
 are noisier (yfinance UK news is weak) — tune US first, then UK.
 
+**`no_detector` decision instrument (2026-06).** Each audit now (a) keeps **all** headlines
+per mover (`headlines[]`, bounded), not just the first, and (b) tags each `no_detector`
+mover with catalyst **`themes[]`** and tallies them per day into `report["no_detector_themes"]`
+(`classify_themes` / `aggregate_no_detector_themes` in `movers.py`). This accumulates the
+"**which detector are we missing?**" view over time. ⚠️ On the **yfinance** source the bucket
+is ~77% Yahoo *commentary* (valuation think-pieces/listicles) → high `_uncategorised`; a theme
+is only trustworthy on a **clean catalyst source (Benzinga WIIM)** — feeding the audit Benzinga
+is the real unlock (re-run `movers-audit --news benzinga`).
+**Graduation rule — a `no_detector` theme becomes a new-detector build candidate only when ALL:**
+(1) it **recurs at frequency** across audit days (not a one-off), (2) it's a **clean,
+company-specific catalyst** (not commentary), and (3) it **backtests with edge**. Fits the
+testbed→live model: measure on the testbed, build only what clears the gate.
+
 ### TODO (backlog, not yet built) — Benzinga as a primary US news source (API CONFIRMED 2026-06)
 **Why it's big:** Benzinga's `/api/v2/news` is the strongest US feed we've evaluated, and it's
 **verified working on the operator's key** (probed 2026-06). It solves two problems at once:
