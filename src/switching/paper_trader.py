@@ -1791,6 +1791,17 @@ def run_loop_t212(
             since = now - timedelta(hours=24)
             signals = scan_for_signals(detectors, since, min_severity=min_severity)
             new_signals = [s for s in signals if _signal_key(s) not in portfolio.seen_signals]
+            # AI-filter scoring (log-only) — mirror run_loop so the REAL-fill T212
+            # book collects ai_score too. Was missing: run_loop_t212 never called
+            # score_signals, so every T212 trade persisted ai_score=None and the
+            # cleanest outcome data (real fills) couldn't be scored. Scoring the
+            # freshly-scanned signals here also covers pending_orders — they were
+            # `new` on an earlier cycle and the score serialises into the queue.
+            if new_signals:
+                from switching.trade_memory import load_memory
+                from switching.ai_filter import score_signals
+                _mem = load_memory(state_path.parent / "trade_memory.json", service)
+                new_signals = score_signals(new_signals, memory=_mem)
 
         held_symbols = set(t212_map.keys()) | {p.ticker for p in portfolio.positions}
         active_count = len(t212_map)
