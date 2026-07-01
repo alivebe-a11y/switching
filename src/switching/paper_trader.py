@@ -1081,6 +1081,11 @@ def run_loop(
     notifications.set_market(service)
     # Capture classified-but-no-ticker drops for this service (detection funnel).
     detection_funnel.configure(service, state_path)
+    # UK: archive the FULL Investegate RNS stream (all categories) for later
+    # news-context analysis on the director-dealing book (log-only, no trade impact).
+    if market == "uk":
+        from switching import rns_archive
+        rns_archive.configure(state_path)
 
     tracker_path = state_path.parent / "exit_tracker.json"
     exit_tracker = ExitTracker.load(tracker_path, service)

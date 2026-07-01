@@ -139,6 +139,13 @@ def scrape(since: datetime | None = None, *, force: bool = False) -> list[FeedIt
         _cache["ts"] = now
         _cache["items"] = items
         log.info("investegate: scraped %d announcements", len(items))
+        # Archive the full RNS stream (all categories) once per fresh scrape —
+        # no-op unless the UK loop configured it. Never lets capture break scraping.
+        try:
+            from switching import rns_archive
+            rns_archive.record(items)
+        except Exception:
+            pass
     if since:
         return [it for it in items if it.published >= since]
     return list(items)
